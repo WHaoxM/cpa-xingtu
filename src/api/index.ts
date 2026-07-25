@@ -1,4 +1,4 @@
-export { getApiMode, getApiBaseUrl, DEMO_STUDENT_ID } from './config'
+export { getApiMode, isMockMode, getApiBaseUrl, DEMO_STUDENT_ID } from './config'
 export { ApiError } from './types'
 export type { ApiEnvelope } from './types'
 

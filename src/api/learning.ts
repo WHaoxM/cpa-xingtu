@@ -11,7 +11,18 @@ export async function listCourses(params?: { category?: string; limit?: number; 
 
 export async function getCourse(courseId: string) {
   if (getApiMode() === 'mock') {
-    return mockGet(`learning/courses.${courseId}.json`)
+    try {
+      return await mockGet(`learning/courses.${courseId}.json`)
+    } catch {
+      // 缺详情 fixture 时从列表拼装，避免课程详情页空白
+      const listEnv = await mockGet<{ courses?: Array<Record<string, unknown>> }>('learning/courses.list.json')
+      const courses = (listEnv.data as { courses?: Array<Record<string, unknown>> } | undefined)?.courses ?? []
+      const hit = courses.find(c => String(c.course_id ?? c.id) === courseId)
+      if (hit) {
+        return { success: true, data: hit }
+      }
+      throw new Error(`Mock course not found: ${courseId}`)
+    }
   }
   return httpGet(`/api/learning/courses/${encodeURIComponent(courseId)}`)
 }

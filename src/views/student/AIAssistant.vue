@@ -15,6 +15,7 @@ import { getPipelineStatus } from '@/api/pipeline'
 import { toFriendlyApiError } from '@/api/types'
 import { CURRENT_USER_ID } from '@/mock/data'
 import type { AIMessage, AIToolCall } from '@/types'
+import MessagePartsRenderer from '@/components/agent/MessagePartsRenderer.vue'
 
 function resolveStudentId(): string {
   try {
@@ -431,6 +432,9 @@ async function sendMessage(preset?: string) {
         thinkingDuration: duration,
         status: 'streaming',
         toolCalls: tools,
+        parts: result.parts,
+        artifacts: result.artifacts,
+        turnId: result.turnId,
         interactionMode: result.interactionMode || interactionMode.value,
         upgradeHint: result.upgradeHint,
       })
@@ -714,82 +718,12 @@ function displayThinkingParas(thinking: string): string[] {
               <div v-else class="msg msg--assistant">
                 <div class="msg__avatar" aria-hidden="true">助</div>
                 <div class="msg__stack">
-                  <div
-                    v-if="msg.thinking"
-                    class="thought"
-                    :class="{ 'thought--open': isThinkingExpanded(msg.id) }"
-                  >
-                    <button type="button" class="thought__toggle" @click="toggleThinking(msg.id)">
-                      <Icon class="thought__chevron" icon="lucide:chevron-right" :width="13" />
-                      <span class="thought__label">{{ thoughtLabel(msg.thinkingDuration) }}</span>
-                    </button>
-                    <div v-if="isThinkingExpanded(msg.id)" class="thought__body">
-                      <p
-                        v-for="(para, pi) in displayThinkingParas(msg.thinking)"
-                        :key="`${msg.id}-t-${pi}`"
-                        class="thought__p"
-                      >{{ para }}</p>
-                    </div>
-                  </div>
-
-                  <div v-if="msg.toolCalls?.length" class="tool-row">
-                    <div
-                      v-for="(tool, ti) in msg.toolCalls"
-                      :key="`${msg.id}-tool-${ti}`"
-                      class="tool-card"
-                      :class="`tool-card--${tool.status || 'done'}`"
-                    >
-                      <div class="tool-card__head">
-                        <Icon icon="lucide:wrench" :width="12" />
-                        <code class="tool-card__name">{{ tool.name }}</code>
-                        <span class="tool-card__status">{{ toolStatusLabel(tool) }}</span>
-                      </div>
-                      <p v-if="tool.summary" class="tool-card__summary">{{ tool.summary }}</p>
-                      <div v-if="tool.taskId" class="tool-card__task">
-                        task_id={{ tool.taskId }}
-                        <span v-if="tool.taskStatus"> · {{ tool.taskStatus }}</span>
-                      </div>
-                      <button
-                        v-if="tool.args && Object.keys(tool.args).length"
-                        type="button"
-                        class="tool-card__args-toggle"
-                        @click="toggleToolArgs(`${msg.id}-${ti}`)"
-                      >
-                        {{ expandedToolArgs.has(`${msg.id}-${ti}`) ? '收起参数' : '查看参数' }}
-                      </button>
-                      <div
-                        v-if="expandedToolArgs.has(`${msg.id}-${ti}`) && tool.args"
-                        class="tool-card__args"
-                      >
-                        <span
-                          v-for="(val, key) in tool.args"
-                          :key="String(key)"
-                          class="tool-card__arg"
-                        >{{ key }}={{ val }}</span>
-                      </div>
-                      <pre
-                        v-if="tool.resultPreview && expandedToolArgs.has(`${msg.id}-${ti}`)"
-                        class="tool-card__preview"
-                      >{{ tool.resultPreview }}</pre>
-                    </div>
-                  </div>
-
-                  <div class="msg__body" v-html="getDisplayContent(msg)" />
-                  <div
-                    v-if="msg.role === 'assistant' && msg.upgradeHint?.to"
-                    class="upgrade-hint"
-                  >
-                    <span class="upgrade-hint__text">
-                      {{ msg.upgradeHint.reason || '该请求更适合更高预算模式。' }}
-                    </span>
-                    <button
-                      type="button"
-                      class="upgrade-hint__btn"
-                      @click="applyUpgradeHint(msg.upgradeHint?.to)"
-                    >
-                      切换到 {{ String(msg.upgradeHint.to).toUpperCase() }}
-                    </button>
-                  </div>
+                  <MessagePartsRenderer
+                    :message="msg"
+                    :is-streaming="msg.id === streamingMsgId"
+                    :streaming-text="streamingContent"
+                    @upgrade="applyUpgradeHint"
+                  />
                   <span v-if="msg.id === streamingMsgId" class="cursor" aria-hidden="true" />
                 </div>
               </div>

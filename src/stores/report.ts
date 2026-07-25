@@ -25,10 +25,14 @@ export const useReportStore = defineStore(
     const latestCareer = computed(() => careerRecords.value[0] ?? null)
 
     async function fetchReportList(userId?: string): Promise<void> {
-      // [API] 后端接入点：优先使用服务端报告列表，失败时保留本地持久化数据。
-      const list = await getReportList(userId)
-      if (list.length > 0) {
-        records.value = list
+      // mock / http：优先服务端或 fixture 列表；失败时保留本地持久化，避免 Pages 白屏
+      try {
+        const list = await getReportList(userId)
+        if (list.length > 0) {
+          records.value = list
+        }
+      } catch {
+        /* keep persisted records */
       }
     }
 

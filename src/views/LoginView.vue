@@ -8,10 +8,12 @@ import { Icon } from '@iconify/vue'
 import { ICONS } from '@/constants/icons'
 import { useUserStore } from '@/stores'
 import { UserRole } from '@/types'
+import { isMockMode } from '@/api/config'
 import { gsap } from '@/plugins/gsap'
 
 const router = useRouter()
 const userStore = useUserStore()
+const mockMode = isMockMode()
 
 const username = ref('')
 const password = ref('')
@@ -117,6 +119,11 @@ onBeforeUnmount(() => {
         <span class="brand-mark__text">识途 · 职业规划平台</span>
       </div>
 
+      <div v-if="mockMode" class="stg mock-pill" title="VITE_API_MODE=mock：只读 fixtures，不请求后端">
+        <Icon icon="lucide:database" :width="14" />
+        <span>演示数据 · 无需后端</span>
+      </div>
+
       <!-- 标题 -->
       <h1 class="stg login-headline">找到你的职业方向</h1>
       <p class="stg login-sub">从能力评估到路径落地</p>
@@ -170,7 +177,7 @@ onBeforeUnmount(() => {
 
         <!-- 提示 -->
         <div class="f-stg login-hint">
-          <span>演示账号密码均为 <strong>123456</strong></span>
+          <span>演示账号 <strong>student001</strong> / <strong>123456</strong></span>
         </div>
       </div>
 
@@ -212,7 +219,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .brand-mark__icon {
@@ -226,6 +233,20 @@ onBeforeUnmount(() => {
   color: var(--ink-500);
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+
+.mock-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-family: var(--font-ui);
+  color: var(--indigo-700, #3730a3);
+  background: color-mix(in srgb, var(--indigo-100, #e0e7ff) 75%, #fff);
+  border: 1px solid color-mix(in srgb, var(--indigo-300, #a5b4fc) 50%, transparent);
 }
 
 /* --- 标题（同 hc-hero__greeting 规格） --- */

@@ -1,19 +1,39 @@
 {
   "success": true,
   "data": {
-    "count": 2,
+    "count": 4,
     "courses": [
       {
         "course_id": "course_001",
         "category": "前端开发",
-        "description": "从零开始学习 Vue 3",
-        "title": "Vue 3 入门"
+        "description": "从零开始学习 Vue 3，掌握现代前端开发",
+        "title": "Vue 3 入门",
+        "level": "入门",
+        "duration_hours": 12
       },
       {
         "course_id": "course_002",
         "category": "后端开发",
-        "description": "Go 语言基础",
-        "title": "Go 入门"
+        "description": "Go 语言基础语法、并发与 HTTP 服务",
+        "title": "Go 入门",
+        "level": "入门",
+        "duration_hours": 10
+      },
+      {
+        "course_id": "course_003",
+        "category": "前端开发",
+        "description": "Vite、ESLint、CI 与组件库工程实践",
+        "title": "前端工程化",
+        "level": "进阶",
+        "duration_hours": 8
+      },
+      {
+        "course_id": "course_004",
+        "category": "数据与算法",
+        "description": "面向前端面试的数据结构与算法精简课",
+        "title": "算法基础精简",
+        "level": "进阶",
+        "duration_hours": 14
       }
     ]
   }

@@ -31,8 +31,11 @@
 
 | Role | Username | Password |
 |------|----------|----------|
-| Student | 123456 | 123456 |
-| Admin | 123456 | 123456 |
+| Student | student001 | 123456 |
+| Admin | admin001 | 123456 |
+
+> GitHub Pages / production builds default to **`VITE_API_MODE=mock`** (fixtures only, no backend).  
+> Local mock preview: `npm run dev:mock`. Backend integration: set `VITE_API_MODE=http` in `.env.local`.
 
 ## ⚡ Overview
 

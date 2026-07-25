@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "data": {
+    "course_id": "course_002",
+    "category": "后端开发",
+    "description": "Go 语言基础语法、并发模型与常见 Web 服务开发入门",
+    "title": "Go 入门",
+    "chapters": [
+      { "chapter_id": "ch1", "title": "环境与工具链", "duration_min": 25 },
+      { "chapter_id": "ch2", "title": "基础语法与结构体", "duration_min": 40 },
+      { "chapter_id": "ch3", "title": "Goroutine 与 Channel", "duration_min": 45 },
+      { "chapter_id": "ch4", "title": "HTTP 服务小练习", "duration_min": 35 }
+    ],
+    "tags": ["Go", "后端", "并发"]
+  }
+}

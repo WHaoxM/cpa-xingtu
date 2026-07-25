@@ -31,8 +31,11 @@
 
 | 角色 | 用户名 | 密码 |
 |------|--------|------|
-| 学生 | 123456 | 123456 |
-| 管理员 | 123456 | 123456 |
+| 学生 | student001 | 123456 |
+| 管理员 | admin001 | 123456 |
+
+> GitHub Pages / `npm run build` 默认 **`VITE_API_MODE=mock`**，登录页会显示「演示数据 · 无需后端」，所有接口走 `public/fixtures/`，不连接后端。  
+> 本地纯演示：`npm run dev:mock`；联调后端：`.env.local` 设 `VITE_API_MODE=http`。
 
 ## ⚡ 项目概述
 
@@ -42,8 +45,8 @@
 - 三角色权限体系（学生 / 管理员 / 公共页面）
 - D3.js + Three.js 数据可视化（雷达图、弦图、Treemap、3D 书架、力导向气泡图）
 
-**数据说明**：所有页面默认使用 Mock 数据，可独立运行，无需后端依赖。  
-本地联调时可通过 `VITE_API_BASE_URL` 连接 CPA-Agent 后端。
+**数据说明**：生产构建与 Pages 部署使用 Mock（`public/fixtures` + `src/mock`），可独立运行，无需后端。  
+本地联调时设置 `VITE_API_MODE=http`，并通过 Vite proxy / `VITE_API_BASE_URL` 连接 CPA-Agent 后端。
 
 ### 🎯 我们的愿景
 

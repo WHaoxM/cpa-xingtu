@@ -30,7 +30,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
+      - name: Build (mock / offline demo)
+        env:
+          # 静态 Pages 不接后端；强制 fixture 模式，避免默认 http 打空接口
+          VITE_API_MODE: mock
+          VITE_APP_TITLE: 职导星图
         run: npm run build-only
 
       - name: Upload artifact

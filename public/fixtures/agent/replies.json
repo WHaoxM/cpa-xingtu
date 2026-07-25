@@ -1,0 +1,101 @@
+{
+  "success": true,
+  "data": {
+    "default": {
+      "reply": "你好，我是职导星图演示助手（当前为 Mock 模式，不连接后端）。\n\n你可以问我：\n- **岗位匹配**：「帮我看看前端岗位匹配度」\n- **能力画像**：「我的能力短板在哪」\n- **学习路径**：「下周该学什么」\n- **报告**：「职业生涯报告讲了什么」\n\n演示账号：`student001` / `123456`",
+      "tool_calls": [
+        {
+          "tool_name": "demo_router",
+          "parameters": { "mode": "mock" },
+          "summary": "已进入演示路由，未调用真实 LLM",
+          "status": "done"
+        }
+      ],
+      "thinking_steps": [
+        "识别为演示模式提问",
+        "从本地 fixture 选择场景回复"
+      ],
+      "session_id": "demo_session_001",
+      "elapsed_seconds": 0.6,
+      "engine": "demo",
+      "active_subagent": "demo_guide",
+      "interaction_mode": "ask",
+      "artifacts": []
+    },
+    "scenarios": [
+      {
+        "keywords": ["匹配", "岗位", "简历", "JD", "投递"],
+        "reply": "根据演示画像（钟同学 · 前端方向），当前与「前端开发工程师」综合匹配约 **78%**。\n\n**优势**：Vue 3 / TypeScript / 组件化\n**缺口**：算法与工程化深度、大型项目协作经验\n\n建议下一步：打开「职途导航」上传简历，或在「心仪岗位」查看已收藏 JD。",
+        "tool_calls": [
+          {
+            "tool_name": "match_explain",
+            "parameters": { "role": "前端开发工程师" },
+            "summary": "演示匹配解释已生成",
+            "status": "done"
+          }
+        ],
+        "artifacts": [
+          {
+            "artifact_id": "art_match_001",
+            "kind": "match_result",
+            "title": "前端岗位匹配摘要",
+            "status": "completed"
+          }
+        ]
+      },
+      {
+        "keywords": ["能力", "画像", "短板", "雷达", "图谱"],
+        "reply": "演示能力画像显示六维中 **工程化** 与 **算法基础** 相对偏低。\n\n可前往：\n1. 「个人能力画像」查看雷达图\n2. 「职业能力图谱」定位前端技能树缺口\n3. 「技能提升」继续 Vue 工程化课程",
+        "tool_calls": [
+          {
+            "tool_name": "ability_graph_lookup",
+            "parameters": { "role": "frontend" },
+            "summary": "已加载前端能力图谱演示数据",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "keywords": ["学习", "课程", "路径", "下周", "计划"],
+        "reply": "本周演示学习计划：\n1. 完成 **Vue 3 入门** 剩余章节测验\n2. 开始 **前端工程化**（Vite / ESLint / CI）\n3. 用「AI 助手」针对薄弱章节提问\n\n进度数据来自 `learning/progress.list.json`，不会写回服务器。",
+        "tool_calls": [
+          {
+            "tool_name": "learning_plan",
+            "parameters": { "horizon": "7d" },
+            "summary": "已生成 7 日演示学习计划",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "keywords": ["报告", "书架", "职业生涯", "成长"],
+        "reply": "你有两份演示报告可在「我的报告」书架打开：\n- **职业生涯发展报告**（report_001）\n- **个人能力画像（前端进阶）**（report_portrait_001）\n\n内容为静态 fixture，刷新页面不会丢失本地 Pinia 缓存。",
+        "tool_calls": [
+          {
+            "tool_name": "report_list",
+            "parameters": { "student_id": "student_001" },
+            "summary": "已列出演示报告",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "keywords": ["薪资", "城市", "市场", "趋势"],
+        "reply": "演示市场洞察（前端）：一线城市中位约 **18K–28K**，需求集中在北京 / 上海 / 杭州 / 深圳。\n\n详细气泡图见「职业分析」页；数据来自 `career/landscape.json` 与本地 mock 洞察。",
+        "tool_calls": [
+          {
+            "tool_name": "career_insights",
+            "parameters": { "domain": "前端开发" },
+            "summary": "已加载演示市场洞察",
+            "status": "done"
+          }
+        ]
+      },
+      {
+        "keywords": ["你好", "hello", "嗨", "在吗"],
+        "reply": "在的！我是职导星图演示助手。当前站点运行在 **Mock 模式**，所有回答来自本地演示数据，不会调用后端或消耗 API Key。\n\n直接问匹配、能力、学习或报告即可。",
+        "tool_calls": []
+      }
+    ]
+  }
+}

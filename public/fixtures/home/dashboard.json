@@ -2,24 +2,45 @@
   "success": true,
   "data": {
     "student_id": "student_001",
+    "student_name": "钟同学",
+    "headline": "前端进阶 · 演示档案",
+    "stats": {
+      "saved_jobs": 3,
+      "target_roles": 2,
+      "reports": 2,
+      "course_progress_avg": 0.72
+    },
     "quick_links": [
+      { "title": "职途导航", "route": "student-career-navigation" },
+      { "title": "职业分析", "route": "student-career-analysis" },
+      { "title": "个人画像", "route": "student-career-portrait" },
+      { "title": "心仪岗位", "route": "student-favorites" },
+      { "title": "AI 助手", "route": "student-ai-assistant" },
+      { "title": "我的报告", "route": "student-my-reports" }
+    ],
+    "recent_activity": [
       {
-        "title": "职途导航",
-        "route": "student-career-navigation"
+        "id": "act_001",
+        "title": "生成职业生涯发展报告",
+        "at": "2026-07-14T11:33:58Z",
+        "route": "student-my-reports"
       },
       {
-        "title": "职业分析",
-        "route": "student-career-analysis"
-      },
-      {
-        "title": "个人画像",
-        "route": "student-career-portrait"
-      },
-      {
-        "title": "心仪岗位",
+        "id": "act_002",
+        "title": "收藏岗位：前端开发工程师 @ 字节跳动",
+        "at": "2024-02-10T00:00:00Z",
         "route": "student-favorites"
+      },
+      {
+        "id": "act_003",
+        "title": "完成课程：Vue 3 入门",
+        "at": "2026-07-17T14:12:00Z",
+        "route": "student-learning"
       }
     ],
-    "recent_activity": []
+    "tips": [
+      "当前为 Mock 演示：所有数据来自 public/fixtures，不请求后端。",
+      "本地联调请设置 VITE_API_MODE=http 并启动 CPA-Agent 后端。"
+    ]
   }
 }

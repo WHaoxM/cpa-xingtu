@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "data": {
+    "course_id": "course_004",
+    "category": "数据与算法",
+    "description": "面向前端面试的数据结构与算法精简课",
+    "title": "算法基础精简",
+    "level": "进阶",
+    "duration_hours": 14,
+    "chapters": [
+      { "chapter_id": "ch1", "title": "复杂度与常见结构", "duration_min": 40 },
+      { "chapter_id": "ch2", "title": "数组与哈希", "duration_min": 45 },
+      { "chapter_id": "ch3", "title": "树与递归", "duration_min": 50 }
+    ],
+    "tags": ["算法", "面试"]
+  }
+}

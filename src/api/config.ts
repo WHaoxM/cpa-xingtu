@@ -1,20 +1,33 @@
 export type ApiMode = 'mock' | 'http'
 
+/**
+ * API 模式：
+ * - `mock`：只读 `public/fixtures` + 本地 stub，不请求后端
+ * - `http`：走真实 `/api`（开发联调）
+ *
+ * 解析顺序：`VITE_API_MODE` → 生产默认 mock → 开发默认 http
+ */
 export function getApiMode(): ApiMode {
-  // 开发默认 http（见 .env.development）；生产构建未设时仍可 mock（Pages）
-  const raw = (import.meta.env.VITE_API_MODE ?? 'http').toLowerCase()
-  return raw === 'mock' ? 'mock' : 'http'
+  const raw = String(import.meta.env.VITE_API_MODE ?? '').trim().toLowerCase()
+  if (raw === 'mock') return 'mock'
+  if (raw === 'http') return 'http'
+  // Pages / 静态产物未显式配置时，默认 mock，避免空白页去打不存在的后端
+  return import.meta.env.PROD ? 'mock' : 'http'
+}
+
+/** 是否处于纯演示 / fixture 模式（不走后端接口） */
+export function isMockMode(): boolean {
+  return getApiMode() === 'mock'
 }
 
 /**
  * Backend origin without trailing slash.
- * - Empty / unset in http mode → same-origin relative `/api/...`（经 Vite proxy，端口由 VITE_API_PROXY_TARGET 决定）
- * - Absolute URL → 直连该 origin（可任意 host:port）
+ * - Empty / unset in http mode → same-origin relative `/api/...`（经 Vite proxy）
+ * - Absolute URL → 直连该 origin
  */
 export function getApiBaseUrl(): string {
   const raw = import.meta.env.VITE_API_BASE_URL
   if (raw === undefined || raw === null) {
-    // http 默认走代理；mock 不使用此值
     return getApiMode() === 'http' ? '' : 'http://127.0.0.1:5001'
   }
   const trimmed = String(raw).trim()

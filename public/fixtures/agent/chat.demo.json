@@ -1,17 +1,20 @@
 {
   "success": true,
   "data": {
-    "reply": "演示模式已接收你的问题。当前可展示职业探索、能力画像、人岗匹配和学习路径规划链路；接入 LLM_API_KEY 后可切换到 langgraph 模式。\n\n你可以尝试：\n- 上传一份简历或 TXT 文档\n- 用麦克风语音输入\n- 提问岗位技能要求（http 模式会触发真实工具）",
+    "reply": "你好，我是职导星图演示助手（当前为 Mock 模式，不连接后端）。可询问岗位匹配、能力画像、学习路径或报告。",
     "tool_calls": [
       {
-        "tool_name": "kb_lookup",
-        "parameters": { "domain": "career" },
-        "result_preview": "已检索演示知识库相关条目"
+        "tool_name": "demo_router",
+        "parameters": { "mode": "mock" },
+        "summary": "已进入演示路由",
+        "status": "done"
       }
     ],
+    "thinking_steps": ["识别演示模式", "返回默认引导"],
     "session_id": "demo_session_001",
     "elapsed_seconds": 0.8,
     "engine": "demo",
-    "active_subagent": "demo_subagent"
+    "active_subagent": "demo_guide",
+    "interaction_mode": "ask"
   }
 }

@@ -8,7 +8,7 @@
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { AIMessage } from '@/types'
+import type { AIMessage, MessagePart } from '@/types'
 import { getApiMode } from '@/api/config'
 import {
   archiveSession,
@@ -19,6 +19,8 @@ import {
   getSessionHistory,
   listSessions,
   setAgentSessionId,
+  mapAgentToolCalls,
+  type AgentHistoryMessage,
   type AgentSessionListItem,
 } from '@/api/agent'
 import { useUserStore } from '@/stores/user'
@@ -43,18 +45,36 @@ function titleFromText(text: string, fallback = '新对话'): string {
   return t.length > 28 ? `${t.slice(0, 28)}…` : t
 }
 
-function mapHistoryToMessages(rows: { role?: string; content?: string; timestamp?: string }[]): AIMessage[] {
+function normalizeHistoryParts(row: AgentHistoryMessage): MessagePart[] | undefined {
+  const parts = row.parts || row.metadata?.parts_v1
+  if (Array.isArray(parts) && parts.length) return parts
+  if (row.content) return [{ type: 'text', text: String(row.content) }]
+  return undefined
+}
+
+function mapHistoryToMessages(rows: AgentHistoryMessage[]): AIMessage[] {
   return rows
     .filter(r => r.role === 'user' || r.role === 'assistant')
-    .map((r, i) => ({
-      id: `hist_${i}_${String(r.timestamp || i)}`,
-      role: r.role as 'user' | 'assistant',
-      content: String(r.content || ''),
-      timestamp: r.timestamp
-        ? String(r.timestamp).replace('T', ' ').substring(0, 16)
-        : nowStamp(),
-      status: 'done' as const,
-    }))
+    .map((r, i) => {
+      const timestamp = r.timestamp || r.created_at
+      const toolCalls = mapAgentToolCalls(r.tool_calls || r.metadata?.tool_calls)
+      const upgradeHint = r.metadata?.upgrade_hint
+      return {
+        id: r.id || r.message_id || `hist_${i}_${String(timestamp || i)}`,
+        role: r.role as 'user' | 'assistant',
+        content: String(r.content || ''),
+        timestamp: timestamp
+          ? String(timestamp).replace('T', ' ').substring(0, 16)
+          : nowStamp(),
+        status: 'done' as const,
+        toolCalls: toolCalls.length ? toolCalls : undefined,
+        parts: normalizeHistoryParts(r),
+        artifacts: r.artifacts || r.metadata?.artifacts,
+        turnId: r.turn_id || r.metadata?.turn_id,
+        interactionMode: r.interaction_mode || r.metadata?.interaction_mode,
+        upgradeHint,
+      }
+    })
 }
 
 function resolveUserId(): string {

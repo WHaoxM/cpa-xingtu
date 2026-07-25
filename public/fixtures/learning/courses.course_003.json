@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "data": {
+    "course_id": "course_003",
+    "category": "前端开发",
+    "description": "Vite、ESLint、CI 与组件库工程实践",
+    "title": "前端工程化",
+    "level": "进阶",
+    "duration_hours": 8,
+    "chapters": [
+      { "chapter_id": "ch1", "title": "Vite 配置进阶", "duration_min": 30 },
+      { "chapter_id": "ch2", "title": "Lint / Format 规范", "duration_min": 25 },
+      { "chapter_id": "ch3", "title": "CI 流水线", "duration_min": 35 }
+    ],
+    "tags": ["Vite", "工程化", "CI"]
+  }
+}

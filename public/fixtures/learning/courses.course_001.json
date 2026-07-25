@@ -3,7 +3,17 @@
   "data": {
     "course_id": "course_001",
     "category": "前端开发",
-    "description": "从零开始学习 Vue 3，掌握现代前端开发",
-    "title": "Vue 3 入门"
+    "description": "从零开始学习 Vue 3，掌握现代前端开发：组件、组合式 API、路由与状态管理。",
+    "title": "Vue 3 入门",
+    "level": "入门",
+    "duration_hours": 12,
+    "chapters": [
+      { "chapter_id": "ch1", "title": "创建项目与脚手架", "duration_min": 30 },
+      { "chapter_id": "ch2", "title": "模板与响应式", "duration_min": 45 },
+      { "chapter_id": "ch3", "title": "组件与 props", "duration_min": 40 },
+      { "chapter_id": "ch4", "title": "Composition API", "duration_min": 50 },
+      { "chapter_id": "ch5", "title": "Vue Router 入门", "duration_min": 35 }
+    ],
+    "tags": ["Vue", "前端", "TypeScript"]
   }
 }

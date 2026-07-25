@@ -5,10 +5,28 @@
       "id": 1,
       "user_id": "student_001",
       "course_id": "course_001",
-      "chapter_id": "1",
+      "chapter_id": "ch5",
       "progress": 100.0,
       "completed": 1,
       "last_position": 900
+    },
+    {
+      "id": 2,
+      "user_id": "student_001",
+      "course_id": "course_003",
+      "chapter_id": "ch1",
+      "progress": 35.0,
+      "completed": 0,
+      "last_position": 120
+    },
+    {
+      "id": 3,
+      "user_id": "student_001",
+      "course_id": "course_002",
+      "chapter_id": "ch1",
+      "progress": 10.0,
+      "completed": 0,
+      "last_position": 0
     }
   ]
 }

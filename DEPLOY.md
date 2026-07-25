@@ -1,58 +1,53 @@
 # 🚀 部署指南 - GitHub Pages
 
-## ✅ 已完成的操作
+## 在线演示
 
-1. ✅ 修改 `vite.config.ts` - 添加 GitHub Pages base 路径配置
-2. ✅ 创建 `.github/workflows/deploy.yml` - GitHub Actions 自动部署配置
-3. ✅ 本地构建测试通过 - `npm run build-only` 成功
-4. ✅ 代码已推送到 GitHub: https://github.com/WHaoxM/cpa-xingtu
-
-## 📝 下一步操作
-
-### 1. 启用 GitHub Pages
-
-打开以下链接并操作：
-👉 https://github.com/WHaoxM/cpa-xingtu/settings/pages
-
-**操作步骤：**
-1. 在 Settings → Pages 页面
-2. **Source** 选择 "GitHub Actions"（不是 "Deploy from a branch"）
-3. 保存后会自动使用我们配置的 `deploy.yml` 工作流
-
-### 2. 等待部署完成
-
-GitHub Actions 会自动构建和部署，通常需要 1-3 分钟。
-
-查看部署状态：
-👉 https://github.com/WHaoxM/cpa-xingtu/actions
-
-### 3. 访问 Demo
-
-部署成功后，访问：
 🌐 **https://whaoxm.github.io/cpa-xingtu/**
 
-## 🔧 后续更新
+演示站默认 **`VITE_API_MODE=mock`**：只读 `public/fixtures/`，**不请求后端**。
 
-之后每次推送到 `main` 分支时，GitHub Actions 会自动重新部署：
+| 角色 | 用户名 | 密码 |
+|------|--------|------|
+| 学生 | `student001` | `123456` |
+| 管理员 | `admin001` | `123456` |
+
+登录页会显示「演示数据 · 无需后端」标记。
+
+## ✅ 已配置
+
+1. `vite.config.ts` — production `base: '/cpa-xingtu/'`
+2. `.env.production` — `VITE_API_MODE=mock`
+3. `.github/workflows/deploy.yml` — Build 步骤强制 `VITE_API_MODE=mock`
+4. `public/fixtures/` — 全站演示 JSON
+5. `public/404.html` — SPA 刷新兜底
+
+## 启用 GitHub Pages
+
+1. 打开 https://github.com/WHaoxM/cpa-xingtu/settings/pages
+2. **Source** 选 **GitHub Actions**
+3. 推送 `main` 后等待 Actions 完成：https://github.com/WHaoxM/cpa-xingtu/actions
+
+## 本地预览（纯 Mock）
+
 ```bash
 cd cpa-xingtu
-git add .
-git commit -m "your message"
-git push
+npm ci
+npm run dev:mock          # 开发态，mode=demo
+# 或构建后预览（与 Pages 同为 production + mock）
+npm run preview:demo
 ```
 
-## 📦 本地预览构建结果
+联调真实后端：
 
-如果想本地预览构建后的效果：
 ```bash
-cd cpa-xingtu
-npm run build-only
-npm run preview
+# .env.local
+VITE_API_MODE=http
+VITE_API_PROXY_TARGET=http://127.0.0.1:5001
+npm run dev
 ```
 
-## ⚠️ 注意事项
+## 注意事项
 
-- GitHub Pages 静态演示主要使用 mock 数据；本地开发可通过 `VITE_API_BASE_URL` 连接后端
-- 登录账号密码均为：123456
-- 如果页面刷新后出现 404，这是正常的（SPA 路由），直接访问首页即可
-- GitHub Pages 是静态托管；未配置公网后端时，本地后端 API 调用不可用，页面会保留 mock/降级展示
+- Mock 模式下写操作（收藏、进度、消息已读）不落库，刷新后恢复 fixture
+- 页面刷新若短暂 404：属 SPA 路由问题，回到首页或依赖 `404.html` 回跳
+- 详细 fixture 说明见 `public/fixtures/README.md`

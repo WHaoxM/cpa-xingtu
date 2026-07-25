@@ -2,6 +2,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Note, WrongQuestion, QuizRecord, Question, AIMessage, AIToolCall, SavedJob, TargetRole } from '@/types'
+import type { ArtifactRef, MessagePart } from '@/types'
 import {
   mockNotes,
   mockWrongQuestions,
@@ -27,6 +28,7 @@ import {
   clearAgentSessionId,
   ensureSession,
   mapAgentToolCalls,
+  publicTurnToMessageParts,
   getAgentSessionId,
 } from '@/api/agent'
 import { useUserStore } from '@/stores/user'
@@ -712,6 +714,9 @@ export const useLearningStore = defineStore(
       sessionId?: string
       interactionMode?: string
       upgradeHint?: { to: string; reason?: string }
+      parts?: MessagePart[]
+      artifacts?: ArtifactRef[]
+      turnId?: string
       fromApi: boolean
     }> {
       const local = getAIResponse(input)
@@ -769,6 +774,9 @@ export const useLearningStore = defineStore(
         sessionId: data?.session_id || getAgentSessionId() || undefined,
         interactionMode: imode,
         upgradeHint: upgradeHint || undefined,
+        parts: publicTurnToMessageParts(data),
+        artifacts: data?.artifacts || [],
+        turnId: data?.turn_id,
         fromApi: true,
       }
     }

@@ -37,6 +37,66 @@ export interface AgentUpgradeHint {
   reason?: string
 }
 
+export type ArtifactKind =
+  | 'portrait'
+  | 'match'
+  | 'career_report'
+  | 'action_plan'
+  | 'file'
+  | 'pipeline_task'
+
+export interface ArtifactAction {
+  id: 'view_portrait' | 'open_match' | 'open_report' | 'continue_plan' | 'open_file' | 'open_pipeline_task' | string
+  label: string
+}
+
+export interface ArtifactRef {
+  artifact_id: string
+  kind: ArtifactKind | string
+  status: 'pending' | 'running' | 'completed' | 'failed' | string
+  title: string
+  summary?: string
+  preview?: Record<string, unknown>
+  actions?: ArtifactAction[]
+  version?: number
+  created_at?: string
+}
+
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'progress'; status?: string; title?: string; summary?: string; progress?: Record<string, unknown> }
+  | { type: 'tool_call'; status?: string; title?: string; tool_call: AIToolCall | Record<string, unknown> }
+  | { type: 'attachment'; title?: string; attachment?: Record<string, unknown> }
+  | { type: 'artifact_ref'; artifact: ArtifactRef }
+  | { type: 'upgrade_hint'; to: InteractionMode | string; reason?: string }
+  | { type: 'notice'; level?: 'info' | 'warning' | 'error' | string; text: string }
+
+export interface TurnEvent {
+  event_id: number
+  turn_id: string
+  type: 'turn_start' | 'progress' | 'tool_start' | 'tool_done' | 'artifact_committed' | 'reply_delta' | 'turn_done' | 'error' | string
+  [key: string]: unknown
+}
+
+export interface PublicTurn {
+  turn_id?: string
+  reply: string
+  tool_calls?: unknown[]
+  thinking_steps?: string[]
+  parts?: MessagePart[]
+  artifacts?: ArtifactRef[]
+  events?: TurnEvent[]
+  session_id?: string
+  elapsed_seconds?: number
+  engine?: string
+  active_subagent?: string
+  interaction_mode?: InteractionMode | string
+  upgrade_hint?: AgentUpgradeHint
+  fork_jobs_enqueued?: string[]
+  permission_denials?: Array<Record<string, unknown>>
+  orchestration?: Record<string, unknown>
+}
+
 // AI 消息
 export interface AIMessage {
   id: string
@@ -47,6 +107,9 @@ export interface AIMessage {
   thinkingDuration?: number
   status?: 'streaming' | 'thinking' | 'done'
   toolCalls?: AIToolCall[]
+  parts?: MessagePart[]
+  artifacts?: ArtifactRef[]
+  turnId?: string
   attachments?: AIMessageAttachment[]
   interactionMode?: InteractionMode | string
   upgradeHint?: AgentUpgradeHint

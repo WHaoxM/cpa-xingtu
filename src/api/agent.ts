@@ -1,7 +1,7 @@
 import { getApiMode } from './config'
 import { mockGet, mockMutate } from './adapters/mockAdapter'
 import { httpDelete, httpGet, httpPost } from './adapters/httpAdapter'
-import type { AIToolCall } from '@/types'
+import type { AIToolCall, ArtifactRef, MessagePart, PublicTurn } from '@/types'
 
 export type InteractionMode = 'ask' | 'agent' | 'experts'
 
@@ -29,6 +29,8 @@ export type AgentToolCallRaw = {
   result_preview?: string
   summary?: string
   result?: string
+  status?: string
+  artifact_refs?: ArtifactRef[]
   elapsed_seconds?: number
 }
 
@@ -42,7 +44,7 @@ export type AgentPermissionDenial = {
   reason?: string
 }
 
-export type AgentChatData = {
+export type AgentChatData = PublicTurn & {
   reply: string
   tool_calls?: AgentToolCallRaw[] | unknown[]
   /** ReAct 等引擎返回的中间思考步骤 */
@@ -71,10 +73,26 @@ export type AgentSessionCreateData = {
 }
 
 export type AgentHistoryMessage = {
+  id?: string
+  message_id?: string
+  turn_id?: string
   role: string
   content: string
   timestamp?: string
+  created_at?: string
+  parts?: MessagePart[]
+  artifacts?: ArtifactRef[]
+  interaction_mode?: InteractionMode | string
   tool_calls?: AgentToolCallRaw[]
+  metadata?: {
+    tool_calls?: AgentToolCallRaw[]
+    parts_v1?: MessagePart[]
+    artifacts?: ArtifactRef[]
+    turn_id?: string
+    interaction_mode?: InteractionMode | string
+    upgrade_hint?: AgentUpgradeHint
+    orchestration?: Record<string, unknown>
+  }
 }
 
 export type AgentSessionListItem = {
@@ -141,9 +159,13 @@ export function mapAgentToolCalls(raw: unknown): AIToolCall[] {
     const summary = String(row.summary || row.result_preview || '已完成调用').slice(0, 160)
     const args = publicArgs(row.parameters) || stringifyArgs(row.parameters)
     const taskId = extractTaskId(row.parameters, summary)
+    const status: AIToolCall['status'] =
+      row.status === 'running' || row.status === 'error' || row.status === 'done'
+        ? row.status
+        : 'done'
     return {
       name,
-      status: 'done' as const,
+      status,
       summary,
       args,
       // Do not mirror raw DB bodies into expandable preview
@@ -152,6 +174,32 @@ export function mapAgentToolCalls(raw: unknown): AIToolCall[] {
       taskId,
     }
   })
+}
+
+export function publicTurnToMessageParts(turn: AgentChatData): MessagePart[] {
+  if (Array.isArray(turn.parts) && turn.parts.length) return turn.parts
+  const parts: MessagePart[] = []
+  const progress = turn.orchestration && typeof turn.orchestration === 'object'
+    ? (turn.orchestration as { progress?: Record<string, unknown> }).progress
+    : undefined
+  if (progress && typeof progress === 'object') {
+    parts.push({
+      type: 'progress',
+      status: 'done',
+      title: '本轮进度',
+      progress,
+    })
+  }
+  for (const tool of mapAgentToolCalls(turn.tool_calls)) {
+    parts.push({ type: 'tool_call', status: tool.status, tool_call: tool })
+  }
+  for (const artifact of turn.artifacts || []) {
+    parts.push({ type: 'artifact_ref', artifact })
+  }
+  if (turn.reply) parts.push({ type: 'text', text: turn.reply })
+  const hint = turn.upgrade_hint || (turn.orchestration as { upgrade_hint?: AgentUpgradeHint } | undefined)?.upgrade_hint
+  if (hint?.to) parts.push({ type: 'upgrade_hint', to: hint.to, reason: hint.reason })
+  return parts
 }
 
 let agentSessionId: string | null = null
@@ -168,21 +216,70 @@ export function clearAgentSessionId() {
   agentSessionId = null
 }
 
+type DemoReplyCatalog = {
+  default?: AgentChatData
+  scenarios?: Array<{
+    keywords?: string[]
+    reply?: string
+    tool_calls?: AgentToolCallRaw[]
+    thinking_steps?: string[]
+    artifacts?: ArtifactRef[]
+    active_subagent?: string
+  }>
+}
+
+async function resolveMockChat(message: string, sessionId: string | null): Promise<AgentChatData> {
+  let catalog: DemoReplyCatalog = {}
+  try {
+    const env = await mockGet<DemoReplyCatalog>('agent/replies.json')
+    catalog = (env.data ?? {}) as DemoReplyCatalog
+  } catch {
+    try {
+      const env = await mockGet<AgentChatData>('agent/chat.demo.json')
+      catalog = { default: (env.data ?? {}) as AgentChatData }
+    } catch {
+      catalog = {}
+    }
+  }
+
+  const text = String(message || '').toLowerCase()
+  const hit = (catalog.scenarios ?? []).find(s =>
+    (s.keywords ?? []).some(k => k && text.includes(String(k).toLowerCase())),
+  )
+
+  const base = (catalog.default ?? {}) as AgentChatData
+  const sid = base.session_id || sessionId || `demo_${Date.now().toString(36)}`
+  agentSessionId = sid
+
+  if (!hit) {
+    return {
+      ...base,
+      reply: base.reply || '演示模式已接收你的问题。当前为 Mock，不请求后端。',
+      session_id: sid,
+      engine: base.engine || 'demo',
+    }
+  }
+
+  return {
+    ...base,
+    reply: hit.reply || base.reply || '演示模式已接收你的问题。',
+    tool_calls: hit.tool_calls ?? base.tool_calls,
+    thinking_steps: hit.thinking_steps ?? base.thinking_steps,
+    artifacts: hit.artifacts ?? base.artifacts,
+    active_subagent: hit.active_subagent || base.active_subagent || 'demo_guide',
+    session_id: sid,
+    engine: 'demo',
+    elapsed_seconds: 0.5 + Math.random() * 0.6,
+  }
+}
+
 export async function chat(req: AgentChatRequest): Promise<AgentChatData> {
   // http 默认真引擎；仅 mock / 显式传 demo 才走演示回复
   const mode = req.mode ?? (getApiMode() === 'http' ? 'langgraph' : 'demo')
   const sessionId = req.session_id !== undefined ? req.session_id : agentSessionId
 
   if (getApiMode() === 'mock') {
-    const env = await mockGet<AgentChatData>('agent/chat.demo.json')
-    const data = (env.data ?? {}) as AgentChatData
-    const sid = data.session_id || sessionId || `demo_${Date.now().toString(36)}`
-    agentSessionId = sid
-    return {
-      ...data,
-      reply: data.reply || '演示模式已接收你的问题。',
-      session_id: sid,
-    }
+    return resolveMockChat(req.message, sessionId ?? null)
   }
 
   const env = await httpPost<AgentChatData>('/api/agent/chat', {
