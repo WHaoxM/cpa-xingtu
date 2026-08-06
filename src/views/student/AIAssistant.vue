@@ -457,6 +457,7 @@ async function sendMessage(preset?: string) {
         thinkingDuration: duration,
         status: 'streaming',
         toolCalls: tools,
+        artifacts: result.artifacts,
       })
 
       await simulateStreaming(aiMsg.id, result.content)

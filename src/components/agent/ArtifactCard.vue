@@ -44,6 +44,7 @@ function runAction(actionId: string) {
   else if (actionId === 'open_match') router.push('/app/student/career-analysis')
   else if (actionId === 'open_report') router.push('/app/student/career-report')
   else if (actionId === 'continue_plan') router.push('/app/student/learning')
+  else if (actionId === 'open_resume') router.push('/app/student/resume-builder')
   else if (actionId === 'open_pipeline_task') router.push('/app/student/ai-assistant')
 }
 </script>

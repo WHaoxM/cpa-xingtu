@@ -453,42 +453,117 @@ export const useLearningStore = defineStore(
     }
 
     function getAIResponseCategory(input: string): string {
-      const lowerInput = input.toLowerCase()
-      if (lowerInput.includes('解题') || lowerInput.includes('怎么做') || lowerInput.includes('答案')) return '解题指导'
-      if (lowerInput.includes('薄弱') || lowerInput.includes('不足') || lowerInput.includes('差距') || lowerInput.includes('补齐') || lowerInput.includes('技能') || lowerInput.includes('方向')) return '能力补齐'
-      if (lowerInput.includes('建议') || lowerInput.includes('怎么学') || lowerInput.includes('提高') || lowerInput.includes('推荐') || lowerInput.includes('项目') || lowerInput.includes('准备')) return '学习建议'
-      if (lowerInput.includes('答疑') || lowerInput.includes('问题') || lowerInput.includes('课程') || lowerInput.includes('重点') || lowerInput.includes('梳理') || lowerInput.includes('概念')) return '课程答疑'
+      const t = input.toLowerCase()
+      if (t.includes('简历')) return '简历'
+      if (t.includes('课程')) return '课程'
+      if (t.includes('差距') || t.includes('匹配')) return '匹配'
+      if (t.includes('重点学') || t.includes('建议') || t.includes('怎么学') || t.includes('提高') || t.includes('学什么')) return '建议'
+      if (t.includes('计划') || t.includes('本周')) return '计划'
+      if (t.includes('画像')) return '画像'
+      if (t.includes('自评') || t.includes('评估')) return '自评'
+      if (t.includes('职业方向') || t.includes('方向') || t.includes('做什么')) return '方向'
+      if (t.includes('模块') || t.includes('功能') || t.includes('导航')) return '导航'
       return '默认'
     }
 
+    // 工具卡 ui_view 契约：只给真实工具名 + 一句摘要，不暴露 args / task_id（见物料契约 §4）
     function mockToolCallsForCategory(category: string): AIToolCall[] {
-      if (category === '能力补齐') {
-        return [
-          { name: 'skill_gap_scan', status: 'done', summary: '已对比目标岗位与当前技能画像', args: { focus: '状态管理 / 路由权限' } },
-          { name: 'learning_path_rank', status: 'done', summary: '按性价比排序补齐动作', args: { horizon: '2-4 周' } },
-        ]
+      switch (category) {
+        case '方向':
+          return [
+            { name: 'semantic_search', status: 'done', summary: '检索与你技能匹配的职业方向' },
+            { name: 'skill_match', status: 'done', summary: '对比候选方向的技能覆盖率' },
+          ]
+        case '画像':
+          return [{ name: 'portrait_generate', status: 'done', summary: '按四维权重生成能力画像' }]
+        case '计划':
+          return [{ name: 'learning_path', status: 'done', summary: '按缺口生成分周学习计划' }]
+        case '自评':
+          return [{ name: 'skill_match', status: 'done', summary: '按后端校招要求做技能自评' }]
+        case '导航':
+          return []
+        case '匹配':
+          return [
+            { name: 'skill_match', status: 'done', summary: '计算你与目标岗位的技能覆盖率' },
+            { name: 'db_query', status: 'done', summary: '读取目标岗位的硬性门槛与需求' },
+          ]
+        case '建议':
+          return [
+            { name: 'skill_match', status: 'done', summary: '定位当前技能缺口' },
+            { name: 'llm_reason', status: 'done', summary: '生成高杠杆建议' },
+          ]
+        case '简历':
+          return [
+            { name: 'pipeline_run', status: 'done', summary: '解析简历结构与技能字段' },
+            { name: 'llm_reason', status: 'done', summary: '对照岗位要求给出改进项' },
+          ]
+        case '课程':
+          return [
+            { name: 'learning_path', status: 'done', summary: '按缺口排序学习路径' },
+            { name: 'db_query', status: 'done', summary: '读取可补缺口的课程' },
+          ]
+        default:
+          return []
       }
-      if (category === '学习建议') {
-        return [
-          { name: 'progress_read', status: 'done', summary: '读取近一周学习记录', args: { window: '7d' } },
-          { name: 'path_suggest', status: 'done', summary: '生成分周学习路径' },
-        ]
-      }
-      if (category === '课程答疑') {
-        return [
-          { name: 'kb_lookup', status: 'done', summary: '检索课程知识库相关条目', args: { domain: 'Vue 3' } },
-        ]
-      }
-      return []
     }
 
-    function getAIResponse(input: string): { content: string; thinking: string[]; category: string; toolCalls: AIToolCall[] } {
+    // 成果物卡契约（见物料契约 §5）：kind + action 必须可被 ArtifactCard 路由
+    function mockArtifactsForCategory(category: string): ArtifactRef[] {
+      switch (category) {
+        case '方向':
+          return [{
+            artifact_id: 'mock_artifact_direction', kind: 'match', status: 'completed', title: '候选职业方向',
+            summary: 'Java 后端 / 大数据 / 测试开发，按覆盖率排序',
+            actions: [{ id: 'open_match', label: '查看方向对比' }],
+          }]
+        case '画像':
+          return [{
+            artifact_id: 'mock_artifact_portrait', kind: 'portrait', status: 'completed', title: '四维能力画像',
+            summary: 'D1 76 · D2 72 · D3 58 · D4 48，决定项：项目深度',
+            actions: [{ id: 'view_portrait', label: '打开画像' }],
+          }]
+        case '计划':
+          return [{
+            artifact_id: 'mock_artifact_plan', kind: 'action_plan', status: 'completed', title: '本周学习计划',
+            summary: '第 1 周：项目深化 + 消息队列入门，周日验收',
+            actions: [{ id: 'continue_plan', label: '查看计划' }],
+          }]
+        case '匹配':
+          return [{
+            artifact_id: 'mock_artifact_match', kind: 'match', status: 'completed', title: '与 Java 后端的匹配结果',
+            summary: '匹配分 76 · 覆盖率 72% · 缺消息队列与系统设计',
+            actions: [{ id: 'open_match', label: '查看匹配' }],
+          }]
+        case '简历':
+          return [{
+            artifact_id: 'mock_artifact_resume', kind: 'file', status: 'completed', title: '简历改进清单',
+            summary: '项目描述过薄、缺技术难点，3 条可执行改进',
+            actions: [{ id: 'open_resume', label: '打开简历' }],
+          }]
+        case '课程':
+          return [{
+            artifact_id: 'mock_artifact_courses', kind: 'action_plan', status: 'completed', title: '课程学习顺序',
+            summary: 'Spring Boot 进阶 → Redis → 消息队列 → 系统设计',
+            actions: [{ id: 'continue_plan', label: '去学习' }],
+          }]
+        default:
+          return []
+      }
+    }
+
+    function getAIResponse(input: string): {
+      content: string
+      thinking: string[]
+      category: string
+      toolCalls: AIToolCall[]
+      artifacts: ArtifactRef[]
+    } {
       const category = getAIResponseCategory(input)
       const responses = mockAIResponses[category] || mockAIResponses['默认']
       const content = responses[Math.floor(Math.random() * responses.length)]
       const thinkingPool = mockThinkingTemplates[category] || mockThinkingTemplates['默认']
       const thinking = thinkingPool[Math.floor(Math.random() * thinkingPool.length)]
-      return { content, thinking, category, toolCalls: mockToolCallsForCategory(category) }
+      return { content, thinking, category, toolCalls: mockToolCallsForCategory(category), artifacts: mockArtifactsForCategory(category) }
     }
 
     function clearAIMessages(): void {
@@ -496,7 +571,7 @@ export const useLearningStore = defineStore(
         {
           id: 'ai_msg_init',
           role: 'assistant',
-          content: '你好。\n\n可以直接问我：\n- 课程重点与概念梳理\n- 解题思路与练习建议\n- 技能补齐顺序\n- 结合目标方向的下一步安排\n\n从下面任选一个话题开始，或直接输入你的问题。',
+          content: '你好，我是职导星图助手。可以帮你分析职业方向、能力画像、岗位差距，并制定学习计划。\n\n先上传一份简历，或直接问：\n- 帮我分析适合的职业方向\n- 我和目标岗位差距有多大？\n- 现阶段我应该重点学什么？',
           timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16),
         },
       ]
