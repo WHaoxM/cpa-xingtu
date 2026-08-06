@@ -53,3 +53,6 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+        with:
+          # 容忍 Pages 构建队列排队（偶发 deployment_queued 数分钟），避免过早超时取消
+          timeout: 1200000
