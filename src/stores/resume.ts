@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import type { CareerRole, CareerInsights } from '@/composables/useCareerInsights'
+import type { CareerCandidate, CareerInsights } from '@/composables/useCareerInsights'
 import type { SevenDim } from '@/types'
 
 export type ParsedSkill = {
@@ -20,7 +20,7 @@ export const useResumeStore = defineStore('resume', () => {
   const rawText = ref('')
   const fileName = ref('')
   const parsedSkills = ref<ParsedSkill[]>([])
-  const matchedCareers = ref<{ role: CareerRole; score: number }[]>([])
+  const matchedCareers = ref<CareerCandidate[]>([])
   const insights = ref<CareerInsights | null>(null)
   const isParsed = ref(false)
   const draftText = ref('')

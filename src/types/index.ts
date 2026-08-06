@@ -35,4 +35,8 @@ export type {
 export type { ReportRecord } from './report'
 
 // AI
-export type { AIMessage, AIAnalysisResult, AIToolCall, AIMessageAttachment } from './ai'
+export type {
+  AIMessage, AIAnalysisResult, AIToolCall, AIMessageAttachment,
+  ArtifactRef, MessagePart, PublicTurn, TurnEvent,
+  InteractionMode, AgentUpgradeHint, ArtifactKind, ArtifactAction,
+} from './ai'
