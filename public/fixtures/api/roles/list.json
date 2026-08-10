@@ -1,0 +1,26 @@
+{
+  "roles": [
+    {
+      "id": "hr_senior",
+      "name": "李明",
+      "title": "资深HR总监",
+      "company": "腾讯",
+      "expertise": "简历筛选与评估, 面试技巧指导, 职业发展规划"
+    },
+    {
+      "id": "agent_engineer",
+      "name": "张伟",
+      "title": "高级Agent研发工程师",
+      "company": "腾讯",
+      "expertise": "LLM应用开发, Agent架构设计, RAG系统实现"
+    },
+    {
+      "id": "career_coach",
+      "name": "王芳",
+      "title": "资深职业规划师",
+      "company": "智联招聘",
+      "expertise": "职业兴趣测评, 职业路径规划, 转型策略指导"
+    }
+  ],
+  "total": 3
+}

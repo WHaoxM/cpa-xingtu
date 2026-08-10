@@ -37,6 +37,8 @@ export interface AgentUpgradeHint {
   reason?: string
 }
 
+// ── 成果物引用 ──────────────────────────────────────────
+
 export type ArtifactKind =
   | 'portrait'
   | 'match'
@@ -50,17 +52,79 @@ export interface ArtifactAction {
   label: string
 }
 
+/** 画像预览 */
+export interface PortraitPreview {
+  type: 'portrait_preview'
+  scores?: { d1?: number; d2?: number; d3?: number; d4?: number }
+  strengths?: string[]
+  weaknesses?: string[]
+}
+
+/** 匹配预览 */
+export interface MatchPreview {
+  type: 'match_preview'
+  total_score?: number
+  coverage?: number
+  gaps?: string[]
+  hard_pass?: boolean
+}
+
+/** 报告预览 */
+export interface ReportPreview {
+  type: 'report_preview'
+  chapters?: string[]
+  word_count?: number
+}
+
+/** 计划预览 */
+export interface PlanPreview {
+  type: 'plan_preview'
+  steps?: number
+  completed?: number
+  duration?: string
+}
+
+export type ArtifactPreview = PortraitPreview | MatchPreview | ReportPreview | PlanPreview | Record<string, unknown>
+
 export interface ArtifactRef {
   artifact_id: string
   kind: ArtifactKind | string
   status: 'pending' | 'running' | 'completed' | 'failed' | string
   title: string
   summary?: string
-  preview?: Record<string, unknown>
+  preview?: ArtifactPreview
   actions?: ArtifactAction[]
   version?: number
   created_at?: string
 }
+
+// ── 引用来源 ──────────────────────────────────────────
+
+export interface Citation {
+  source: string
+  quote: string
+  page?: number | null
+  section?: string | null
+  url?: string | null
+  relevance?: number | null
+}
+
+// ── 结构化数据卡片 ──────────────────────────────────────
+
+export type DataCardType = 'kv' | 'score' | 'bar' | 'list' | 'comparison'
+
+export interface DataCardItem {
+  label: string
+  value: string | number | boolean | (string | number)[] | null
+}
+
+export interface DataCard {
+  title: string
+  card_type: DataCardType
+  items: DataCardItem[]
+}
+
+// ── MessagePart 联合类型 ──────────────────────────────
 
 export type MessagePart =
   | { type: 'text'; text: string }
@@ -68,6 +132,8 @@ export type MessagePart =
   | { type: 'tool_call'; status?: string; title?: string; tool_call: AIToolCall | Record<string, unknown> }
   | { type: 'attachment'; title?: string; attachment?: Record<string, unknown> }
   | { type: 'artifact_ref'; artifact: ArtifactRef }
+  | { type: 'citation'; source: string; quote: string; page?: number | null; section?: string | null; url?: string | null; relevance?: number | null }
+  | { type: 'data_card'; title: string; card_type: DataCardType; items: DataCardItem[] }
   | { type: 'upgrade_hint'; to: InteractionMode | string; reason?: string }
   | { type: 'notice'; level?: 'info' | 'warning' | 'error' | string; text: string }
 
@@ -87,6 +153,8 @@ export interface PublicTurn {
   artifacts?: ArtifactRef[]
   events?: TurnEvent[]
   session_id?: string
+  session_title?: string
+  session_summary?: string
   elapsed_seconds?: number
   engine?: string
   active_subagent?: string
@@ -113,4 +181,6 @@ export interface AIMessage {
   attachments?: AIMessageAttachment[]
   interactionMode?: InteractionMode | string
   upgradeHint?: AgentUpgradeHint
+  sessionTitle?: string
+  sessionSummary?: string
 }

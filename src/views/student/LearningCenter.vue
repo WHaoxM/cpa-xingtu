@@ -65,7 +65,7 @@ const ROLE_LINE_MAP: Record<string, { lineIds: string[]; stacks?: string[] }> = 
   'Go 后端工程师':     { lineIds: ['backend', 'general'], stacks: ['Go'] },
   'Python 后端工程师': { lineIds: ['backend', 'general'], stacks: ['Python'] },
   // 测试三细分
-  '自动化测试工程师': { lineIds: ['qa'], stacks: ['Selenium'] },
+  '测试开发工程师': { lineIds: ['qa'], stacks: ['Selenium'] },
   '质量平台工程师':   { lineIds: ['qa'], stacks: ['质量平台'] },
   '性能测试工程师':   { lineIds: ['qa'], stacks: ['性能测试'] },
   // 数据三细分
@@ -75,7 +75,7 @@ const ROLE_LINE_MAP: Record<string, { lineIds: string[]; stacks?: string[] }> = 
   // ML 三细分
   '算法工程师':         { lineIds: ['algorithm'] },
   'AI 应用工程师':      { lineIds: ['ai'], stacks: ['LLM应用'] },
-  '大模型应用工程师':   { lineIds: ['ai'], stacks: ['LLM应用', 'Agent'] },
+  '大模型工程师':   { lineIds: ['ai'], stacks: ['LLM应用', 'Agent'] },
 }
 
 /* ═══ 岗位相关课程 ID 集合（基于 skillTags ∩ keySkills 匹配） ═══ */

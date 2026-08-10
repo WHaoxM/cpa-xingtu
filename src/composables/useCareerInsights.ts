@@ -82,24 +82,24 @@ export interface BubbleDomain {
 
 export const CAREER_DOMAINS: BubbleDomain[] = [
   {
-    id: 'frontend', role: '前端开发', name: '前端开发', color: '#8B2500',
+    id: 'frontend', role: '前端开发', name: '前端开发', color: '#BE2A00',
     jobs: ['Vue 前端工程师', 'React 前端工程师', '可视化工程师'],
   },
   {
-    id: 'backend', role: '后端开发', name: '后端开发', color: '#2E7D5E',
+    id: 'backend', role: '后端开发', name: '后端开发', color: '#8B1A00',
     jobs: ['Java 后端工程师', 'Go 后端工程师', 'Python 后端工程师'],
   },
   {
-    id: 'qa', role: '测试开发', name: '测试开发', color: '#1A5C5C',
-    jobs: ['自动化测试工程师', '质量平台工程师', '性能测试工程师'],
+    id: 'qa', role: '测试开发', name: '测试质量', color: '#E87055',
+    jobs: ['测试开发工程师', '质量平台工程师', '性能测试工程师'],
   },
   {
-    id: 'data', role: '数据分析', name: '数据分析', color: '#8B6914',
-    jobs: ['商业数据分析师', '数据开发工程师', '增长分析师'],
+    id: 'data', role: '数据开发', name: '数据智能', color: '#C9A227',
+    jobs: ['数据分析师', '数据开发工程师', '增长分析师'],
   },
   {
-    id: 'ml', role: '机器学习工程师', name: '机器学习工程师', color: '#1B4E8B',
-    jobs: ['算法工程师', 'AI 应用工程师', '大模型应用工程师'],
+    id: 'ml', role: 'AI 工程', name: 'AI 工程', color: '#1B4E79',
+    jobs: ['算法工程师', 'AI 应用工程师', '大模型工程师'],
   },
 ]
 
@@ -252,7 +252,7 @@ function buildSkillGraphForRole(
     ],
     后端开发: c.backendStack === 'golang' ? backendNodesGolang : backendNodesJava,
     测试开发: [
-      { id: 'test', name: '自动化测试', category: '测试', heat: 90 },
+      { id: 'test', name: '测试开发', category: '测试', heat: 90 },
       { id: 'playwright', name: 'Playwright / E2E', category: '测试', heat: 78 },
       { id: 'jest', name: '单元测试', category: '测试', heat: 76 },
       { id: 'api-test', name: '接口测试', category: '测试', heat: 74 },
@@ -430,7 +430,7 @@ export function getCareerInsightsMock(targetRole: CareerRole, cfg?: CareerInsigh
     { name: '工程化/构建' },
     { name: '接口设计' },
     { name: '数据库' },
-    { name: '自动化测试' },
+    { name: '测试开发' },
     { name: '数据处理' },
     { name: '机器学习基础' },
     { name: '前端开发' },
@@ -447,7 +447,7 @@ export function getCareerInsightsMock(targetRole: CareerRole, cfg?: CareerInsigh
     { source: 'TypeScript 类型系统', target: '后端开发', value: 9 },
     { source: '接口设计', target: '后端开发', value: 14 },
     { source: '数据库', target: '后端开发', value: 12 },
-    { source: '自动化测试', target: '测试开发', value: 16 },
+    { source: '测试开发', target: '质量平台', value: 16 },
     { source: '工程化/构建', target: '测试开发', value: 8 },
     { source: '数据处理', target: '数据分析', value: 15 },
     { source: '数据库', target: '数据分析', value: 10 },

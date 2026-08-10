@@ -2,7 +2,7 @@ import type { ParsedSkill } from '@/stores/resume'
 import { getCareerInsightsMock } from '@/composables/useCareerInsights'
 
 const RESUME_RAW_TEXT = `钟梓珉
-大模型应用/Agent开发工程师
+大模型工程师/AI Agent开发
 2006/11 13330772777
 hosheil@outlook.com
 熟练掌握 Python，具备 FastAPI/Flask 后端开发能力，能独立完成接口开发与服务搭建
@@ -63,7 +63,7 @@ export function seedResumeStore() {
 
     const seed = {
       rawText: RESUME_RAW_TEXT,
-      fileName: '钟梓珉_大模型应用Agent开发工程师.pdf',
+      fileName: '钟梓珉_大模型工程师_AIAgent开发.pdf',
       parsedSkills: PARSED_SKILLS,
       matchedCareers: insights.candidates,
       insights,

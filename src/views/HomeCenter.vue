@@ -226,7 +226,8 @@ const todayDisplay = computed(() => {
 
       <!-- 左侧边距：竖排装饰文字 -->
       <aside class="hc-margin-left" aria-hidden="true">
-        <span class="hc-margin-left__text">Career Development</span>
+        <span class="hc-margin-left__seal" />
+        <span class="hc-margin-left__text">职导星图 · 职业档案</span>
       </aside>
 
       <!-- 中央内容 -->
@@ -237,18 +238,31 @@ const todayDisplay = computed(() => {
       <!-- A · Hero — Takram serif style -->
       <section class="hc-hero reveal">
         <div class="hc-hero__label">Career Development Platform</div>
-        <div class="hc-hero__left">
-          <h1 class="hc-hero__greeting">{{ greeting }}，<strong>{{ userStore.currentUser?.name ?? '钟同学' }}</strong></h1>
-          <div class="hc-hero__hairline" />
-          <p class="hc-hero__tagline">个性化职业发展路径，从探索到成长的完整闭环。</p>
-          <div class="hc-hero__date">{{ todayDisplay }}</div>
-          <div class="hc-hero__tags">
-            <span v-if="effectiveRole" class="hc-tag hc-tag--role">目标：{{ effectiveRole }}</span>
-            <button v-else class="hc-tag hc-tag--empty" type="button" @click="nav('/app/student/career-analysis')">
-              <Icon icon="lucide:plus" :width="12" /> 设置目标岗位
-            </button>
-            <span class="hc-tag hc-tag--step">第 {{ Math.min(currentPhaseIndex + 1, 4) }} 步 / 共 4 步</span>
+        <div class="hc-hero__row">
+          <div class="hc-hero__left">
+            <h1 class="hc-hero__greeting">{{ greeting }}，<strong>{{ userStore.currentUser?.name ?? '钟同学' }}</strong></h1>
+            <div class="hc-hero__hairline" />
+            <p class="hc-hero__tagline">个性化职业发展路径，从探索到成长的完整闭环。</p>
+            <div class="hc-hero__date">{{ todayDisplay }}</div>
+            <div class="hc-hero__tags">
+              <span v-if="effectiveRole" class="hc-tag hc-tag--role">目标：{{ effectiveRole }}</span>
+              <button v-else class="hc-tag hc-tag--empty" type="button" @click="nav('/app/student/career-analysis')">
+                <Icon icon="lucide:plus" :width="12" /> 设置目标岗位
+              </button>
+            </div>
           </div>
+          <aside class="hc-hero-dash hc-card">
+            <div class="hc-hero-dash__label">决策速览</div>
+            <div class="hc-hero-dash__stat">
+              <span class="hc-hero-dash__num">{{ reportStore.portraitRecords.length + reportStore.careerRecords.length }}</span>
+              <span class="hc-hero-dash__key">已沉淀报告</span>
+            </div>
+            <div class="hc-hero-dash__row">
+              <span class="hc-hero-dash__row-key">进行中课程</span>
+              <span class="hc-hero-dash__row-val">{{ inProgressCourseCount }} 门</span>
+            </div>
+            <button class="hc-hero-dash__cta" type="button" @click="nav('/app/student/career-navigation')">查看能力差距 →</button>
+          </aside>
         </div>
       </section>
 
@@ -265,18 +279,18 @@ const todayDisplay = computed(() => {
       </section>
 
       <!-- C · 学习概览 -->
-      <section class="hc-overview reveal">
+      <section class="hc-overview hc-card reveal">
         <div class="hc-overview__header">
           <span class="hc-overview__label">学习概览</span>
         </div>
         <template v-if="hasAnyLearningData">
           <div class="hc-overview__grid">
             <div class="hc-overview__stat">
-              <span class="hc-overview__num">{{ overviewStats.learnedCourses }}</span>
+              <span class="hc-overview__num" :class="{ 'is-zero': !overviewStats.learnedCourses }">{{ overviewStats.learnedCourses }}</span>
               <span class="hc-overview__key">学习课程数</span>
             </div>
             <div class="hc-overview__stat">
-              <span class="hc-overview__num">{{ overviewStats.streakDays }}</span>
+              <span class="hc-overview__num" :class="{ 'is-zero': !overviewStats.streakDays }">{{ overviewStats.streakDays }}</span>
               <span class="hc-overview__key">连续学习天数</span>
             </div>
           </div>
@@ -289,7 +303,7 @@ const todayDisplay = computed(() => {
 
       <!-- D · 职业规划路径（纯进度可视化） -->
       <div class="hc-section-label reveal"><span>职业规划路径</span><span class="hc-section-label__line" /></div>
-      <section class="hc-pipeline reveal">
+      <section class="hc-pipeline hc-card reveal">
         <div class="hc-pipeline__track">
           <div
             v-for="(phase, i) in phasesList"
@@ -350,10 +364,10 @@ const todayDisplay = computed(() => {
 
       <!-- 右侧面板（学生信息卡） -->
       <aside class="hc-right-panel" v-if="isStudent">
-        <div class="hc-bio-card">
+        <div class="hc-bio-card hc-card">
           <div class="hc-bio-card__avatar">
             <div class="hc-bio-card__avatar-inner">
-              <Icon icon="lucide:user" :width="36" />
+              <span class="hc-bio-card__initial">{{ (userStore.currentUser?.name ?? '同学').charAt(0) }}</span>
             </div>
             <div class="hc-bio-card__avatar-ring" />
           </div>
@@ -365,6 +379,15 @@ const todayDisplay = computed(() => {
               当前处于职涯规划第 <strong>{{ Math.min(currentPhaseIndex + 1, 4) }}</strong> 阶段，
               {{ currentPhaseIndex >= 4 ? '已完成全部核心步骤' : '继续推进下一阶段任务' }}。
             </div>
+          </div>
+        </div>
+        <div class="hc-quick-card">
+          <div class="hc-quick-card__label">快捷入口</div>
+          <div class="hc-quick-card__grid">
+            <button type="button" @click="nav('/app/student/ai-assistant')">AI 助手</button>
+            <button type="button" @click="nav('/app/student/learning')">课程学习</button>
+            <button type="button" @click="nav('/app/exams')">技能自评</button>
+            <button type="button" @click="nav('/app/student/my-reports')">我的报告</button>
           </div>
         </div>
         <div class="hc-right-year" aria-hidden="true">{{ new Date().getFullYear() }}</div>
@@ -381,10 +404,10 @@ const todayDisplay = computed(() => {
 /* ══ 页面根 — Takram Academy Style（参考 homepage-takram.html showcase） ══ */
 .hc {
   --hc-bg: #F5F0EB;
-  --hc-ink: #3D3D3A;
-  --hc-muted: #8A8A84;
+  --hc-ink: #1F1F1B;
+  --hc-muted: #6B6B6B;
   --hc-weak: #B8B2A6;
-  --hc-line: #C8C2B6;
+  --hc-line: #E0DCD6;
   --hc-accent: #BE2A00;
   --hc-accent-gold: #C9A227;
   --hc-green: #6B8F71;
@@ -398,15 +421,6 @@ const todayDisplay = computed(() => {
   height: 100%; overflow-y: auto; overflow-x: hidden;
   min-height: 100vh; position: relative;
   scrollbar-width: thin; scrollbar-color: rgba(0,0,0,0.08) transparent;
-}
-
-/* PAPER TEXTURE — repeating-linear-gradient（与 Takram showcase 一致） */
-.hc::before {
-  content: ''; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-  background:
-    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.025) 2px, rgba(0,0,0,0.025) 4px),
-    repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(0,0,0,0.018) 2px, rgba(0,0,0,0.018) 4px);
-  pointer-events: none; z-index: 0;
 }
 
 /* ══ 分区标签 ══ */
@@ -423,9 +437,38 @@ const todayDisplay = computed(() => {
 }
 .hc-hero__label {
   font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-  color: var(--hc-green); font-weight: 500; opacity: 0.75; margin-bottom: 28px;
+  color: var(--hc-accent); font-weight: 500; opacity: 0.85; margin-bottom: 28px;
 }
-.hc-hero__left { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; }
+.hc-hero__left { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 8px; max-width: 560px; min-width: 0; }
+
+/* Hero 双栏：问候 + 决策速览 */
+.hc-hero__row {
+  display: flex; justify-content: space-between; align-items: flex-end; gap: 48px;
+}
+.hc-hero-dash {
+  flex: 0 0 260px; padding: 20px 22px;
+  border-radius: var(--radius-card);
+}
+.hc-hero-dash__label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--hc-muted); margin-bottom: 14px; }
+.hc-hero-dash__stat { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
+.hc-hero-dash__num {
+  font-family: var(--hc-serif); font-size: 44px; font-weight: 600; line-height: 1;
+  color: var(--hc-ink); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+}
+.hc-hero-dash__key { font-size: 11px; color: var(--hc-weak); }
+.hc-hero-dash__row {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding-top: 12px; border-top: 1px solid rgba(0,0,0,0.05); margin-bottom: 14px;
+}
+.hc-hero-dash__row-key { font-size: 11px; color: var(--hc-weak); }
+.hc-hero-dash__row-val { font-size: 13px; font-weight: 600; color: var(--hc-ink); font-variant-numeric: tabular-nums; }
+.hc-hero-dash__cta {
+  width: 100%; height: 34px; border-radius: 999px;
+  border: 1px solid rgba(190,42,0,0.22); background: transparent;
+  color: var(--hc-accent); font-family: inherit; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: background 0.2s, color 0.2s;
+}
+.hc-hero-dash__cta:hover { background: var(--hc-accent); color: #fff; }
 .hc-hero__greeting {
   font-family: var(--hc-serif); font-weight: 300; font-size: 40px;
   line-height: 1.25; letter-spacing: -0.01em; color: var(--hc-ink); margin: 0;
@@ -459,10 +502,6 @@ const todayDisplay = computed(() => {
 .hc-tag--role {
   background: rgba(190,42,0,0.05); color: #8B1A00;
   border-color: rgba(190,42,0,0.12);
-}
-.hc-tag--step {
-  background: rgba(107,143,113,0.05); color: var(--hc-green);
-  border-color: rgba(107,143,113,0.12);
 }
 .hc-tag--empty {
   border-style: dashed; cursor: pointer; color: var(--hc-weak); background: transparent;
@@ -509,9 +548,10 @@ const todayDisplay = computed(() => {
 }
 
 /* ══ C · 学习概览（Takram minimal） ══ */
-.hc-overview {
-  background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.04);
-  border-radius: 12px; padding: 18px 24px;
+.hc-card {
+  background: #FFFFFF;
+  border: none;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.04), 0 6px 16px rgba(0,0,0,0.03), 0 16px 40px rgba(0,0,0,0.02);
 }
 .hc-overview__header { margin-bottom: 14px; }
 .hc-overview__label {
@@ -527,16 +567,18 @@ const todayDisplay = computed(() => {
 }
 .hc-overview__stat:last-child { border-right: none; }
 .hc-overview__num {
-  font-family: var(--hc-serif); font-weight: 600; font-size: 28px;
+  font-family: var(--hc-serif); font-weight: 600;
+  font-size: clamp(40px, 7vw, 64px);
   line-height: 1; color: var(--hc-ink); font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
 }
+.hc-overview__num.is-zero { color: var(--hc-weak); }  /* 0 = 尚未发生，不占舞台 */
 .hc-overview__key { font-size: 11px; color: var(--hc-weak); letter-spacing: 0.04em; text-align: center; }
 .hc-overview__empty {
   display: flex; align-items: center; gap: 12px;
   color: var(--hc-weak); font-size: 13px; font-weight: 300; padding: 8px 0;
 }
 .hc-overview__start-btn {
-  margin-left: auto; height: 30px; padding: 0 16px; border-radius: 4px;
+  margin-left: auto; height: 30px; padding: 0 16px; border-radius: 999px;
   border: 1px solid rgba(190,42,0,0.2); background: transparent;
   color: var(--hc-accent); font-family: inherit; font-size: 12px; font-weight: 500;
   cursor: pointer; transition: background 0.2s, color 0.2s;
@@ -545,8 +587,7 @@ const todayDisplay = computed(() => {
 
 /* ══ D · 职业规划链路（Takram minimal） ══ */
 .hc-pipeline {
-  background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.04);
-  border-radius: 12px; padding: 32px 24px;
+  border-radius: var(--radius-card); padding: 32px 24px;
 }
 .hc-pipeline__track {
   display: grid; grid-template-columns: repeat(4, 1fr);
@@ -555,7 +596,7 @@ const todayDisplay = computed(() => {
 .hc-pipeline__track::before {
   content: ''; position: absolute;
   top: 20px; left: 12.5%; right: 12.5%; height: 1px;
-  background: linear-gradient(90deg, rgba(190,42,0,0.18), rgba(201,162,39,0.18) 50%, rgba(0,0,0,0.06));
+  background: rgba(0,0,0,0.08);
   opacity: 0.5; z-index: 0;
 }
 .hc-step {
@@ -637,7 +678,7 @@ const todayDisplay = computed(() => {
 /* ══ 按钮（Takram minimal — 无 gradient） ══ */
 .hc-btn {
   display: inline-flex; align-items: center; justify-content: center;
-  height: 38px; padding: 0 20px; border-radius: 4px;
+  height: 38px; padding: 0 20px; border-radius: 999px;
   border: 1px solid rgba(0,0,0,0.08); background: rgba(255,255,255,0.8);
   color: var(--hc-ink); font-family: inherit; font-size: 13px; font-weight: 500;
   cursor: pointer; white-space: nowrap;
@@ -655,8 +696,7 @@ const todayDisplay = computed(() => {
 
 /* ══ 管理员（Takram minimal） ══ */
 .hc-admin {
-  background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.04);
-  border-radius: 12px; padding: 24px 28px;
+  border-radius: var(--radius-card); padding: 24px 28px;
 }
 .hc-admin__title { font-family: var(--hc-serif); font-size: 18px; font-weight: 600; color: var(--hc-ink); margin: 0 0 16px; letter-spacing: -0.01em; }
 .hc-admin__actions { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -689,6 +729,8 @@ const todayDisplay = computed(() => {
 @media (max-width: 768px) {
   .hc { padding: 16px; gap: 14px; }
   .hc-hero { flex-direction: column; align-items: stretch; padding: 20px; }
+  .hc-hero__row { flex-direction: column; align-items: stretch; }
+  .hc-hero-dash { flex: none; width: 100%; }
   .hc-hero__stats { justify-content: center; }
   .hc-guide { flex-direction: column; align-items: stretch; gap: 16px; }
   .hc-guide__cta { width: 100%; justify-content: center; }
@@ -720,19 +762,20 @@ const todayDisplay = computed(() => {
 .hc-layout {
   position: relative; z-index: 2;
   display: grid;
-  grid-template-columns: 80px 1fr 280px 60px;
+  grid-template-columns: 64px 1fr 300px 32px;
   gap: 0; min-height: 100vh;
   padding: 48px 0 64px;
 }
 
-/* LEFT MARGIN — 竖排装饰文字 */
+/* LEFT MARGIN — 竖排档案脊 */
 .hc-margin-left {
   display: flex; flex-direction: column; align-items: center;
-  justify-content: flex-end; padding-bottom: 80px;
+  justify-content: flex-end; padding-bottom: 80px; gap: 14px;
 }
+.hc-margin-left__seal { width: 8px; height: 8px; background: var(--hc-accent); }
 .hc-margin-left__text {
   writing-mode: vertical-rl; font-size: 10px; letter-spacing: 0.18em;
-  color: var(--hc-weak); font-weight: 300; text-transform: uppercase;
+  color: var(--hc-muted); font-weight: 500; font-family: var(--hc-serif);
 }
 
 /* MAIN CONTENT */
@@ -744,12 +787,10 @@ const todayDisplay = computed(() => {
 /* RIGHT PANEL + BIO CARD */
 .hc-right-panel {
   display: flex; flex-direction: column; align-items: center;
-  justify-content: center; padding: 0 16px; gap: 40px;
+  justify-content: flex-start; padding: 8px 16px 0; gap: 24px;
 }
 .hc-bio-card {
-  background: rgba(255,255,255,0.55); border: 1px solid rgba(0,0,0,0.04);
-  border-radius: 12px; padding: 28px 24px; width: 100%;
-  backdrop-filter: blur(8px);
+  border-radius: var(--radius-card); padding: 28px 24px; width: 100%;
 }
 .hc-bio-card__avatar { position: relative; width: 100px; height: 100px; margin: 0 auto 20px; }
 .hc-bio-card__avatar-inner {
@@ -758,6 +799,10 @@ const todayDisplay = computed(() => {
   border: 1px solid rgba(200,194,182,0.4);
   display: flex; align-items: center; justify-content: center;
   color: var(--hc-weak);
+}
+.hc-bio-card__initial {
+  font-family: var(--hc-serif); font-size: 38px; font-weight: 600;
+  color: var(--hc-ink); letter-spacing: -0.02em;
 }
 .hc-bio-card__avatar-ring {
   position: absolute; top: -12px; left: -12px;
@@ -772,6 +817,19 @@ const todayDisplay = computed(() => {
 .hc-bio-card__hairline { width: 32px; height: 1px; background: var(--hc-line); margin: 16px auto; }
 .hc-bio-card__desc { font-size: 12px; line-height: 1.7; color: var(--hc-muted); font-weight: 300; text-align: center; }
 .hc-bio-card__desc strong { font-family: var(--hc-serif); font-weight: 600; color: var(--hc-accent); }
+
+/* 右栏 · 快捷入口 */
+.hc-quick-card { width: 100%; }
+.hc-quick-card__label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--hc-muted); margin-bottom: 10px; }
+.hc-quick-card__grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.hc-quick-card__grid button {
+  height: 34px; border-radius: 999px;
+  border: 1px solid rgba(0,0,0,0.06); background: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  color: var(--hc-ink); font-family: inherit; font-size: 12px; font-weight: 500;
+  cursor: pointer; transition: border-color 0.2s, color 0.2s, box-shadow 0.2s;
+}
+.hc-quick-card__grid button:hover { border-color: rgba(190,42,0,0.3); color: var(--hc-accent); box-shadow: 0 2px 6px rgba(0,0,0,0.06); }
 
 .hc-right-year {
   writing-mode: vertical-rl; font-size: 10px; letter-spacing: 0.18em;
@@ -788,7 +846,7 @@ const todayDisplay = computed(() => {
 
 /* RESPONSIVE: 非对称布局断点 */
 @media (max-width: 1100px) {
-  .hc-layout { grid-template-columns: 60px 1fr 240px 40px; }
+  .hc-layout { grid-template-columns: 48px 1fr 260px 24px; }
   .hc-deco-circle { display: none; }
   .hc-right-panel { display: none; }
   .hc-margin-right { display: none; }

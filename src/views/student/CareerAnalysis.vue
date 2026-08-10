@@ -93,11 +93,11 @@ const PROVINCE_SALARY_COEFF: Record<string, number> = {
 
 // 15 岗位全国中位薪资（K/月），基于 BOSS直聘/猎聘 2025-2026 实际数据
 const JOB_BASE_SALARY: Record<string, number> = {
-  '大模型应用工程师': 32.0, '算法工程师': 28.0, 'AI 应用工程师': 22.0,
+  '大模型工程师': 32.0, '算法工程师': 28.0, 'AI 应用工程师': 22.0,
   'Go 后端工程师': 20.0, '数据开发工程师': 18.0, 'Java 后端工程师': 16.0,
   '增长分析师': 16.0, 'Python 后端工程师': 15.0, '质量平台工程师': 15.0,
   'React 前端工程师': 14.0, '可视化工程师': 14.0, '性能测试工程师': 14.0,
-  'Vue 前端工程师': 13.0, '商业数据分析师': 13.0, '自动化测试工程师': 12.0,
+  'Vue 前端工程师': 13.0, '数据分析师': 13.0, '测试开发工程师': 12.0,
 }
 // 5 个通用方向基准薪资（子岗位均值）
 const ROLE_BASE_SALARY: Record<string, number> = {
@@ -138,7 +138,7 @@ function getProvinceBox(provinceName: string, data: ProvinceItem[]): { box: numb
 
 // 15 岗位真实薪资区间（K/月）：junior=应届~2年, mid=3~5年, senior=5年以上
 const JOB_SALARY_TABLE: Record<string, { junior: number; mid: number; senior: number }> = {
-  '大模型应用工程师': { junior: 22, mid: 40, senior: 65 },
+  '大模型工程师': { junior: 22, mid: 40, senior: 65 },
   '算法工程师':       { junior: 20, mid: 35, senior: 55 },
   'AI 应用工程师':    { junior: 15, mid: 25, senior: 42 },
   'Go 后端工程师':    { junior: 12, mid: 22, senior: 38 },
@@ -152,7 +152,7 @@ const JOB_SALARY_TABLE: Record<string, { junior: number; mid: number; senior: nu
   '性能测试工程师':   { junior: 8,  mid: 14, senior: 26 },
   'Vue 前端工程师':   { junior: 7,  mid: 14, senior: 25 },
   '商业数据分析师':   { junior: 7,  mid: 14, senior: 26 },
-  '自动化测试工程师': { junior: 7,  mid: 13, senior: 24 },
+  '测试开发工程师': { junior: 7,  mid: 13, senior: 24 },
 }
 function getJobSalaryData(jobName: string) {
   const preset = JOB_SALARY_TABLE[jobName]
@@ -359,8 +359,8 @@ async function refreshCompareColumns() {
 const JOB_DEMAND: Record<string, number> = {
   'Java 后端工程师': 2034, 'Vue 前端工程师': 1597, 'React 前端工程师': 1452,
   'Python 后端工程师': 1161, '算法工程师': 1016, 'Go 后端工程师': 1016,
-  '自动化测试工程师': 1016, '数据开发工程师': 871, 'AI 应用工程师': 871,
-  '商业数据分析师': 726, '大模型应用工程师': 726, '性能测试工程师': 581,
+  '测试开发工程师': 1016, '数据开发工程师': 871, 'AI 应用工程师': 871,
+  '数据分析师': 726, '大模型工程师': 726, '性能测试工程师': 581,
   '增长分析师': 581, '可视化工程师': 435, '质量平台工程师': 435,
 }
 
@@ -963,7 +963,7 @@ const drawerPresets: Record<string, DrawerQuickPreset[]> = {
     { question: '我需要掌握哪些核心技能？', reply: 'Python 后端工程师的技能栈需要与时俱进：\n\n**必备技能（P0）：**\n- FastAPI / Django REST Framework\n- SQLAlchemy + PostgreSQL / MySQL\n- Redis 缓存与消息队列（Celery）\n- Docker + 基本部署运维\n\n**竞争力技能（P1）：**\n- LLM 应用开发（LangChain / LlamaIndex）\n- 异步编程（asyncio、aiohttp）\n- 数据管道（Apache Airflow / Prefect）\n- Kubernetes 部署与服务编排\n\n**加分技能（P2）：**\n- 模型推理服务（vLLM / TensorRT）\n- 向量数据库（Milvus / Qdrant）\n- Spark / Flink 大数据处理', thinkingSteps: ['分析 Python 后端 JD 技能趋势...', '按 AI 应用方向加权...', '生成分层技能路径...'] },
   ],
   /* ── 测试开发 ── */
-  '自动化测试工程师': [
+  '测试开发工程师': [
     { question: '这个岗位未来两年前景如何？', reply: '自动化测试工程师的角色正在从"测试执行者"向"质量工程师"转型。\n\n**利好因素：**\n1. DevOps 和持续交付要求自动化测试全面覆盖\n2. AI 测试工具（自动生成用例、智能回归）提升了测试工程师的杠杆\n3. 测试左移和质量内建理念在大厂深入推进\n\n**趋势变化：**\n- 纯手工功能测试岗位大幅减少\n- 自动化 + 平台化能力成为准入门槛\n- 测试开发（SDET）定位更接近研发工程师\n\n建议同时掌握 **UI 自动化 + API 自动化 + CI 集成** 三条线。', thinkingSteps: ['分析测试岗位角色演变趋势...', '评估 AI 测试工具的影响...', '检索 DevOps 对测试的需求变化...'] },
     { question: '薪资还有多少上涨空间？', reply: '自动化测试工程师薪资已明显高于手工测试：\n\n**各级别薪资区间（一线城市）：**\n- 初级（1-2年）：10-15K\n- 中级（3-5年）：16-26K，增长空间约 25%\n- 高级（5年+）：26-40K，测试架构师可达 45K\n\n**薪资提升杠杆：**\n1. 测试平台开发能力：溢价 20%\n2. 性能 / 安全测试专项：溢价 15%\n3. 全栈质量保障（含 CI/CD 流水线）：溢价 20%\n\n与同级别研发相比，测试薪资通常低 10-15%，但测试架构师和质量平台方向可以弥补差距。', thinkingSteps: ['获取自动化测试岗位薪资数据...', '对比测试与研发薪资差异...', '分析平台化能力的溢价...'] },
     { question: '我需要掌握哪些核心技能？', reply: '自动化测试工程师的技能栈日趋全面：\n\n**必备技能（P0）：**\n- Selenium / Playwright UI 自动化\n- API 测试框架（Pytest + Requests / REST Assured）\n- 测试用例设计方法（等价类、边界值、场景法）\n- Git + Jenkins / GitHub Actions CI 集成\n\n**竞争力技能（P1）：**\n- Appium / XCUITest 移动端自动化\n- Docker 容器化测试环境管理\n- 测试数据工厂和 Mock 服务搭建\n- JMeter / Locust 性能测试基础\n\n**加分技能（P2）：**\n- AI 辅助测试用例生成\n- 混沌工程 / 故障注入\n- Allure 测试报告与质量度量体系', thinkingSteps: ['梳理自动化测试核心技能图谱...', '按 JD 高频词排序...', '生成分层学习建议...'] },
@@ -1000,7 +1000,7 @@ const drawerPresets: Record<string, DrawerQuickPreset[]> = {
     { question: '薪资还有多少上涨空间？', reply: '算法工程师薪资在技术岗中处于顶端：\n\n**各级别薪资区间（一线城市）：**\n- 初级（1-2年）：18-28K，校招白菜价已达 20K+\n- 中级（3-5年）：30-50K，增长空间约 25%\n- 高级（5年+）：50-80K+，首席科学家级别更高\n\n**薪资差异因素：**\n1. 顶会论文 + 竞赛奖牌：校招起薪溢价 30%+\n2. 大模型方向经验：当前最热门，溢价 25%\n3. 搜推广系统实战：大厂核心岗位，薪资稳定且高\n\n算法岗的薪资上限极高，但入门门槛也最高。学历（硕/博）和科研成果是重要的筛选条件。', thinkingSteps: ['获取算法工程师薪资分布...', '分析论文和竞赛对薪资的影响...', '对比不同方向的薪资差异...'] },
     { question: '我需要掌握哪些核心技能？', reply: '算法工程师需要扎实的数学基础和工程能力：\n\n**必备技能（P0）：**\n- 机器学习理论（损失函数、优化算法、正则化）\n- PyTorch 深度学习框架\n- Python 科学计算（NumPy、Pandas、Scikit-learn）\n- 数学基础（线性代数、概率论、最优化）\n\n**竞争力技能（P1）：**\n- Transformer 架构深度理解\n- 大模型微调（LoRA、QLoRA、RLHF）\n- 模型部署（ONNX、TensorRT、vLLM）\n- 分布式训练（DeepSpeed、Megatron）\n\n**加分技能（P2）：**\n- 搜索/推荐/广告系统设计\n- 多模态模型（视觉-语言）\n- 强化学习基础', thinkingSteps: ['梳理算法工程师核心知识体系...', '按理论+工程维度分层...', '生成学习路径...'] },
   ],
-  '大模型应用工程师': [
+  '大模型工程师': [
     { question: '这个岗位未来两年前景如何？', reply: '大模型应用工程师是 2025-2026 年最炙手可热的岗位，供需严重失衡。\n\n**利好因素：**\n1. 企业级 AI 落地需求爆发，RAG/Agent 方向岗位年增长超 40%\n2. 人才供给严重不足，懂 AI 的工程化人才仅满足市场需求的 30%\n3. 从 Prompt 工程到多 Agent 协作，技术栈快速演进带来持续学习红利\n\n**方向选择：**\n- **RAG 应用方向**：企业知识库、智能客服，需求最大\n- **Agent 方向**：多智能体协作、工具调用，天花板最高\n- **模型微调方向**：LoRA/QLoRA 微调 + 部署，工程要求高\n\n建议优先深耕 **RAG + Agent** 组合，这是当前企业需求最大的方向。', thinkingSteps: ['分析大模型应用工程师岗位增长趋势...', '评估 RAG/Agent 方向的市场需求...', '检索人才供需比数据...', '生成前景分析...'] },
     { question: '薪资还有多少上涨空间？', reply: '大模型应用工程师薪资处于技术岗顶端：\n\n**各级别薪资区间（一线城市）：**\n- 初级（1-2年）：20-35K，校招白菜价已达 22K+\n- 中级（3-5年）：35-60K，增长空间约 40%\n- 高级（5年+）：60-100K+，AI 架构师年薪可达 200 万\n\n**薪资溢价因素：**\n1. RAG 系统实战经验：溢价 30%，企业最看重"能落地"\n2. Agent 框架设计能力：稀缺度极高，溢价 35%\n3. 模型微调 + 部署全链路：综合能力溢价 25%\n\n**与算法工程师的差异：**\n- 大模型应用更看重工程化能力而非论文\n- 入门门槛低于算法研究，但天花板同样很高\n- 当前市场溢价高于传统算法岗约 15%', thinkingSteps: ['获取大模型应用工程师薪资分布...', '对比算法工程师薪资差异...', '分析 RAG/Agent 经验的溢价...', '评估薪资天花板...'] },
     { question: '我需要掌握哪些核心技能？', reply: '大模型应用工程师需要 LLM + 工程化的复合能力：\n\n**必备技能（P0）：**\n- LLM API 深度使用（OpenAI / Claude / 通义千问 / DeepSeek）\n- Prompt Engineering 与结构化输出\n- RAG 管道构建（向量化 → 检索 → 重排序 → 生成）\n- Python 后端开发（FastAPI + 异步编程）\n\n**竞争力技能（P1）：**\n- LangChain / LangGraph / LlamaIndex 框架\n- 向量数据库（Milvus / Qdrant / Weaviate）\n- AI Agent 框架（AutoGen / CrewAI / Dify）\n- MCP 协议与工具调用\n\n**加分技能（P2）：**\n- LoRA/QLoRA 微调 + vLLM 部署\n- GraphRAG 与知识图谱集成\n- 多模态应用（视觉 + 语音 + LLM）\n- 模型评测与对齐（RLHF/DPO）', thinkingSteps: ['梳理大模型应用工程师技能图谱...', '按 LLM 应用全链路分层...', '生成分级学习路径...'] },

@@ -37,7 +37,19 @@ export const routes: RouteRecordRaw[] = [
         path: 'student/ai-assistant',
         name: 'student-ai-assistant',
         component: () => import('@/views/student/AIAssistant.vue'),
-        meta: { title: 'ai助手', requiresAuth: true, roles: [UserRole.STUDENT] },
+         meta: { title: 'AI 助手', requiresAuth: true, roles: [UserRole.STUDENT] },
+      },
+      {
+        path: 'student/roles',
+        name: 'student-roles',
+        component: () => import('@/views/student/RoleSelectorView.vue'),
+        meta: { title: '专家角色', requiresAuth: true, roles: [UserRole.STUDENT] },
+      },
+      {
+        path: 'student/roles/:roleId',
+        name: 'student-role-chat',
+        component: () => import('@/views/student/RoleChatView.vue'),
+        meta: { title: '专家对话', requiresAuth: true, roles: [UserRole.STUDENT], immersive: true },
       },
       {
         path: 'student/my-reports',

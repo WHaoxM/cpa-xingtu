@@ -98,8 +98,8 @@ function getChildrenForRole(role: string): Record<string, { id: string; name: st
   const ALIAS: Record<string, string> = {
     '前端开发':     'Vue 前端工程师',
     '后端开发':     'Java 后端工程师',
-    '测试开发':     '自动化测试工程师',
-    '数据分析':     '商业数据分析师',
+    '测试开发':     '测试开发工程师',
+    '数据分析':     '数据分析师',
     '机器学习工程师': '算法工程师',
   }
   const resolved = ALIAS[role] ?? role
@@ -377,7 +377,7 @@ function getChildrenForRole(role: string): Record<string, { id: string; name: st
 
     /* ──────── 测试领域 ──────── */
 
-    '自动化测试工程师': {
+    '测试开发工程师': {
       'board-pro': [
         { id: 'pro-selenium', name: 'Selenium / WebDriver', heat: 90 },
         { id: 'pro-playwright', name: 'Playwright',  heat: 86 },
@@ -507,7 +507,7 @@ function getChildrenForRole(role: string): Record<string, { id: string; name: st
 
     /* ──────── 数据领域 ──────── */
 
-    '商业数据分析师': {
+    '数据分析师': {
       'board-pro': [
         { id: 'pro-python',  name: 'Python / Pandas', heat: 88 },
         { id: 'pro-sql',     name: 'SQL',             heat: 92 },
@@ -684,7 +684,7 @@ function getChildrenForRole(role: string): Record<string, { id: string; name: st
       ],
     },
 
-    '大模型应用工程师': {
+    '大模型工程师': {
       'board-pro': [
         { id: 'pro-python',  name: 'Python',          heat: 92 },
         { id: 'pro-langchain', name: 'LangChain / LangGraph', heat: 94 },
@@ -779,8 +779,8 @@ function getCrossEdgesForRole(role: string): AbilityEdge[] {
   const ALIAS: Record<string, string> = {
     '前端开发':     'Vue 前端工程师',
     '后端开发':     'Java 后端工程师',
-    '测试开发':     '自动化测试工程师',
-    '数据分析':     '商业数据分析师',
+    '测试开发':     '测试开发工程师',
+    '数据分析':     '数据分析师',
     '机器学习工程师': '算法工程师',
   }
   const resolved = ALIAS[role] ?? role
@@ -898,7 +898,7 @@ function getCrossEdgesForRole(role: string): AbilityEdge[] {
       { source: 'pos-data',    target: 'pro-celery',  relation: 'dependency',   label: '数据流水线依赖 Celery' },
     ],
 
-    '自动化测试工程师': [
+    '测试开发工程师': [
       { source: 'pro-python',  target: 'pro-pytest',  relation: 'prerequisite', label: 'Python 是 pytest 基础' },
       { source: 'pro-python',  target: 'pro-selenium', relation: 'prerequisite', label: 'Python 驱动 Selenium' },
       { source: 'cog-theory',  target: 'pos-case',    relation: 'prerequisite', label: '测试理论支撑用例设计' },
@@ -947,7 +947,7 @@ function getCrossEdgesForRole(role: string): AbilityEdge[] {
       { source: 'pos-bottleneck', target: 'pos-trace', relation: 'dependency',  label: '瓶颈分析依赖链路追踪' },
     ],
 
-    '商业数据分析师': [
+    '数据分析师': [
       { source: 'cog-stat',    target: 'pro-stat',    relation: 'prerequisite', label: '统计学支撑统计分析' },
       { source: 'cog-prob',    target: 'pos-ab',      relation: 'prerequisite', label: '概率论是 A/B 测试基础' },
       { source: 'cog-biz',     target: 'pos-insight', relation: 'prerequisite', label: '商业思维支撑业务洞察' },
@@ -1015,7 +1015,7 @@ function getCrossEdgesForRole(role: string): AbilityEdge[] {
       { source: 'cog-pgm',     target: 'pro-rec',     relation: 'dependency',   label: '概率图模型支撑推荐' },
     ],
 
-    '大模型应用工程师': [
+    '大模型工程师': [
       { source: 'cog-nlp',     target: 'pro-llm-api',  relation: 'prerequisite', label: 'NLP 基础支撑 LLM API' },
       { source: 'cog-ir',      target: 'pro-rag',      relation: 'prerequisite', label: '信息检索是 RAG 基础' },
       { source: 'cog-transformer', target: 'pro-langchain', relation: 'prerequisite', label: 'Transformer 原理支撑 LangChain' },
@@ -1156,11 +1156,23 @@ export function getRoleIntro(role: string): RoleIntro {
   const ALIAS: Record<string, string> = {
     '前端开发':       'Vue 前端工程师',
     '后端开发':       'Java 后端工程师',
-    '测试开发':       '自动化测试工程师',
-    '数据分析':       '商业数据分析师',
+    '测试开发':     '测试开发工程师',
+    '数据分析':       '数据分析师',
     '机器学习工程师': '算法工程师',
+    // 后端目录角色（position_lexicon.yaml）→ 演示用 canonical 岗位介绍
+    '全栈开发':         'Java 后端工程师',
+    '数据分析师':       '数据分析师',
+    '数据工程师':       '数据开发工程师',
+    '数据挖掘工程师':   '数据开发工程师',
+    '大模型算法工程师': '大模型工程师',
+    'AI智能体工程师':   '大模型工程师',
+    'RAG工程师':        '大模型工程师',
+    '提示词工程师':     '大模型工程师',
+    'MLOps工程师':      '大模型工程师',
+    '具身智能工程师':   '算法工程师',
+    '机器人算法工程师': '算法工程师',
   }
-  const resolved = ALIAS[role] ?? role
+  const resolved = ALIAS[role.trim()] ?? role.trim()
 
   const map: Record<string, RoleIntro> = {
 
@@ -1338,8 +1350,8 @@ export function getRoleIntro(role: string): RoleIntro {
 
     /* ──────── 测试领域 ──────── */
 
-    '自动化测试工程师': {
-      title: '自动化测试工程师',
+    '测试开发工程师': {
+      title: '测试开发工程师',
       summary: '设计并维护自动化测试框架与用例体系，保障软件质量，推动持续集成测试落地。',
       responsibilities: [
         '搭建和维护 UI / API 自动化测试框架',
@@ -1424,8 +1436,8 @@ export function getRoleIntro(role: string): RoleIntro {
 
     /* ──────── 数据领域 ──────── */
 
-    '商业数据分析师': {
-      title: '商业数据分析师',
+    '数据分析师': {
+      title: '数据分析师',
       summary: '运用 SQL、统计分析和 BI 工具从数据中挖掘商业洞察，驱动产品和运营决策。',
       responsibilities: [
         '构建业务指标体系与数据看板',
@@ -1538,8 +1550,8 @@ export function getRoleIntro(role: string): RoleIntro {
       outlook: '算法工程师是互联网大厂核心岗位，薪资水平业内领先；深耕推荐/搜索/广告方向 3-5 年可晋升高级算法专家。',
     },
 
-    '大模型应用工程师': {
-      title: '大模型应用工程师',
+    '大模型工程师': {
+      title: '大模型工程师',
       summary: '基于 LangChain/LangGraph 和 RAG 技术构建 LLM 原生应用，推动 AI Agent 和多智能体协作在企业场景的规模化落地。',
       responsibilities: [
         '基于 LangChain / LangGraph 构建 RAG 管道与 Agent 工作流',
@@ -1563,7 +1575,7 @@ export function getRoleIntro(role: string): RoleIntro {
         { name: '杭州', demand: '高' },
         { name: '成都', demand: '中等' },
       ],
-      outlook: '大模型应用工程师是 2025-2026 最炙手可热的岗位，供需严重失衡；RAG+Agent 方向人才缺口巨大，薪资天花板极高，是程序员转型 AI 时代的最佳赛道。',
+      outlook: '大模型工程师是 2025-2026 最炙手可热的岗位，供需严重失衡；RAG+Agent 方向人才缺口巨大，薪资天花板极高，是程序员转型 AI 时代的最佳赛道。',
     },
 
     'AI 应用工程师': {
@@ -1594,7 +1606,16 @@ export function getRoleIntro(role: string): RoleIntro {
       outlook: 'AIGC 与大模型应用是 2024-2026 最热赛道；AI 应用工程师岗位爆发式增长，是技术人才转型 AI 的最佳切入口。',
     },
   }
-  return map[resolved] ?? map['Vue 前端工程师']!
+  // P0 修复（2026-08）：未命中角色禁止静默冒充其它岗位文案，返回诚实空壳，由页面展示占位提示
+  return map[resolved] ?? {
+    title: role.trim(),
+    summary: '',
+    responsibilities: [],
+    requirements: [],
+    skills: [],
+    topRegions: [],
+    outlook: '',
+  }
 }
 
 /* ═══ 数据获取（预留接口替换） ═══ */

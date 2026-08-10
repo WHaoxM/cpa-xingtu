@@ -17,45 +17,68 @@ const props = withDefaults(defineProps<{
 const isDark = computed(() => props.theme === 'dark')
 
 const JOB_DESCRIPTIONS: Record<string, string> = {
-  'Vue 前端工程师': '使用 Vue 生态构建交互丰富的 Web 应用，关注组件化与工程化实践。',
-  'React 前端工程师': '基于 React 技术栈开发大型单页应用，掌握状态管理与性能优化。',
-  '可视化工程师': '运用 D3/ECharts/WebGL 将复杂数据转化为直观可交互的图表与大屏。',
-  'Java 后端工程师': '使用 Spring 生态构建高并发分布式服务，精通数据库与中间件。',
-  'Go 后端工程师': '以 Go 语言开发高性能微服务，擅长并发编程与云原生架构。',
-  'Python 后端工程师': '使用 Django/FastAPI 快速构建 Web 服务与数据处理管道。',
-  '自动化测试工程师': '设计与维护自动化测试框架，保障持续集成流水线的质量门禁。',
-  '质量平台工程师': '搭建测试平台与效能工具，提升团队研发质量与交付效率。',
-  '性能测试工程师': '通过压测与调优定位系统瓶颈，确保服务在高负载下稳定运行。',
-  '商业数据分析师': '结合业务场景进行数据建模与洞察，驱动产品与运营决策。',
-  '数据开发工程师': '构建数据仓库与 ETL 管道，为分析和算法提供高质量数据基座。',
-  '增长分析师': '通过 A/B 测试与漏斗分析挖掘用户增长机会，优化转化路径。',
-  '算法工程师': '研发推荐、搜索、风控等核心算法，将模型落地为线上服务。',
+  'Vue 前端工程师': '使用 Vue3 + TypeScript 构建交互丰富的 Web 应用，掌握 Pinia 状态管理与组件化开发。',
+  'React 前端工程师': '基于 React 18 + TypeScript 开发大型单页应用，精通 Hooks、状态管理与性能优化。',
+  '可视化工程师': '运用 D3.js/ECharts/WebGL 将复杂数据转化为直观可交互的图表、大屏与数据故事。',
+  'Java 后端工程师': '使用 Spring Boot/Cloud 构建高并发微服务，精通 MySQL/Redis/Kafka 中间件。',
+  'Go 后端工程师': '以 Go 语言开发高性能微服务，擅长 goroutine 并发编程与 Kubernetes 云原生架构。',
+  'Python 后端工程师': '使用 FastAPI/Django 构建 Web 服务，支持 AI 模型集成与高并发场景。',
+  '测试开发工程师': '设计 Playwright/pytest 自动化测试框架，保障 CI/CD 流水线的质量门禁。',
+  '质量平台工程师': '搭建测试平台与效能工具，实现用例管理、质量度量与智能化测试。',
+  '性能测试工程师': '通过 JMeter/k6 压测与调优定位系统瓶颈，确保服务在高负载下稳定运行。',
+  '数据分析师': '结合业务场景进行数据建模与 A/B 测试，驱动产品增长与运营决策。',
+  '数据开发工程师': '构建数据仓库与 ETL 管道，使用 Spark/Flink 处理批流数据。',
+  '增长分析师': '通过 A/B 测试、漏斗分析与用户分群挖掘增长机会，优化转化路径。',
+  '算法工程师': '研发推荐、搜索、NLP 等核心算法，使用 PyTorch 训练并部署模型。',
   '深度学习工程师': '训练与部署 CV/NLP/多模态模型，优化推理性能与模型精度。',
-  'AI 应用工程师': '基于大模型 API 构建智能应用，设计 Prompt 工程与 Agent 流程。',
+  'AI 应用工程师': '基于大模型 API 构建 RAG/Agent 应用，设计 Prompt 工程与工具调用流程。',
+  '大模型工程师': '主导大模型预训练、微调与部署，构建企业级 LLM 应用平台。',
 }
 
 const JOB_SHORT: Record<string, string> = {
   'Vue 前端工程师': 'Vue前端',
   'React 前端工程师': 'React前端',
-  '可视化工程师': '数据可视化',
-  'Java 后端工程师': 'Java后端',
-  'Go 后端工程师': 'Go后端',
-  'Python 后端工程师': 'Python后端',
-  '自动化测试工程师': '自动化测试',
-  '质量平台工程师': '测试平台',
+  '可视化工程师': '可视化',
+  'Java 后端工程师': 'Java开发',
+  'Go 后端工程师': 'Go开发',
+  'Python 后端工程师': 'Python开发',
+  '测试开发工程师': '测试开发',
+  '质量平台工程师': '质量平台',
   '性能测试工程师': '性能测试',
-  '商业数据分析师': '商业数分',
+  '数据分析师': '数据分析',
   '数据开发工程师': '数据开发',
-  '增长分析师': '增长数分',
+  '增长分析师': '增长分析',
   '算法工程师': '算法工程',
   '深度学习工程师': '深度学习',
-  'AI 应用工程师': 'AI应用开发',
+  'AI 应用工程师': 'AI应用',
+  '大模型工程师': '大模型',
+}
+
+// 情绪融入职业方向：每个职业对应一种探索状态
+const JOB_EMOTION: Record<string, string> = {
+  'Vue 前端工程师': '期待',
+  'React 前端工程师': '自信',
+  '可视化工程师': '好奇',
+  'Java 后端工程师': '平静',
+  'Go 后端工程师': '迷茫',
+  'Python 后端工程师': '稳定',
+  '测试开发工程师': '焦虑',
+  '质量平台工程师': '困惑',
+  '性能测试工程师': '专注',
+  '数据分析师': '洞察',
+  '数据开发工程师': '构建',
+  '增长分析师': '兴奋',
+  '算法工程师': '钻研',
+  '深度学习工程师': '探索',
+  'AI 应用工程师': '创造',
+  '大模型工程师': '突破',
 }
 
 interface StarNode {
   key: string
   jobName: string
   shortName: string
+  emotion: string
   description: string
   domainId: string
   domainName: string
@@ -118,6 +141,7 @@ const starNodes = computed<StarNode[]>(() => {
         key: `${domain.id}-${jobIndex}`,
         jobName,
         shortName,
+        emotion: JOB_EMOTION[jobName] ?? '探索',
         description: JOB_DESCRIPTIONS[jobName] ?? '',
         domainId: domain.id,
         domainName: domain.name,
@@ -221,6 +245,32 @@ function closeStarPopup() {
               <feColorMatrix type="saturate" values="0" in="n" result="g"/>
               <feComponentTransfer in="g"><feFuncA type="linear" :slope="isDark ? 0.01 : 0.025"/></feComponentTransfer>
             </filter>
+            <!-- 星球渐变：每个领域色3D效果 -->
+            <radialGradient id="planet-frontend" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#E85D3A"/>
+              <stop offset="100%" stop-color="#7A1E08"/>
+            </radialGradient>
+            <radialGradient id="planet-backend" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#B83A20"/>
+              <stop offset="100%" stop-color="#5A1A00"/>
+            </radialGradient>
+            <radialGradient id="planet-qa" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#F09080"/>
+              <stop offset="100%" stop-color="#C05040"/>
+            </radialGradient>
+            <radialGradient id="planet-data" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#E0C050"/>
+              <stop offset="100%" stop-color="#8B6A00"/>
+            </radialGradient>
+            <radialGradient id="planet-ml" cx="35%" cy="35%" r="65%">
+              <stop offset="0%" stop-color="#4A8AC0"/>
+              <stop offset="100%" stop-color="#1B4E79"/>
+            </radialGradient>
+            <!-- 高光渐变 -->
+            <radialGradient id="planet-highlight" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.8"/>
+              <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+            </radialGradient>
           </defs>
 
           <rect width="520" height="520" fill="url(#rpGrid)" :opacity="isDark ? 0.3 : 0.85"/>
@@ -287,23 +337,55 @@ function closeStarPopup() {
               stroke-width="1.5"
               class="rp-star-link"
             />
-            <circle
+            <!-- 星球节点：3D渐变+光晕+环 -->
+            <g
               v-for="node in group.nodes"
               :key="`nc-${node.key}`"
-              :cx="node.cx"
-              :cy="node.cy"
-              r="14"
-              :fill="hexToRgba(node.domainColor, clickedNodeKey === node.key ? 0.22 : 0.09)"
-              :stroke="node.domainColor"
-              :stroke-opacity="clickedNodeKey === node.key ? 0.95 : 0.5"
-              :stroke-width="clickedNodeKey === node.key ? 2.2 : 1.5"
               class="rp-star-node"
               :class="{ 'rp-star-node--active': clickedNodeKey === node.key }"
               style="cursor: pointer;"
               @mouseenter="hoveredNodeKey = node.key"
               @mouseleave="hoveredNodeKey = null"
               @click.stop="handleStarClick(node.key)"
-            />
+            >
+              <!-- 外层光晕 -->
+              <circle
+                :cx="node.cx"
+                :cy="node.cy"
+                r="22"
+                :fill="hexToRgba(node.domainColor, 0.08)"
+                class="rp-planet-glow"
+              />
+              <!-- 星球主体：径向渐变模拟3D -->
+              <circle
+                :cx="node.cx"
+                :cy="node.cy"
+                r="14"
+                :fill="`url(#planet-${node.domainId})`"
+                :stroke="hexToRgba(node.domainColor, 0.7)"
+                :stroke-width="1.5"
+              />
+              <!-- 高光点 -->
+              <circle
+                :cx="node.cx - 4"
+                :cy="node.cy - 4"
+                r="4"
+                fill="url(#planet-highlight)"
+                opacity="0.6"
+              />
+              <!-- 环（仅部分星球有） -->
+              <ellipse
+                v-if="node.jobIdx === 0"
+                :cx="node.cx"
+                :cy="node.cy"
+                rx="20"
+                ry="6"
+                fill="none"
+                :stroke="hexToRgba(node.domainColor, 0.3)"
+                stroke-width="1"
+                class="rp-planet-ring"
+              />
+            </g>
           </g>
 
           <g
@@ -324,6 +406,17 @@ function closeStarPopup() {
               :class="['rp-star-label', `rp-star-label--${index}`]"
               :style="{ fill: clickedNodeKey === node.key ? node.domainColor : (isDark ? 'rgba(255,255,255,0.78)' : 'var(--ink-700, #3D3D3D)') }"
             >{{ node.shortName }}</text>
+            <!-- 情绪标签：融入每个职业节点 -->
+            <text
+              v-for="node in group.nodes"
+              :key="`ne-${node.key}`"
+              :x="node.cx"
+              :y="node.cy + 22"
+              text-anchor="middle"
+              dominant-baseline="auto"
+              class="rp-emotion-label"
+              :style="{ fill: hexToRgba(node.domainColor, 0.7) }"
+            >{{ node.emotion }}</text>
           </g>
         </svg>
 
@@ -505,25 +598,48 @@ function closeStarPopup() {
 .rp-star-node {
   transform-box: fill-box;
   transform-origin: center;
-  animation: rp-breathe 4s ease-in-out infinite;
-  transition: stroke-opacity 0.22s ease, stroke-width 0.22s ease, fill 0.22s ease;
+  transition: transform 0.3s ease, filter 0.3s ease;
 }
 
-.rp-star-node:nth-child(3n+1) { animation-delay: 0s; }
-.rp-star-node:nth-child(3n+2) { animation-delay: -1.33s; }
-.rp-star-node:nth-child(3n) { animation-delay: -2.67s; }
-
-@keyframes rp-breathe {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.10); filter: drop-shadow(0 0 4px currentColor); }
+.rp-star-node:hover {
+  transform: scale(1.2);
+  filter: drop-shadow(0 0 12px currentColor);
 }
 
-.rp-star-node--active { filter: drop-shadow(0 0 5px currentColor); }
+.rp-star-node--active {
+  transform: scale(1.25);
+  filter: drop-shadow(0 0 16px currentColor) drop-shadow(0 0 32px currentColor);
+}
+
+/* 星球光晕 */
+.rp-planet-glow {
+  animation: rp-planet-pulse 4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes rp-planet-pulse {
+  0%, 100% { opacity: 0.6; transform: scale(1); }
+  50% { opacity: 0.9; transform: scale(1.1); }
+}
+
+/* 星球环 */
+.rp-planet-ring {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: rp-ring-rotate 20s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes rp-ring-rotate {
+  0% { transform: rotateX(70deg) rotateZ(0deg); }
+  100% { transform: rotateX(70deg) rotateZ(360deg); }
+}
 
 .rp-star-label {
-  font-size: 9px;
-  font-family: var(--font-body, 'Noto Sans SC', sans-serif);
-  letter-spacing: 0.02em;
+  font-size: 12px;
+  font-family: 'LXGW WenKai', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', -apple-system, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.06em;
   pointer-events: none;
   user-select: none;
   transform-box: fill-box;
@@ -536,6 +652,26 @@ function closeStarPopup() {
 .rp-star-label--2 { animation: rp-orbit 80s linear infinite reverse; }
 .rp-star-label--3 { animation: rp-orbit 95s linear infinite; }
 .rp-star-label--4 { animation: rp-orbit 120s linear infinite reverse; }
+
+/* 情绪标签：融入职业节点 */
+.rp-emotion-label {
+  font-size: 9px;
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', -apple-system, sans-serif;
+  font-weight: 400;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+  user-select: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  opacity: 0.7;
+  animation: rp-orbit 50s linear infinite reverse;
+}
+
+.rp-emotion-label--0 { animation: rp-orbit 50s linear infinite reverse; }
+.rp-emotion-label--1 { animation: rp-orbit 65s linear infinite; }
+.rp-emotion-label--2 { animation: rp-orbit 80s linear infinite reverse; }
+.rp-emotion-label--3 { animation: rp-orbit 95s linear infinite; }
+.rp-emotion-label--4 { animation: rp-orbit 120s linear infinite reverse; }
 
 .rp-dots circle { fill: rgba(0,0,0,0.07); }
 

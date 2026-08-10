@@ -7,27 +7,29 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
 
 <template>
   <nav class="cloud-nav" aria-label="功能导航">
-    <button
-      v-for="tab in tabs"
-      :key="tab.key"
-      type="button"
-      class="cloud-tab"
-      :class="{ 'is-active': modelValue === tab.key }"
-      :aria-current="modelValue === tab.key ? 'page' : undefined"
-      @click="emit('update:modelValue', tab.key)"
-    >
-      <svg
-        class="cloud-bg"
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        xmlns="http://www.w3.org/2000/svg"
-        aria-hidden="true"
-        focusable="false"
+    <template v-for="tab in tabs" :key="tab.key">
+      <span v-if="tab.key.startsWith('__sep')" class="cloud-sep" aria-hidden="true" />
+      <button
+        v-else
+        type="button"
+        class="cloud-tab"
+        :class="{ 'is-active': modelValue === tab.key }"
+        :aria-current="modelValue === tab.key ? 'page' : undefined"
+        @click="emit('update:modelValue', tab.key)"
       >
-        <path class="cloud-fill" d="M 0,0 L 82,0 C 110,0 66,100 94,100 L 0,100 C 28,100 -16,0 0,0 Z" />
-      </svg>
-      <span class="cloud-label">{{ tab.label }}</span>
-    </button>
+        <svg
+          class="cloud-bg"
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path class="cloud-fill" d="M 0,0 L 82,0 C 110,0 66,100 94,100 L 0,100 C 28,100 -16,0 0,0 Z" />
+        </svg>
+        <span class="cloud-label">{{ tab.label }}</span>
+      </button>
+    </template>
   </nav>
 </template>
 
@@ -38,7 +40,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
   gap: 6px;
   min-height: 44px;
   padding: 4px;
-  background: color-mix(in srgb, var(--color-surface) 92%, var(--bg-200) 8%);
+  background: color-mix(in srgb, var(--color-surface) 55%, var(--color-background) 45%);
   border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent 22%);
   border-radius: 16px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
@@ -46,6 +48,14 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
   overflow-y: hidden;
   scrollbar-width: none;
   scroll-snap-type: x proximity;
+}
+
+.cloud-sep {
+  flex: 0 0 auto;
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: color-mix(in srgb, var(--color-border) 85%, transparent 15%);
 }
 
 .cloud-nav::-webkit-scrollbar {

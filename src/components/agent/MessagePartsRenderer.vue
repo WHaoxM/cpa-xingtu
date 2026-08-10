@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, type Component } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { AIMessage, MessagePart } from '@/types'
 import { renderMarkdown } from '@/utils/markdown'
 import ToolCallCard from './ToolCallCard.vue'
 import ArtifactCard from './ArtifactCard.vue'
+import CitationPart from './CitationPart.vue'
+import DataCardPart from './DataCardPart.vue'
 import PlanProgress from './PlanProgress.vue'
 
 const props = defineProps<{
@@ -18,6 +20,15 @@ const emit = defineEmits<{
 }>()
 
 const thinkingOpen = ref(false)
+
+// ── Part 分发表：新增 part 类型只需加一行 ──
+const PART_COMPONENTS: Record<string, Component> = {
+  tool_call: ToolCallCard,
+  artifact_ref: ArtifactCard,
+  citation: CitationPart,
+  data_card: DataCardPart,
+  progress: PlanProgress,
+}
 
 const parts = computed<MessagePart[]>(() => {
   if (props.message.parts?.length) return props.message.parts
@@ -77,24 +88,47 @@ function thinkingParas(text?: string): string[] {
     </div>
 
     <template v-for="(part, i) in parts" :key="`${message.id}-part-${i}`">
+      <!-- text -->
       <div
         v-if="part.type === 'text'"
         class="msg__body"
         v-html="renderMarkdown(displayText(part))"
       />
+
+      <!-- 工具调用（零字段渲染） -->
       <div v-else-if="part.type === 'tool_call'" class="tool-row">
         <ToolCallCard :tool="part.tool_call" />
       </div>
+
+      <!-- 成果物引用 -->
       <ArtifactCard
         v-else-if="part.type === 'artifact_ref'"
         :artifact="part.artifact"
       />
+
+      <!-- 引用来源 -->
+      <CitationPart
+        v-else-if="part.type === 'citation'"
+        :citation="part"
+      />
+
+      <!-- 结构化数据卡片 -->
+      <DataCardPart
+        v-else-if="part.type === 'data_card'"
+        :title="part.title"
+        :card-type="part.card_type"
+        :items="part.items"
+      />
+
+      <!-- 进度 -->
       <PlanProgress
         v-else-if="part.type === 'progress'"
         :title="part.title"
         :summary="part.summary"
         :progress="part.progress"
       />
+
+      <!-- 模式升级提示 -->
       <div
         v-else-if="part.type === 'upgrade_hint'"
         class="upgrade-hint"
@@ -110,6 +144,8 @@ function thinkingParas(text?: string): string[] {
           切换到 {{ String(part.to).toUpperCase() }}
         </button>
       </div>
+
+      <!-- 系统通知 -->
       <div
         v-else-if="part.type === 'notice'"
         class="notice"

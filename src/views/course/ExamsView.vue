@@ -55,7 +55,7 @@ const roleTrackMap: Record<CareerRole, RoleTrack[]> = {
     { label: 'Python 后端工程师', focus: 'Django/Flask、数据处理、接口开发' },
   ],
   测试开发: [
-    { label: '自动化测试工程师', focus: 'Playwright、接口测试、脚本编排' },
+    { label: '测试开发工程师', focus: 'Playwright、接口测试、脚本编排' },
     { label: '质量平台工程师', focus: 'CI/CD、质量门禁、缺陷分析' },
     { label: '性能测试工程师', focus: '压测方案、指标定位、瓶颈分析' },
   ],
@@ -222,7 +222,7 @@ const trackSkillDefs: Record<string, { id: string; name: string; required: numbe
     { id: 'py-mysql', name: 'MySQL / PostgreSQL 数据库设计', required: 86 },
   ],
   /* ── 测试开发 ── */
-  '自动化测试工程师': [
+  '测试开发工程师': [
     { id: 'at-selenium', name: 'Selenium WebDriver 元素定位与操作', required: 88 },
     { id: 'at-playwright', name: 'Playwright 浏览器自动化与录制', required: 86 },
     { id: 'at-pytest', name: 'Python unittest / pytest 框架', required: 90 },

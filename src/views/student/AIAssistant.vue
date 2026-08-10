@@ -16,6 +16,7 @@ import { toFriendlyApiError } from '@/api/types'
 import { CURRENT_USER_ID } from '@/mock/data'
 import type { AIMessage, AIToolCall } from '@/types'
 import MessagePartsRenderer from '@/components/agent/MessagePartsRenderer.vue'
+import ExpertSelector from '@/components/ExpertSelector.vue'
 
 function resolveStudentId(): string {
   try {
@@ -60,8 +61,49 @@ const modeOptions: { id: InteractionMode; label: string; tip: string }[] = [
   { id: 'experts', label: 'Experts', tip: '多专家协作，适合端到端链路' },
 ]
 
+/** 专家角色选择（Experts模式下） */
+const selectedRoleId = ref<string>('')
+const showExpertSelector = ref(false)
+const roleOptions = ref<Array<{ id: string; name: string; title: string; company: string }>>([])
+
+async function loadRoles() {
+  try {
+    const { listRoles } = await import('@/api/roles')
+    const data = await listRoles()
+    roleOptions.value = data.roles || []
+  } catch (e) {
+    console.warn('Failed to load roles:', e)
+  }
+}
+
 function setInteractionMode(mode: InteractionMode) {
   interactionMode.value = mode
+  if (mode === 'experts') {
+    showExpertSelector.value = true
+    if (roleOptions.value.length === 0) {
+      loadRoles()
+    }
+  } else {
+    showExpertSelector.value = false
+    selectedRoleId.value = ''
+  }
+}
+
+function onExpertSelected(expert: any) {
+  selectedRoleId.value = expert.id
+  showExpertSelector.value = false
+}
+
+function onExpertCancel() {
+  showExpertSelector.value = false
+  if (!selectedRoleId.value) {
+    interactionMode.value = 'ask'
+  }
+}
+
+function getSelectedExpertName(): string {
+  const role = roleOptions.value.find((r) => r.id === selectedRoleId.value)
+  return role ? `${role.name} - ${role.title}` : ''
 }
 
 function applyUpgradeHint(to?: string) {
@@ -413,6 +455,7 @@ async function sendMessage(preset?: string) {
         attachmentIds: fileIds,
         voiceTurnId: voiceTurn,
         contentParts,
+        roleId: interactionMode.value === 'experts' ? selectedRoleId.value : undefined,
       })
       lastVoiceTurnId.value = null
       voiceBoundText.value = ''
@@ -437,7 +480,17 @@ async function sendMessage(preset?: string) {
         turnId: result.turnId,
         interactionMode: result.interactionMode || interactionMode.value,
         upgradeHint: result.upgradeHint,
+        sessionTitle: result.sessionTitle,
+        sessionSummary: result.sessionSummary,
       })
+
+      // 后端返回 session_title 时更新侧边栏标题
+      if (result.sessionTitle && agentChat.activeSessionId) {
+        const conv = agentChat.conversations.find(c => c.sessionId === agentChat.activeSessionId)
+        if (conv && (conv.title === '新对话' || conv.title === '对话')) {
+          conv.title = result.sessionTitle
+        }
+      }
 
       startTaskPolls(aiMsg.id, tools)
       await simulateStreaming(aiMsg.id, result.content)
@@ -675,6 +728,13 @@ function displayThinkingParas(thinking: string): string[] {
         </button>
       </header>
 
+      <div v-if="showExpertSelector" class="expert-modal">
+        <div class="expert-modal__overlay" @click="onExpertCancel"></div>
+        <div class="expert-modal__content">
+          <ExpertSelector @select="onExpertSelected" @cancel="onExpertCancel" />
+        </div>
+      </div>
+
       <div ref="messagesContainer" class="ai-messages" :class="{ 'ai-messages--empty': isInitialState }">
         <template v-if="isInitialState">
           <div class="welcome">
@@ -787,6 +847,11 @@ function displayThinkingParas(thinking: string): string[] {
           >
             {{ opt.label }}
           </button>
+        </div>
+        <div v-if="interactionMode === 'experts' && selectedRoleId" class="selected-expert">
+          <span class="selected-expert__label">当前专家：</span>
+          <span class="selected-expert__name">{{ getSelectedExpertName() }}</span>
+          <button class="selected-expert__change" @click="showExpertSelector = true">切换</button>
         </div>
         <div v-if="attachments.length" class="attach-row">
           <div
@@ -1651,6 +1716,33 @@ function displayThinkingParas(thinking: string): string[] {
   cursor: not-allowed;
 }
 
+.role-select {
+  margin-top: 8px;
+}
+
+.role-select__dropdown {
+  width: 100%;
+  max-width: 300px;
+  padding: 6px 12px;
+  border: 1px solid var(--color-border, #dcdfe6);
+  border-radius: var(--radius-md, 8px);
+  background: var(--color-surface, #fff);
+  font-size: 13px;
+  color: var(--color-text-primary, #303133);
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.role-select__dropdown:hover {
+  border-color: var(--color-primary, #409eff);
+}
+
+.role-select__dropdown:focus {
+  border-color: var(--color-primary, #409eff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 20%, transparent);
+}
+
 .upgrade-hint {
   display: flex;
   flex-wrap: wrap;
@@ -1836,5 +1928,71 @@ function displayThinkingParas(thinking: string): string[] {
     gap: 10px;
   }
   .ai-composer__hint { display: none; }
+}
+
+.expert-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.expert-modal__overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.expert-modal__content {
+  position: relative;
+  z-index: 1;
+  width: 90%;
+  max-width: 850px;
+  max-height: 85vh;
+  overflow: hidden;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.selected-expert {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--color-primary) 10%, white);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.selected-expert__label {
+  color: var(--color-text-secondary);
+}
+
+.selected-expert__name {
+  font-weight: 500;
+  color: var(--color-primary);
+}
+
+.selected-expert__change {
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: white;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.selected-expert__change:hover {
+  background: var(--color-bg-page);
 }
 </style>

@@ -26,6 +26,11 @@ watch(
   { immediate: true },
 )
 
+/* ═══ 空壳岗位：无介绍数据时的诚实占位（P0 修复，禁止展示其它岗位文案） ═══ */
+const introEmpty = computed(() =>
+  !roleIntro.value.summary && !roleIntro.value.responsibilities?.length && !roleIntro.value.outlook,
+)
+
 /* ═══ 生成流程（使用 Shell 共享实例，与图谱时序同步） ═══ */
 const gen = sg.gen
 
@@ -73,6 +78,12 @@ function logIcon(level: LogEntry['level']) {
         <section class="ws-card">
           <h3 class="ws-card__title"><span class="ws-card__num">01</span> 职业分析</h3>
           <div class="ws-card__body">
+            <!-- 空壳岗位提示（P0）：不展示其它岗位文案 -->
+            <div v-if="introEmpty && gen.isDone.value" class="ws-intro-empty">
+              <div class="ws-intro-empty__title">该岗位暂无岗位介绍数据</div>
+              <p class="ws-intro-empty__tip">当前岗位未收录说明。可回到「职业分析」选择已收录岗位，或经「职途导航」完成简历解析后查看匹配详情。</p>
+            </div>
+            <template v-else>
             <!-- 摘要 -->
             <template v-if="revealedSections.summary">
               <p class="ws-intro-summary ws-reveal">{{ roleIntro.summary }}</p>
@@ -137,6 +148,7 @@ function logIcon(level: LogEntry['level']) {
                 <div class="ws-sk-line" style="width:72%"></div>
               </template>
             </div>
+            </template>
           </div>
         </section>
 
@@ -304,6 +316,11 @@ function logIcon(level: LogEntry['level']) {
 
 /* 岗位介绍 */
 .ws-intro-summary { font-size: 13px; color: var(--text-200); margin: 0 0 10px; line-height: 1.6; }
+
+/* 空壳岗位提示（P0） */
+.ws-intro-empty { padding: 24px 12px; text-align: center; }
+.ws-intro-empty__title { font-size: 14px; font-weight: 600; color: var(--text-100); margin-bottom: 8px; }
+.ws-intro-empty__tip { font-size: 12px; color: var(--text-300, #999); line-height: 1.7; margin: 0 auto; max-width: 240px; }
 .ws-intro-section { margin-bottom: 10px; }
 .ws-intro-section h4 {
   font-size: 12px; font-weight: 600; color: var(--text-100); margin: 0 0 4px;

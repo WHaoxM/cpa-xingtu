@@ -39,4 +39,6 @@ export type {
   AIMessage, AIAnalysisResult, AIToolCall, AIMessageAttachment,
   ArtifactRef, MessagePart, PublicTurn, TurnEvent,
   InteractionMode, AgentUpgradeHint, ArtifactKind, ArtifactAction,
+  PortraitPreview, MatchPreview, ReportPreview, PlanPreview, ArtifactPreview,
+  Citation, DataCardType, DataCardItem, DataCard,
 } from './ai'

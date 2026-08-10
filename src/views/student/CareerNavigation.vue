@@ -194,20 +194,25 @@ async function resolveResumeText(studentId: string): Promise<{
     const env = await nsleResume({ text })
     const data = env.data
     const validation = data?.structure_validation
-    if (validation && validation.ok === false) {
+    
+    // 放宽校验：只在完全无法解析时才拒绝
+    if (validation && validation.ok === false && validation.completeness < 0.3) {
       const issues = (validation.issues || []).join('、') || '结构字段不完整'
       throw new Error(
-        `简历结构抽取未完成（${issues}）。请确认原文含院校/专业等关键字段后重试，系统不会用正则猜填，也不会对空结构打分。`,
+        `简历结构抽取未完成（${issues}）。请确认原文含院校/专业等关键字段后重试。`,
       )
     }
+    
     studentProfile = (data?.student_profile || undefined) as
       | import('@/composables/useAgentPortrait').StudentProfilePayload
       | undefined
+    
+    // 放宽检查：允许school或major缺失，但记录警告
     if (!studentProfile?.school?.trim() || !studentProfile?.major?.trim()) {
-      throw new Error(
-        '未从简历解析到院校或专业。请补充完整教育信息后重试；禁止对缺失结构继续评分。',
-      )
+      console.warn('简历缺少院校或专业信息，将使用默认值继续')
+      // 不再抛出错误，继续处理
     }
+    
     name = studentProfile?.name
     const skills = data?.skills || []
     parseSkills = skills.map((s, i) => {

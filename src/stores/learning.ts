@@ -792,6 +792,8 @@ export const useLearningStore = defineStore(
       parts?: MessagePart[]
       artifacts?: ArtifactRef[]
       turnId?: string
+      sessionTitle?: string
+      sessionSummary?: string
       fromApi: boolean
     }> {
       const local = getAIResponse(input)
@@ -852,6 +854,8 @@ export const useLearningStore = defineStore(
         parts: publicTurnToMessageParts(data),
         artifacts: data?.artifacts || [],
         turnId: data?.turn_id,
+        sessionTitle: data?.session_title || undefined,
+        sessionSummary: data?.session_summary || undefined,
         fromApi: true,
       }
     }

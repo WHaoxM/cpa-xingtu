@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "preview:demo": "vite build && vite preview",
     "build-only": "vite build",
-    "type-check": "vue-tsc --build"
+    "type-check": "vue-tsc --build",
+    "check:ability-intro": "node tools/check-ability-intro.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

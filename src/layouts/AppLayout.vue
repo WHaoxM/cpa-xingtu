@@ -66,21 +66,22 @@ const breadcrumbs = computed(() => {
   return items
 })
 
-// 学生菜单（按职业规划主路径顺序排列）
+// 学生菜单（按职业决策主路径分组排序；顶栏以分隔线呈现分组）
 const studentMenus = [
   { index: '/app/dashboard', icon: ICONS.home, title: '首页' },
-  { index: '/app/student/ai-assistant', icon: ICONS.bot, title: 'ai助手' },
   // ── 职业探索 ──
   { index: '/app/student/career-analysis', icon: ICONS.target, title: '职业分析' },
-  { index: '/app/exams', icon: ICONS.checkSquare, title: '技能自评' },
-  // ── 能力匹配 ──
   { index: '/app/student/career-navigation', icon: ICONS.route, title: '职途导航' },
+  // ── 能力成长 ──
+  { index: '/app/exams', icon: ICONS.checkSquare, title: '技能自评' },
   { index: '/app/student/skill-graph', icon: ICONS.layers, title: '技能图谱' },
-  // ── 学习执行 ──
   { index: '/app/student/learning', icon: ICONS.trendingUp, title: '技能提升' },
   // ── 成果追踪 ──
   { index: '/app/student/my-reports', icon: ICONS.fileText, title: '我的报告' },
   { index: '/app/student/favorites', icon: ICONS.bookmark, title: '心仪岗位' },
+  // ── 助手（横切能力，置于末位）──
+  { index: '/app/student/ai-assistant', icon: ICONS.bot, title: 'AI 助手' },
+  { index: '/app/student/roles', icon: ICONS.users, title: '专家角色' },
 ]
 
 // 管理员菜单
@@ -104,11 +105,23 @@ const currentMenus = computed(() => {
 })
 
 
+// 顶栏分组分隔线：职业探索 / 能力成长 / 成果追踪 / 助手
+const NAV_SEP_BEFORE = new Set([
+  '/app/student/career-analysis',
+  '/app/exams',
+  '/app/student/my-reports',
+  '/app/student/ai-assistant',
+])
+
 const cloudTabs = computed(() => {
-  return currentMenus.value.map(m => ({
-    key: m.index,
-    label: m.title,
-  }))
+  const tabs: { key: string; label: string }[] = []
+  for (const m of currentMenus.value) {
+    if (isStudent.value && NAV_SEP_BEFORE.has(m.index)) {
+      tabs.push({ key: `__sep-${m.index}`, label: '' })
+    }
+    tabs.push({ key: m.index, label: m.title })
+  }
+  return tabs
 })
 
 /* ===== 页面入场动效 ===== */
@@ -157,6 +170,18 @@ onBeforeUnmount(() => {
 <template>
   <div ref="shellRef" class="book-shell" :class="{ 'book-shell--immersive': isImmersiveRoute }">
     <div v-if="!isImmersiveRoute || route.meta.keepTopNav" class="top-row">
+      <div
+        class="top-row__brand"
+        role="button"
+        tabindex="0"
+        title="回到首页"
+        @click="router.push('/app/dashboard')"
+        @keydown.enter="router.push('/app/dashboard')"
+      >
+        <span class="top-row__seal">职</span>
+        <span class="top-row__name">职导星图</span>
+      </div>
+
       <CloudTabNav
         class="top-row__nav"
         v-model="activeTabKey"
@@ -203,10 +228,10 @@ onBeforeUnmount(() => {
     <el-drawer v-if="!isImmersiveRoute" v-model="drawerOpen" direction="ltr" size="82%" :with-header="false" class="mobile-drawer">
       <div class="drawer">
         <div class="drawer__brand" @click="router.push('/app/dashboard')" role="button" tabindex="0">
-          <div class="drawer__logo">学</div>
+          <img class="drawer__logo" src="/AstroLogo.png" alt="AstroGraph">
           <div>
-            <div class="drawer__name">课程系统</div>
-            <div class="drawer__desc">知行合一</div>
+            <div class="drawer__name">职导星图</div>
+            <div class="drawer__desc">让每个「如果」看见结果</div>
           </div>
         </div>
         <div class="drawer__user">
@@ -252,10 +277,27 @@ onBeforeUnmount(() => {
   z-index: 4;
   flex-shrink: 0;
   overflow: visible;
-  background: color-mix(in srgb, var(--color-surface) 94%, var(--bg-200) 6%);
+  background: color-mix(in srgb, var(--color-background) 88%, var(--color-surface) 12%);
   border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent 30%);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85), 0 8px 24px rgba(17, 24, 39, 0.04);
   backdrop-filter: blur(12px);
+}
+
+/* 品牌锚点：朱砂印 + 衬线品名 */
+.top-row__brand {
+  display: flex; align-items: center; gap: 8px;
+  padding-right: 14px; flex-shrink: 0; cursor: pointer;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent 30%);
+}
+.top-row__seal {
+  width: 26px; height: 26px; display: grid; place-items: center;
+  background: var(--color-primary); color: #fff;
+  font-family: var(--font-title); font-size: 14px; font-weight: 600;
+  border-radius: 6px;
+}
+.top-row__name {
+  font-family: var(--font-title); font-size: 15px; font-weight: 600;
+  color: var(--color-text); letter-spacing: 0.02em;
 }
 
 .top-row__nav {

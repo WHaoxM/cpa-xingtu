@@ -23,10 +23,12 @@ const showPassword = ref(false)
 
 const roleTabs = [
   { role: UserRole.STUDENT, icon: ICONS.graduationCap, label: '学生', color: '#10B981' },
+  { role: UserRole.ADMIN, icon: ICONS.settings, label: '管理员', color: '#8B5CF6' },
 ]
 
 const quickLogins = [
   { role: UserRole.STUDENT, account: 'student001', name: '学生体验' },
+  { role: UserRole.ADMIN, account: 'admin001', name: '管理员' },
 ]
 
 const features = [

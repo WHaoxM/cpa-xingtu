@@ -976,7 +976,7 @@ export const mockTargetRoleMarkets: import('@/types').TargetRoleMarket[] = [
     hotCities: ['深圳', '上海', '苏州', '北京'],
     industries: ['互联网', '智能硬件', '游戏'],
     skillTags: ['Python 自动化', 'Playwright', '接口测试', '测试用例设计', 'CI/CD', '质量体系', '缺陷分析'],
-    sampleJobs: ['自动化测试工程师', '质量平台工程师', '性能测试工程师'],
+    sampleJobs: ['测试开发工程师', '质量平台工程师', '性能测试工程师'],
     trendNote: '从手工测试转向自动化与质量平台建设是明显趋势。',
     referenceMatch: 72,
   },
