@@ -167,7 +167,13 @@ let removeResize:  (() => void) | null = null
 let revealObserver: IntersectionObserver | null = null
 
 // ── Particle types ────────────────────────────────────────────────────────
-interface Particle { x: number; y: number; r: number; a: number; spd: number; tw: number; drift: number; baseAlpha: number; color: string }
+interface Particle {
+  x: number; y: number; r: number; a: number; spd: number; tw: number; drift: number
+  baseAlpha: number; color: string
+  rgb: [number, number, number]
+  bright: boolean; spike: boolean
+  twAmp: number; twSpeed: number; twPhase: number
+}
 
 // ── Canvas: Milo风格星尘（Canvas 2D降级方案 + 鼠标排斥） ────────────────
 function initCanvas() {
@@ -199,34 +205,62 @@ function initCanvas() {
   // ── 粒子生成（Milo Canvas 2D 降级参数） ──
   let ps: Particle[] = []
 
-  // 星图领域色盘：与CareerStarMap的颜色呼应
-  const DOMAIN_COLORS = [
-    '#BE2A00', // 红色系
-    '#C9A227', // 金色系
-    '#1B4E79', // 蓝色系
-    '#4A6741', // 绿色系
-    '#8B7CF6', // 紫色系（accent）
+  // ── 真实星空调色板：以蓝白为主、少量暖色，模拟真实夜空色温 ──
+  const STAR_PALETTE = [
+    '#ffffff', '#ffffff', '#ffffff', '#ffffff', // 多数纯白
+    '#dfe6ff', '#cdddff',                       // 蓝白
+    '#fff3d6', '#ffe6c2',                       // 暖色（稀少）
   ]
 
+  function toRgb(hex: string): [number, number, number] {
+    return [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ]
+  }
+
   function createParticles() {
-    // MILO密度：面积/600，约3400个@1920×1080（匹配MILO密集星空）
-    const count = Math.floor((W * H) / (600 * dpr * dpr))
+    const wCss = W / dpr
+    const hCss = H / dpr
+    // 细腻星空：粒子更多、更小，按面积自适应密度（上限保护性能）
+    const count = Math.min(9000, Math.max(900, Math.floor((wCss * hCss) / 340)))
+
     ps = Array.from({ length: count }, () => {
-      // 85%白色粒子 + 15%彩色粒子（与星图颜色呼应）
-      const isColorful = Math.random() < 0.15
-      const color = isColorful
-        ? DOMAIN_COLORS[Math.floor(Math.random() * DOMAIN_COLORS.length)]
-        : '#FFFFFF'
+      const roll = Math.random()
+      let r: number, baseAlpha: number, bright = false, spike = false
+      if (roll < 0.045) {
+        // 明亮的稀有恒星：带柔光晕 + 偶发衍射星芒
+        r = (1.0 + Math.random() * 1.7) * dpr
+        baseAlpha = 0.85 + Math.random() * 0.15
+        bright = true
+        spike = Math.random() < 0.5
+      } else if (roll < 0.4) {
+        // 中等亮度星
+        r = (0.5 + Math.random() * 0.7) * dpr
+        baseAlpha = 0.4 + Math.random() * 0.4
+      } else {
+        // 大量细小星尘：构成"细腻"的纹理主体
+        r = (0.22 + Math.random() * 0.42) * dpr
+        baseAlpha = 0.12 + Math.random() * 0.45
+      }
+      const color = STAR_PALETTE[Math.floor(Math.random() * STAR_PALETTE.length)] as string
       return {
         x:   Math.random() * W,
         y:   Math.random() * H,
-        r:   (Math.random() * 1.8 + 0.5) * dpr,
+        r,
         a:   Math.random() * Math.PI * 2,
         spd: 0.3 + Math.random() * 1.0,
         tw:  Math.random() * Math.PI * 2,
-        drift: (Math.random() - 0.5) * 0.05 * dpr,
-        baseAlpha: 0,
+        drift: (Math.random() - 0.5) * 0.03 * dpr,
+        baseAlpha,
         color,
+        rgb: toRgb(color),
+        bright,
+        spike,
+        twAmp: 0.25 + Math.random() * 0.5,
+        twSpeed: 0.4 + Math.random() * 1.6,
+        twPhase: Math.random() * Math.PI * 2,
       }
     })
   }
@@ -278,14 +312,13 @@ function initCanvas() {
       c2d.fillRect(0, 0, W, H)
     }
 
+    const timeS = t / 1000
     for (const p of ps) {
-      // MILO闪烁：alpha = 0.5 + 0.5 * abs(sin(tw + time/1000 * spd))
-      // 高亮度范围，匹配MILO的明亮星空
-      const timeS = t / 1000
-      p.baseAlpha = 0.5 + 0.5 * Math.abs(Math.sin(p.tw + timeS * p.spd))
+      // ── 有机闪烁：每颗星独立相位/速度/幅度，避免整齐划一 ──
+      const twinkle = 0.55 + 0.45 * Math.sin(p.twPhase + timeS * p.twSpeed * p.spd)
 
-      // 鼠标排斥（MILO WebGL方案的指数衰减）
-      const px = p.x / W   // 归一化
+      // 鼠标排斥（指数衰减持久方案）
+      const px = p.x / W
       const py = p.y / H
       const dx = px - pointerSmooth[0]
       const dy = py - pointerSmooth[1]
@@ -302,11 +335,11 @@ function initCanvas() {
         alphaBoost = Math.exp(-dist * 6.0) * pointerActive * 0.35
       }
 
-      // 漂移（MILO: drift * 0.6 水平, drift 垂直）
+      // 极缓慢漂移，营造"活的天空"而非闪烁噪音
       p.y -= p.drift
       p.x += p.drift * 0.6
 
-      // 边界包裹（MILO: <-4 → height+4）
+      // 边界包裹
       if (p.y < -4 * dpr) p.y = H + 4 * dpr
       if (p.y > H + 4 * dpr) p.y = -4 * dpr
       if (p.x < -4 * dpr) p.x = W + 4 * dpr
@@ -314,20 +347,35 @@ function initCanvas() {
 
       const drawX = p.x + offsetX
       const drawY = p.y + offsetY
-      const finalAlpha = Math.min(1, p.baseAlpha + alphaBoost)
+      const alpha = Math.min(1, p.baseAlpha * twinkle + alphaBoost)
+      if (alpha <= 0.01) continue
 
-      // 粒子颜色：白色或领域色，与星图呼应
+      const [cr, cg, cb] = p.rgb
+
+      // 明亮恒星：先画柔和光晕，再画衍射星芒（最亮者）
+      if (p.bright) {
+        const haloR = p.r * 3.6
+        const hg = c2d.createRadialGradient(drawX, drawY, 0, drawX, drawY, haloR)
+        hg.addColorStop(0, `rgba(${cr},${cg},${cb},${(alpha * 0.45).toFixed(3)})`)
+        hg.addColorStop(1, `rgba(${cr},${cg},${cb},0)`)
+        c2d.fillStyle = hg
+        c2d.beginPath(); c2d.arc(drawX, drawY, haloR, 0, Math.PI * 2); c2d.fill()
+
+        if (p.spike) {
+          const len = p.r * 5
+          c2d.strokeStyle = `rgba(${cr},${cg},${cb},${(alpha * 0.55).toFixed(3)})`
+          c2d.lineWidth = Math.max(0.6, p.r * 0.32)
+          c2d.beginPath()
+          c2d.moveTo(drawX - len, drawY); c2d.lineTo(drawX + len, drawY)
+          c2d.moveTo(drawX, drawY - len); c2d.lineTo(drawX, drawY + len)
+          c2d.stroke()
+        }
+      }
+
+      // 星核
       c2d.beginPath()
       c2d.arc(drawX, drawY, p.r, 0, Math.PI * 2)
-      if (p.color === '#FFFFFF') {
-        c2d.fillStyle = `rgba(255, 255, 255, ${finalAlpha.toFixed(3)})`
-      } else {
-        // 彩色粒子：解析hex为rgb，添加alpha
-        const r = parseInt(p.color.slice(1, 3), 16)
-        const g = parseInt(p.color.slice(3, 5), 16)
-        const b = parseInt(p.color.slice(5, 7), 16)
-        c2d.fillStyle = `rgba(${r}, ${g}, ${b}, ${(finalAlpha * 0.8).toFixed(3)})`
-      }
+      c2d.fillStyle = `rgba(${cr},${cg},${cb},${alpha.toFixed(3)})`
       c2d.fill()
     }
   }
@@ -922,16 +970,17 @@ html {
   will-change: opacity;
 }
 
-/* Phase 5: 静态降级（MILO风格fallback） */
+/* Phase 5: 静态降级（MILO风格fallback，细腻星点） */
 .ld-canvas-fallback {
   position: absolute;
   inset: 0;
   z-index: -1;
   pointer-events: none;
   background:
-    radial-gradient(circle at 24% 31%, rgba(255,255,255,0.82) 0 1.2px, transparent 2.8px) 0 0/61px 67px,
-    radial-gradient(circle at 72% 64%, rgba(220,225,236,0.7) 0 1px, transparent 2.4px) 0 0/91px 103px,
-    radial-gradient(circle at 48% 18%, rgba(196,205,232,0.48) 0 0.8px, transparent 2px) 0 0/137px 149px;
+    radial-gradient(circle at 20% 30%, rgba(255,255,255,0.7) 0 0.8px, transparent 1.8px) 0 0/38px 42px,
+    radial-gradient(circle at 70% 65%, rgba(220,225,236,0.55) 0 0.7px, transparent 1.6px) 0 0/57px 64px,
+    radial-gradient(circle at 45% 15%, rgba(196,205,232,0.4) 0 0.6px, transparent 1.4px) 0 0/83px 91px,
+    radial-gradient(circle at 85% 80%, rgba(255,242,214,0.4) 0 0.6px, transparent 1.4px) 0 0/101px 110px;
   opacity: 1;
   transition: opacity 0.5s ease-out;
 }
