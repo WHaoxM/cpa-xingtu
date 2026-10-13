@@ -186,8 +186,8 @@ function initCanvas() {
   let W = 0, H = 0
 
   // ── 鼠标状态（Milo WebGL方案的指数衰减排斥） ──
-  const pointerTarget = [0.5, 0.5]   // 目标位置（归一化 0~1）
-  const pointerSmooth = [0.5, 0.5]   // 平滑跟随
+  const pointerTarget: [number, number] = [0.5, 0.5]   // 目标位置（归一化 0~1）
+  const pointerSmooth: [number, number] = [0.5, 0.5]   // 平滑跟随
   let pointerActive = 0              // 0 或 1，平滑过渡
   let pointerActiveTarget = 0
 
