@@ -105,6 +105,13 @@ export function useGraphGeneration(
     const nodes = allNodes.value
     const edges = allEdges.value
 
+    if (nodes.length === 0) {
+      startPhase('暂无图谱数据', 0)
+      addLog({ level: 'warn', agent: 'System', message: '该岗位暂无能力节点，图谱暂不可展示', ts: nowTs() })
+      isRunning.value = false
+      return
+    }
+
     // 分类节点
     const centerNode = nodes.filter(n => n.level === 0)
     const boardNodes = nodes.filter(n => n.level === 1)

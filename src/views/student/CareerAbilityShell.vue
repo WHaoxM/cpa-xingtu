@@ -5,15 +5,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import UserInfoBar from '@/components/UserInfoBar.vue'
 import { useResumeStore } from '@/stores/resume'
-import { init as echartsInit } from 'echarts/core'
 import {
-  getAbilityGraphData, computeOrbitalLayout,
+  getAbilityGraphData,
   GROUP_COLORS, GROUP_LABELS, RELATION_STYLES,
-  type AbilityNode, type AbilityEdge, type AbilityGroup, type OrbitalNode,
+  type AbilityNode, type AbilityEdge,
 } from '@/composables/useAbilityGraph'
 import { useGraphGeneration, edgeId } from '@/composables/useGraphGeneration'
-import { useResizeObserver } from '@/composables/useResizeObserver'
 import type { LayoutMode } from '@/types'
+import CareerAbilityG6Canvas from '@/components/career/CareerAbilityG6Canvas.vue'
 import CareerAbilityGraph from './CareerAbilityGraph.vue'
 import CareerAbilityDual from './CareerAbilityDual.vue'
 import CareerAbilityWorkspace from './CareerAbilityWorkspace.vue'
@@ -32,6 +31,7 @@ const masteredSkillNames = computed(() =>
 const roleName = computed(() => (route.query.role as string) || '前端开发')
 
 function goBack() { router.back() }
+function goToCareerAnalysis() { router.push({ name: 'student-career-analysis' }) }
 
 /* ═══ 布局模式：同一路由内切换，不依赖子路由 ═══ */
 const layoutMode = ref<LayoutMode>('split')
@@ -47,34 +47,42 @@ const allNodes = shallowRef<AbilityNode[]>([])
 const allEdges = shallowRef<AbilityEdge[]>([])
 const collapsedBoards = ref<Set<string>>(new Set())
 const showEdgeLabels = ref(false)
-const chartEl = ref<HTMLElement>()
-const graphContainerEl = ref<HTMLElement>()
-
-let chart: ReturnType<typeof echartsInit> | null = null
-let animFrame: number | null = null
-let animStartTime = 0
-let tick = 0
-let skipUntil = 0
-const orbitalMap = new Map<string, OrbitalNode>()
+const graphCanvasRef = ref<InstanceType<typeof CareerAbilityG6Canvas> | null>(null)
+const graphLoading = ref(true)
+const graphEmpty = computed(() => !graphLoading.value && allNodes.value.length === 0)
+const inspectorOpen = ref(false)
+const nodeSearch = ref('')
+const selectedNodeId = ref<string | null>(null)
+const selectedNode = computed(() => allNodes.value.find(n => n.id === selectedNodeId.value) ?? null)
+const searchResults = computed(() => {
+  const query = nodeSearch.value.trim().toLocaleLowerCase()
+  return allNodes.value.filter(n => query ? n.name.toLocaleLowerCase().includes(query) : n.level === 1).slice(0, 8)
+})
+const selectedRelations = computed(() => {
+  if (!selectedNodeId.value) return []
+  return allEdges.value.flatMap(edge => {
+    if (edge.source !== selectedNodeId.value && edge.target !== selectedNodeId.value) return []
+    const otherId = edge.source === selectedNodeId.value ? edge.target : edge.source
+    const other = allNodes.value.find(n => n.id === otherId)
+    return other ? [{ edge, other, outgoing: edge.source === selectedNodeId.value }] : []
+  })
+})
 const gen = useGraphGeneration(allNodes, allEdges)
-const CX = 400, CY = 400
-const FRAME_MS = 50
-const ORBIT_AMP = 0.22
-let isDragging = false
-let dragOffsets = new Map<string, { dx: number; dy: number }>()
 
 /* ═══ 数据加载 ═══ */
 async function loadData() {
   gen.stop()
+  graphLoading.value = true
   const data = await getAbilityGraphData(roleName.value)
   allNodes.value = data.nodes
   allEdges.value = data.edges
-  collapsedBoards.value = new Set()
-  orbitalMap.clear()
-  tick = 0
-  animStartTime = performance.now()
+  selectedNodeId.value = null
+  inspectorOpen.value = false
+  nodeSearch.value = ''
+  // 37 个节点无法在双栏内同时保持可读；先呈现岗位与四大板块，点击后钻取一个能力簇。
+  collapsedBoards.value = new Set(data.nodes.filter(node => node.level === 1).map(node => node.id))
+  graphLoading.value = false
   await nextTick()
-  initChart()
   gen.start()
 }
 
@@ -101,242 +109,60 @@ const visibleEdges = computed(() => {
   })
 })
 
-/* ═══ 轨道布局 ═══ */
-function rebuildOrbital() {
-  const orbitals = computeOrbitalLayout(visibleNodes.value, { radii: [0, 130, 270, 380] })
-  orbitalMap.clear()
-  orbitals.forEach(o => orbitalMap.set(o.id, o))
-}
-function orbitalXY(orb: OrbitalNode, t: number) {
-  if (orb.layer === 0) return { x: CX, y: CY }
-  const speed = 0.7 / (orb.layer * 0.55 + 0.45)
-  const phase = orb.baseAngle * 3.17 + orb.layer * 1.37
-  const amp = ORBIT_AMP + 0.06 / orb.layer
-  const angle = orb.baseAngle + amp * Math.sin(t * speed + phase)
-  return { x: CX + orb.radius * Math.cos(angle), y: CY + orb.radius * Math.sin(angle) }
-}
-
-/* ═══ ECharts 节点/边 ═══ */
-const catIdx: Record<AbilityGroup, number> = { job: 0, professional: 1, position: 2, cognitive: 3, general: 4 }
-function buildNodes(t: number) {
-  return visibleNodes.value.map(n => {
-    const orb = orbitalMap.get(n.id)
-    let pos = orb ? orbitalXY(orb, t) : { x: CX, y: CY }
-    const offset = dragOffsets.get(n.id)
-    if (offset) pos = { x: pos.x + offset.dx, y: pos.y + offset.dy }
-    const isJob = n.level === 0, isBoard = n.level === 1
-    const collapsed = isBoard && collapsedBoards.value.has(n.id)
-    const size = isJob ? 64 : isBoard ? (collapsed ? 30 : 44) : 14 + (n.heat || 50) * 0.13
-    return {
-      id: n.id, name: n.name, x: pos.x, y: pos.y, fixed: false,
-      category: catIdx[n.group], symbolSize: size,
-      symbol: (isJob ? 'circle' : isBoard ? 'roundRect' : 'circle') as 'circle' | 'roundRect',
-      label: {
-        show: true,
-        position: (isJob || isBoard ? 'inside' : 'right') as 'inside' | 'right',
-        fontSize: isJob ? 14 : isBoard ? (collapsed ? 10 : 12) : 10,
-        color: isJob || isBoard ? '#fff' : GROUP_COLORS[n.group],
-        fontWeight: isJob || isBoard ? 700 : 400, formatter: n.name,
-      },
-      itemStyle: {
-        color: collapsed ? 'rgba(255,255,255,0.55)' : GROUP_COLORS[n.group],
-        borderColor: collapsed ? GROUP_COLORS[n.group] : isJob ? '#5C1A00' : isBoard ? 'rgba(0,0,0,0.15)' : undefined,
-        borderWidth: collapsed ? 2.5 : isJob ? 3 : isBoard ? 1.5 : 0,
-        borderType: (collapsed ? 'dashed' : 'solid') as 'dashed' | 'solid',
-        shadowBlur: collapsed ? 12 : isJob ? 16 : isBoard ? 8 : 3,
-        shadowColor: collapsed ? GROUP_COLORS[n.group] + '80' : isJob ? 'rgba(139,37,0,0.5)' : 'rgba(0,0,0,0.12)',
-        opacity: collapsed ? 0.75 : 1,
-      },
-      emphasis: {
-        itemStyle: { shadowBlur: 20, shadowColor: 'rgba(0,0,0,0.35)', borderColor: '#333', borderWidth: 2 },
-        label: { fontSize: isJob ? 16 : isBoard ? 14 : 12, fontWeight: 700 },
-      },
-    }
-  })
-}
-function buildLinks() {
-  return visibleEdges.value.map((e, i) => {
-    const style = RELATION_STYLES[e.relation]
-    const isBelong = e.relation === 'belong'
-    const sign = i % 2 === 0 ? 1 : -1
-    return {
-      source: e.source, target: e.target,
-      lineStyle: {
-        color: style.color, width: isBelong ? 1.6 : 0.9,
-        type: style.dash.length > 0 ? style.dash : ('solid' as const),
-        curveness: style.curveness * sign, opacity: isBelong ? 0.4 : 0.3,
-      },
-      label: {
-        show: showEdgeLabels.value && !isBelong,
-        formatter: e.label || style.label, fontSize: 9, color: style.color,
-        padding: [2, 4] as [number, number],
-        backgroundColor: 'rgba(247,242,232,0.85)', borderRadius: 2,
-      },
-    }
-  })
-}
-function buildFullOption(t: number) {
-  const categories = (['job', 'professional', 'position', 'cognitive', 'general'] as AbilityGroup[]).map(g => ({
-    name: GROUP_LABELS[g], itemStyle: { color: GROUP_COLORS[g] },
-  }))
-  return {
-    backgroundColor: 'transparent',
-    animationDuration: 400,
-    animationDurationUpdate: 0,
-    animationEasingUpdate: 'linear' as const,
-    tooltip: {
-      trigger: 'item' as const,
-      backgroundColor: 'rgba(255,255,255,0.96)', borderColor: 'rgba(0,0,0,0.08)',
-      textStyle: { color: '#111', fontSize: 13 },
-      formatter: (params: any) => {
-        if (params.dataType === 'node') {
-          const nd = allNodes.value.find(n => n.id === params.data.id)
-          if (!nd) return params.name
-          return `<b>${nd.name}</b><br/>类别: ${GROUP_LABELS[nd.group]}${nd.heat != null ? '<br/>热度: ' + nd.heat : ''}`
-        }
-        if (params.dataType === 'edge') {
-          const ed = allEdges.value.find(x => x.source === params.data.source && x.target === params.data.target)
-          if (ed) {
-            const sn = allNodes.value.find(n => n.id === ed.source)?.name || ed.source
-            const tn = allNodes.value.find(n => n.id === ed.target)?.name || ed.target
-            return `${sn} → ${tn}<br/>关系: ${RELATION_STYLES[ed.relation].label}${ed.label ? '<br/>' + ed.label : ''}`
-          }
-        }
-        return ''
-      },
-    },
-    series: [{
-      type: 'graph' as const, layout: 'none' as const,
-      roam: true, draggable: true, zoom: 0.9, center: [CX, CY],
-      categories, data: buildNodes(t), links: buildLinks(),
-      edgeSymbol: ['none', 'arrow'] as const, edgeSymbolSize: [0, 5],
-      emphasis: { focus: 'adjacency' as const, lineStyle: { width: 2.5, opacity: 1 } },
-      blur: { itemStyle: { opacity: 0.3 }, lineStyle: { opacity: 0.1 } },
-    }],
+/* ═══ G6 图谱事件：画布交互由开源组件处理，业务查询留在页面 ═══ */
+function onGraphNodeClick(id: string) {
+  const node = allNodes.value.find(n => n.id === id)
+  if (!node) return
+  selectedNodeId.value = id
+  inspectorOpen.value = true
+  if (node.level === 1) {
+    collapsedBoards.value = new Set(allNodes.value.filter(item => item.level === 1 && item.id !== id).map(item => item.id))
   }
 }
-
-/* ═══ 邻接表 ═══ */
-function getAdjacentIds(nodeId: string): string[] {
-  const ids: string[] = []
-  for (const e of allEdges.value) {
-    if (e.source === nodeId) ids.push(e.target)
-    else if (e.target === nodeId) ids.push(e.source)
+function selectNodeById(id: string) {
+  const node = allNodes.value.find(n => n.id === id)
+  if (!node) return
+  selectedNodeId.value = id
+  inspectorOpen.value = true
+  nodeSearch.value = ''
+  if (node.level === 1) {
+    collapsedBoards.value = new Set(allNodes.value.filter(item => item.level === 1 && item.id !== id).map(item => item.id))
+  } else if (node.parentId && node.level > 1) {
+    collapsedBoards.value = new Set(allNodes.value.filter(item => item.level === 1 && item.id !== node.parentId).map(item => item.id))
   }
-  return ids
+  nextTick(() => graphCanvasRef.value?.focusNode(id))
 }
-
-/* ═══ 图表初始化与动画 ═══ */
-function initChart() {
-  if (!chartEl.value) return
-  if (chart) { chart.dispose(); chart = null }
-  chart = echartsInit(chartEl.value)
-  chart.setOption(buildFullOption(tick) as any, true)
-  chart.on('click', onChartClick)
-  let dragNodeId: string | null = null
-  let dragStartX = 0, dragStartY = 0
-  chart.on('mousedown', (params: any) => {
-    if (params.dataType !== 'node') return
-    isDragging = true; dragNodeId = params.data.id
-    dragStartX = params.event?.offsetX ?? 0; dragStartY = params.event?.offsetY ?? 0
-  })
-  chart.getZr().on('mousemove', (e: any) => {
-    if (!isDragging || !dragNodeId) return
-    const dx = (e.offsetX - dragStartX) * 1.1, dy = (e.offsetY - dragStartY) * 1.1
-    dragOffsets.set(dragNodeId, { dx, dy })
-    for (const nid of getAdjacentIds(dragNodeId)) dragOffsets.set(nid, { dx: dx * 0.35, dy: dy * 0.35 })
-  })
-  chart.getZr().on('mouseup', () => {
-    if (!isDragging) return
-    isDragging = false; dragNodeId = null; dragOffsets.clear()
-  })
-  skipUntil = performance.now() + 500
-  startAnimation()
-}
-function startAnimation() {
-  stopAnimation()
-  let lastFrame = 0
-  const loop = (now: number) => {
-    animFrame = requestAnimationFrame(loop)
-    const elapsed = now - lastFrame
-    if (!isDragging && elapsed < FRAME_MS) return
-    lastFrame = now
-    if (!chart || now < skipUntil) return
-    tick = (now - animStartTime) / 1400
-    chart.setOption({
-      animationDurationUpdate: 0,
-      series: [{ data: buildNodes(tick), links: buildLinks() }],
-    } as any)
-  }
-  animFrame = requestAnimationFrame(loop)
-}
-function stopAnimation() { if (animFrame != null) { cancelAnimationFrame(animFrame); animFrame = null } }
-function onChartClick(params: any) {
-  if (params.dataType !== 'node' || isDragging) return
-  const node = allNodes.value.find(n => n.id === params.data.id)
-  if (!node || node.level !== 1) return
-  const s = new Set(collapsedBoards.value)
-  if (s.has(node.id)) s.delete(node.id); else s.add(node.id)
-  collapsedBoards.value = s; rebuildOrbital()
-  if (chart) {
-    chart.setOption({
-      animationDurationUpdate: 400,
-      animationEasingUpdate: 'cubicOut',
-      series: [{ data: buildNodes(tick), links: buildLinks() }],
-    } as any)
-    skipUntil = performance.now() + 400
-  }
+function closeInspector() {
+  inspectorOpen.value = false
+  selectedNodeId.value = null
 }
 function refreshLayout() {
-  animStartTime = performance.now()
-  tick = 0; dragOffsets.clear(); rebuildOrbital()
-  if (chart) {
-    chart.setOption(buildFullOption(tick) as any, true)
-    skipUntil = performance.now() + 500
-  }
+  graphCanvasRef.value?.resetView()
 }
-/* ═══ 渐进生成 → 每批节点/边到达时重算布局 + 入场动画 ═══ */
-watch([() => gen.visibleNodeIds.value, () => gen.visibleEdgeIds.value], () => {
-  rebuildOrbital()
-  if (chart) {
-    chart.setOption({
-      animationDurationUpdate: 400,
-      animationEasingUpdate: 'cubicOut',
-      series: [{ data: buildNodes(tick), links: buildLinks() }],
-    } as any)
-    skipUntil = performance.now() + 400
-  }
-})
-
+function toggleAllBoards() {
+  const boardIds = allNodes.value.filter(n => n.level === 1).map(n => n.id)
+  collapsedBoards.value = collapsedBoards.value.size ? new Set() : new Set(boardIds)
+}
+function toggleSelectedBoard() {
+  const node = selectedNode.value
+  if (!node || node.level !== 1) return
+  const next = new Set(collapsedBoards.value)
+  if (next.has(node.id)) next.delete(node.id)
+  else next.add(node.id)
+  collapsedBoards.value = next
+}
 /* ═══ Provide 共享状态给嵌入的子组件 ═══ */
 provide('shared-graph', {
   allNodes, allEdges, visibleNodes, visibleEdges, roleName,
   showEdgeLabels, collapsedBoards,
-  refreshLayout, layoutMode, toggleLayout,
+  refreshLayout, toggleAllBoards, openInspector: () => { inspectorOpen.value = true }, layoutMode, toggleLayout,
   masteredSkillNames,
+  graphLoading, graphEmpty,
   gen,
 })
 
-/* ═══ useResizeObserver：监听图容器尺寸变化 → chart.resize() ═══ */
-useResizeObserver(graphContainerEl, () => {
-  requestAnimationFrame(() => chart?.resize())
-}, { debounceMs: 80 })
-
-/* ═══ 布局切换时持续 resize，使图谱丝滑跟随容器宽度过渡 ═══ */
-let layoutTransitionRaf: number | null = null
 watch(layoutMode, () => {
-  if (layoutTransitionRaf != null) cancelAnimationFrame(layoutTransitionRaf)
-  const start = performance.now()
-  const DURATION = 480 // 略长于 CSS transition 0.45s
-  const step = (now: number) => {
-    chart?.resize()
-    if (now - start < DURATION) {
-      layoutTransitionRaf = requestAnimationFrame(step)
-    } else {
-      layoutTransitionRaf = null
-    }
-  }
-  layoutTransitionRaf = requestAnimationFrame(step)
+  if (layoutMode.value === 'workspace') inspectorOpen.value = false
 })
 
 /* ═══ 生命周期 ═══ */
@@ -345,12 +171,8 @@ onMounted(async () => {
 })
 onBeforeUnmount(() => {
   gen.stop()
-  stopAnimation()
-  if (layoutTransitionRaf != null) { cancelAnimationFrame(layoutTransitionRaf); layoutTransitionRaf = null }
-  chart?.dispose(); chart = null
 })
 watch(roleName, () => loadData())
-watch(showEdgeLabels, () => { if (chart) chart.setOption({ series: [{ links: buildLinks() }] } as any) })
 </script>
 
 <template>
@@ -402,11 +224,36 @@ watch(showEdgeLabels, () => { if (chart) chart.setOption({ series: [{ links: bui
 
     <!-- ═══ 内容区：图谱始终可见 + 右侧面板滑入/滑出 ═══ -->
     <div class="shell-body" :class="'shell-body--' + layoutMode">
-      <!-- 图区域（始终挂载，宽度随 layoutMode 平滑过渡） -->
-      <div ref="graphContainerEl" class="shell-graph">
-        <div ref="chartEl" class="shell-chart"></div>
+      <!-- 图区域始终挂载，布局切换时由 ResizeObserver 同步画布尺寸 -->
+      <div class="shell-graph">
+        <CareerAbilityG6Canvas
+          v-if="!graphLoading && !graphEmpty"
+          ref="graphCanvasRef"
+          class="shell-chart"
+          :nodes="visibleNodes"
+          :edges="visibleEdges"
+          :selected-node-id="selectedNodeId"
+          :show-edge-labels="showEdgeLabels"
+          :role-name="roleName"
+          @node-click="onGraphNodeClick"
+          @canvas-click="closeInspector"
+        />
         <!-- 图谱叠加层：工具栏 + 图例 -->
-        <CareerAbilityGraph />
+        <CareerAbilityGraph v-if="!graphEmpty && !graphLoading" />
+        <div v-if="graphLoading" class="shell-graph-state" role="status">正在读取能力图谱…</div>
+        <div v-else-if="graphEmpty" class="shell-graph-state shell-graph-state--empty" role="status">
+          <div class="shell-graph-state__eyebrow">职业能力复合图谱</div>
+          <Icon icon="lucide:workflow" :width="30" />
+          <h2>该岗位暂无图谱数据</h2>
+          <p>当前岗位尚未收录技能节点与关系。你可以返回职业分析，查看其它已收录岗位。</p>
+          <button @click="goToCareerAnalysis">返回职业分析</button>
+        </div>
+        <div v-else-if="selectedNode" class="shell-focus" role="status" aria-live="polite">
+          <span class="shell-focus__dot" :style="{ background: GROUP_COLORS[selectedNode.group] }"></span>
+          <span>聚焦 <strong>{{ selectedNode.name }}</strong><small> · {{ selectedRelations.length }} 条直接关系</small></span>
+          <button @click="closeInspector" aria-label="清除图谱聚焦" title="清除聚焦"><Icon icon="lucide:x" :width="14" /></button>
+        </div>
+        <div v-else class="shell-graph-guide">点击板块展开技能 · 拖动节点探索 · 滚轮缩放</div>
       </div>
       <!-- 右侧面板（始终挂载，CSS 控制宽度与可见性） -->
       <div class="shell-panel">
@@ -416,6 +263,56 @@ watch(showEdgeLabels, () => { if (chart) chart.setOption({ series: [{ links: bui
       <div class="shell-workspace">
         <CareerAbilityWorkspace />
       </div>
+      <aside v-if="inspectorOpen && !isWorkspace && !graphEmpty" class="node-inspector" aria-label="图谱节点查询">
+        <div class="node-inspector__head">
+          <div>
+            <span class="node-inspector__eyebrow">职业能力 · 节点查询</span>
+            <h2>{{ selectedNode ? selectedNode.name : '查找图谱节点' }}</h2>
+          </div>
+          <button class="node-inspector__close" @click="closeInspector" aria-label="关闭节点详情">
+            <Icon icon="lucide:x" :width="18" />
+          </button>
+        </div>
+        <div class="node-inspector__body">
+          <label class="node-inspector__search">
+            <Icon icon="lucide:search" :width="16" />
+            <input v-model="nodeSearch" placeholder="搜索当前图谱中的技能" aria-label="搜索图谱节点" />
+          </label>
+          <div v-if="nodeSearch || !selectedNode" class="node-inspector__results">
+            <div class="node-inspector__section-title">{{ nodeSearch ? '匹配节点' : '技能板块' }}</div>
+            <button v-for="item in searchResults" :key="item.id" @click="selectNodeById(item.id)">
+              <span class="node-inspector__dot" :style="{ background: GROUP_COLORS[item.group] }"></span>
+              <span>{{ item.name }}</span>
+              <Icon icon="lucide:arrow-up-right" :width="14" />
+            </button>
+            <p v-if="!searchResults.length">当前图谱中没有匹配的节点。</p>
+          </div>
+          <template v-if="selectedNode">
+            <div class="node-inspector__meta">
+              <span class="node-inspector__tag" :style="{ color: GROUP_COLORS[selectedNode.group] }">{{ GROUP_LABELS[selectedNode.group] }}</span>
+              <span>所属岗位：{{ roleName }}</span>
+            </div>
+            <button v-if="selectedNode.level === 1" class="node-inspector__board-toggle" @click="toggleSelectedBoard">
+              <Icon :icon="collapsedBoards.has(selectedNode.id) ? 'lucide:chevrons-down' : 'lucide:chevrons-up'" :width="15" />
+              {{ collapsedBoards.has(selectedNode.id) ? '展开该板块技能' : '收起该板块技能' }}
+            </button>
+            <div v-if="selectedNode.heat != null" class="node-inspector__heat">
+              <div><span>节点热度</span><strong>{{ selectedNode.heat }}</strong></div>
+              <div class="node-inspector__heat-track"><span :style="{ width: `${Math.max(0, Math.min(100, selectedNode.heat))}%`, background: GROUP_COLORS[selectedNode.group] }"></span></div>
+            </div>
+            <section class="node-inspector__relations">
+              <h3>当前图谱中的关系 <span>{{ selectedRelations.length }}</span></h3>
+              <button v-for="(item, index) in selectedRelations" :key="`${item.edge.source}-${item.edge.target}-${index}`" @click="selectNodeById(item.other.id)">
+                <span class="node-inspector__relation-kind">{{ RELATION_STYLES[item.edge.relation].label }}</span>
+                <span class="node-inspector__relation-name">{{ item.outgoing ? '→' : '←' }} {{ item.other.name }}<small v-if="item.edge.label">{{ item.edge.label }}</small></span>
+                <Icon icon="lucide:chevron-right" :width="14" />
+              </button>
+              <p v-if="!selectedRelations.length">当前图谱暂无关联关系。</p>
+            </section>
+            <p class="node-inspector__source">仅展示当前图谱已有的节点字段和关系，不推断未提供的说明。</p>
+          </template>
+        </div>
+      </aside>
     </div>
   </div>
 </template>
@@ -500,21 +397,129 @@ watch(showEdgeLabels, () => { if (chart) chart.setOption({ series: [{ links: bui
   overflow: hidden;
 }
 
-/* 图谱容器（始终挂载，宽度平滑过渡） */
+/* 图谱容器始终挂载；切换布局时直接定宽，避免逐帧重排 G6 画布。 */
 .shell-graph {
   position: relative;
   flex-shrink: 0;
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
-  background:
-    linear-gradient(rgba(0,0,0,0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(0,0,0,0.04) 1px, transparent 1px),
-    var(--bg-100, #F5F5F3);
-  background-size: 40px 40px;
+  background: radial-gradient(circle at 50% 50%, #fff 0%, var(--bg-100, #F5F5F3) 80%);
 }
 .shell-chart { width: 100%; height: 100%; }
+.shell-graph-state {
+  position: absolute; inset: 0; z-index: 6;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-200); font-size: 13px;
+}
+.shell-graph-state--empty {
+  flex-direction: column; gap: 12px; text-align: center;
+  padding: 30px; color: var(--text-200);
+}
+.shell-graph-state--empty > svg { color: var(--primary-100); }
+.shell-graph-state__eyebrow {
+  color: var(--primary-100); font-size: 11px; font-weight: 700;
+  letter-spacing: .16em;
+}
+.shell-graph-state h2 { margin: 0; color: var(--text-100); font-size: 19px; }
+.shell-graph-state p { max-width: 340px; margin: 0; line-height: 1.7; }
+.shell-graph-state button {
+  margin-top: 8px; padding: 9px 18px;
+  border: 1px solid var(--primary-100); border-radius: var(--radius-sm);
+  background: var(--primary-100); color: #fff; font: inherit; cursor: pointer;
+}
+.shell-graph-state button:hover { background: var(--primary-300); }
+.shell-graph-guide {
+  position: absolute; right: 20px; bottom: 20px; z-index: 5;
+  color: var(--text-300); font-size: 11px; pointer-events: none;
+}
+.shell-focus {
+  position: absolute; left: 20px; top: 18px; z-index: 6;
+  display: flex; align-items: center; gap: 9px; max-width: calc(100% - 40px);
+  padding: 9px 10px 9px 12px; border: 1px solid var(--color-border);
+  background: var(--color-surface); box-shadow: 0 7px 20px rgba(26,26,26,.1);
+  color: var(--color-text-muted); font-size: 12px;
+}
+.shell-focus__dot { width: 9px; height: 9px; flex: none; border-radius: 50%; }
+.shell-focus strong { color: var(--color-text); font-size: 13px; }
+.shell-focus small { color: var(--color-text-muted); font-size: 11px; }
+.shell-focus button {
+  display: grid; place-items: center; width: 24px; height: 24px; margin-left: 6px;
+  border: 0; background: var(--color-background); color: var(--color-text-muted); cursor: pointer;
+}
+.shell-focus button:hover { color: var(--color-primary); }
+
+/* 节点查询与关系浏览：覆盖右侧分析栏，不压缩图谱布局。 */
+.node-inspector {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 30;
+  display: flex; flex-direction: column;
+  width: min(380px, 47%); min-width: 320px;
+  background: var(--color-surface, #fff);
+  border-left: 1px solid var(--color-border);
+  box-shadow: -14px 0 36px rgba(26,26,26,.11);
+  animation: inspector-enter .22s ease-out;
+}
+@keyframes inspector-enter { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: translateX(0); } }
+.node-inspector__head {
+  display: flex; justify-content: space-between; align-items: flex-start; gap: 16px;
+  padding: 24px 24px 20px; border-bottom: 1px solid var(--color-border);
+}
+.node-inspector__eyebrow { color: var(--color-primary); font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+.node-inspector__head h2 { margin: 8px 0 0; font-size: 22px; line-height: 1.35; color: var(--color-text); }
+.node-inspector__close {
+  display: grid; place-items: center; flex: none; width: 32px; height: 32px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  background: #fff; color: var(--color-text-muted); cursor: pointer;
+}
+.node-inspector__close:hover { color: var(--color-primary); border-color: var(--color-primary); }
+.node-inspector__body { flex: 1; min-height: 0; overflow: auto; padding: 22px 24px 28px; }
+.node-inspector__search {
+  display: flex; align-items: center; gap: 9px; padding: 10px 12px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm);
+  color: var(--color-text-muted); background: var(--color-background);
+}
+.node-inspector__search:focus-within { border-color: var(--color-primary); }
+.node-inspector__search input {
+  width: 100%; border: 0; outline: none; background: transparent;
+  color: var(--color-text); font: inherit; font-size: 13px;
+}
+.node-inspector__search input::placeholder { color: var(--color-text-subtle); }
+.node-inspector__results { margin-top: 16px; }
+.node-inspector__section-title { margin-bottom: 8px; color: var(--color-text-subtle); font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+.node-inspector__results button,
+.node-inspector__relations button {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px;
+  padding: 9px 7px; border: 0; border-bottom: 1px solid var(--color-border);
+  background: transparent; color: var(--color-text); text-align: left;
+  font: inherit; font-size: 13px; cursor: pointer;
+}
+.node-inspector__results button:hover,
+.node-inspector__relations button:hover { background: var(--color-background); }
+.node-inspector__results button > svg,
+.node-inspector__relations button > svg { margin-left: auto; color: var(--color-text-subtle); flex: none; }
+.node-inspector__dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.node-inspector__meta { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-top: 20px; color: var(--color-text-muted); font-size: 12px; }
+.node-inspector__tag { padding: 4px 8px; border: 1px solid currentColor; border-radius: var(--radius-sm); font-weight: 700; }
+.node-inspector__board-toggle {
+  display: inline-flex; align-items: center; gap: 7px; margin-top: 18px;
+  padding: 7px 10px; border: 1px solid var(--color-border);
+  background: var(--color-background); color: var(--color-text-muted); font: inherit; font-size: 12px; cursor: pointer;
+}
+.node-inspector__board-toggle:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.node-inspector__heat { margin: 22px 0; }
+.node-inspector__heat > div:first-child { display: flex; justify-content: space-between; align-items: baseline; font-size: 12px; color: var(--color-text-muted); }
+.node-inspector__heat strong { color: var(--color-text); font-size: 20px; }
+.node-inspector__heat-track { height: 5px; margin-top: 8px; border-radius: 99px; background: var(--color-background); overflow: hidden; }
+.node-inspector__heat-track span { display: block; height: 100%; border-radius: inherit; }
+.node-inspector__relations { margin-top: 24px; }
+.node-inspector__relations h3 { margin: 0 0 8px; font-size: 14px; color: var(--color-text); }
+.node-inspector__relations h3 span { margin-left: 4px; color: var(--color-text-subtle); font-weight: 400; }
+.node-inspector__relation-kind { flex: none; color: var(--color-primary); font-size: 11px; font-weight: 700; }
+.node-inspector__relation-name { min-width: 0; }
+.node-inspector__relation-name small { display: block; margin-top: 3px; color: var(--color-text-muted); font-size: 11px; }
+.node-inspector__results p,
+.node-inspector__relations p { color: var(--color-text-muted); font-size: 12px; line-height: 1.6; }
+.node-inspector__source { margin-top: 24px; color: var(--color-text-subtle); font-size: 11px; line-height: 1.6; }
 
 /* 右侧面板（始终挂载，从右侧滑入/滑出） */
 .shell-panel {
@@ -533,10 +538,10 @@ watch(showEdgeLabels, () => { if (chart) chart.setOption({ series: [{ links: bui
 .shell-body--single .shell-graph { width: 100%; }
 .shell-body--single .shell-panel { width: 0; opacity: 0; }
 
-/* ── split 模式：图谱 ~50%，面板 ~50% 滑入 ── */
-.shell-body--split .shell-graph { width: 50%; }
+/* ── split 模式：图谱是主任务，分析面板保留可读宽度 ── */
+.shell-body--split .shell-graph { width: 62%; }
 .shell-body--split .shell-panel {
-  width: 50%;
+  width: 38%;
   height: 100%;
   opacity: 1;
   overflow: hidden;
@@ -574,5 +579,9 @@ watch(showEdgeLabels, () => { if (chart) chart.setOption({ series: [{ links: bui
 @media (max-width: 767px) {
   .shell-brand__title { display: none; }
   .shell-scroll-label { font-size: 13px; }
+  .node-inspector { width: 100%; min-width: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .node-inspector { animation: none; }
 }
 </style>

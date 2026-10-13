@@ -6,8 +6,12 @@ import { Icon } from '@iconify/vue'
 import { useRouter } from 'vue-router'
 import { useLearningStore } from '@/stores'
 import { useResumeStore } from '@/stores/resume'
+import { useUserStore } from '@/stores/user'
 import { mockTargetRoleMarkets } from '@/mock/data'
-import { getTargetRoleMarketCard } from '@/api/favorites'
+import { getTargetRoleMarketCard, listSavedJobs } from '@/api/favorites'
+import { getApiMode } from '@/api/config'
+import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
+import { hasServerSavedJobCollection } from '@/composables/agentResourceHandoffContract'
 import type { TargetRoleMarket } from '@/types'
 
 // ── 角色专属色（当代杂志调：暖而有质地） ──
@@ -52,6 +56,14 @@ type FollowedRoleMarket = TargetRoleMarket & {
 const router = useRouter()
 const learningStore = useLearningStore()
 const resumeStore = useResumeStore()
+const userStore = useUserStore()
+const hasServerSavedJobs = ref(false)
+
+function askAgentAboutSavedJobs() {
+  if (!hasServerSavedJobs.value) return
+  // A saved job is user-submitted context, not a verified recommendation.
+  openAgentWithResource(router, { kind: 'career_resource', uri: 'career://me/saved-jobs' })
+}
 
 function normalizeRole(role: string): TargetRoleMarket['role'] {
   const text = role.toLowerCase()
@@ -236,6 +248,15 @@ let cardObserver: IntersectionObserver | null = null
 
 onMounted(async () => {
   await learningStore.loadFavoritesFromApi()
+  const uid = userStore.currentUser?.id
+  if (getApiMode() === 'http' && uid) {
+    try {
+      const rows = await listSavedJobs(uid)
+      hasServerSavedJobs.value = hasServerSavedJobCollection(getApiMode(), rows)
+    } catch {
+      hasServerSavedJobs.value = false
+    }
+  }
   await hydrateRoleMarkets()
 
   /* 初始化显示值为 0 */
@@ -323,6 +344,7 @@ function setCardStagger(cards: NodeListOf<Element>) {
           <div v-else class="hero-subtitle">在职业分析中关注方向，同步展示薪资与匹配度</div>
         </div>
         <div class="hero-actions">
+          <el-button v-if="hasServerSavedJobs" class="hero-btn-outline" title="仅分享服务端收藏记录，不代表岗位已经核实或获得推荐" @click="askAgentAboutSavedJobs">与 Agent 讨论已收藏岗位</el-button>
           <el-button class="hero-btn-outline" @click="goToCareerAnalysis">去关注方向</el-button>
           <el-button class="hero-btn-solid" @click="goToMatch">进入职途导航</el-button>
         </div>
@@ -1114,5 +1136,3 @@ function setCardStagger(cards: NodeListOf<Element>) {
   .guide-hint { font-size: 10px; }
 }
 </style>
-
-

@@ -5,6 +5,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { ElMessage } from 'element-plus'
 import UserInfoBar from '@/components/UserInfoBar.vue'
+import { useAgentArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
+import type { MatchPreview } from '@/types'
 import { useLearningStore } from '@/stores/learning'
 import { gsap } from '@/plugins/gsap'
 import { useCareerInsights, roleOptions, CAREER_DOMAINS, type CareerRole } from '@/composables/useCareerInsights'
@@ -198,6 +200,40 @@ const kpiDemandDetails = {
 /* ═══ 核心状态 ═══ */
 const route = useRoute()
 const router = useRouter()
+const artifactId = computed(() => {
+  const value = route.query.artifact_id
+  return typeof value === 'string' ? value : ''
+})
+const artifactHandoff = useAgentArtifactHandoff(() => artifactId.value)
+const matchArtifact = computed(() => {
+  const artifact = artifactHandoff.artifact.value
+  if (!artifact || !['match', 'match_result'].includes(artifact.kind)) return null
+  const preview = artifact.preview as MatchPreview | undefined
+  if (!preview || preview.type !== 'match_preview') return null
+  if (typeof preview.total_score !== 'number' || !Number.isFinite(preview.total_score) || preview.total_score < 0 || preview.total_score > 100) return null
+  if (typeof preview.coverage !== 'number' || !Number.isFinite(preview.coverage) || preview.coverage < 0 || preview.coverage > 100) return null
+  const roleName = preview.primary_role || artifact.title.match(/与\s*(.+?)\s*的匹配结果/)?.[1]?.trim()
+  const job = roleName && _flatJobs.find(item => item.jobName === roleName || item.jobName.replace(/工程师$/, '').trim() === roleName)
+  if (!job) return null
+  return { artifact, preview, job }
+})
+const artifactError = computed(() => {
+  if (!artifactId.value || artifactHandoff.loading.value) return ''
+  return artifactHandoff.error.value || (!matchArtifact.value ? '这份成果物缺少有效匹配分、覆盖率或可定位的岗位，无法展示为人岗匹配分析。' : '')
+})
+const matchArtifactChartOption = computed(() => {
+  const preview = matchArtifact.value?.preview
+  return {
+    animation: true,
+    grid: { left: 88, right: 38, top: 34, bottom: 44 },
+    xAxis: { type: 'value', min: 0, max: 100, axisLabel: { color: '#8b8175' }, splitLine: { lineStyle: { color: '#ded8ce' } } },
+    yAxis: { type: 'category', data: ['技能覆盖率', '匹配分'], axisLabel: { color: '#423b34', fontSize: 13 }, axisLine: { show: false }, axisTick: { show: false } },
+    series: [{ type: 'bar', barWidth: 28, data: [preview?.coverage ?? 0, preview?.total_score ?? 0], itemStyle: { color: '#bb3418', borderRadius: [0, 5, 5, 0] }, label: { show: true, position: 'right', formatter: '{c}', color: '#423b34', fontWeight: 'bold' } }],
+  }
+})
+function returnToAgent() {
+  void router.push({ name: 'student-ai-assistant', query: artifactHandoff.sessionId.value ? { session_id: artifactHandoff.sessionId.value } : {} })
+}
 const learningStore = useLearningStore()
 
 const followableRole = computed<CareerRole | null>(() => {
@@ -1687,7 +1723,7 @@ const salaryChartOption = computed(() => {
   }
 })
 
-onMounted(async () => {
+async function initializeAnalysis() {
   applyRouteRole(route.query.role)
   try {
     await hydrateCareerDomainsFromApi()
@@ -1696,6 +1732,9 @@ onMounted(async () => {
     console.warn('[career-analysis] landscape hydrate failed', e)
   }
   await nextTick()
+  // A route transition may have switched to an Agent artifact while hydration was pending.
+  if (artifactId.value) return
+  if (_bubbleRo) { _bubbleRo.disconnect(); _bubbleRo = null }
   setupEntranceAnimation()
   // D3 气泡图初始化（domains 可能已被 landscape 覆盖 jobs）
   initBubbleChart()
@@ -1703,6 +1742,34 @@ onMounted(async () => {
     _bubbleRo = new ResizeObserver(() => initBubbleChart())
     _bubbleRo.observe(bubbleSvgRef.value)
   }
+}
+
+onMounted(() => {
+  if (!artifactId.value) void initializeAnalysis()
+})
+
+watch(matchArtifact, async result => {
+  if (!artifactId.value || !result) return
+  // The conversation artifact supplies the scores; the existing job graph supplies only positioning.
+  roleSearch.value = result.job.jobName
+  selectedJob.value = {
+    id: result.job.domainId,
+    name: result.job.domainName,
+    domainColor: result.job.domainColor,
+    jobName: result.job.jobName,
+  }
+  doSearch()
+  await nextTick()
+  if (!artifactId.value || !bubbleSvgRef.value) return
+  if (_bubbleRo) { _bubbleRo.disconnect(); _bubbleRo = null }
+  initBubbleChart()
+  updateBubbleSelection()
+  _bubbleRo = new ResizeObserver(() => initBubbleChart())
+  _bubbleRo.observe(bubbleSvgRef.value)
+}, { immediate: true })
+
+watch(artifactId, (current, previous) => {
+  if (!current && previous) void initializeAnalysis()
 })
 
 watch(() => route.query.role, (val) => {
@@ -1718,19 +1785,19 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <div class="da-page" ref="pageRef">
+  <div class="da-page" :class="{ 'da-page--artifact': artifactId }" ref="pageRef">
     <!-- ═══ 顶部标题栏 ═══ -->
     <header class="da-header">
       <div class="da-header__left">
-        <button class="da-back" @click="goBack" title="返回职业发展中心">
+        <button class="da-back" @click="artifactId ? returnToAgent() : goBack()" :title="artifactId ? '返回 Agent 对话' : '返回职业发展中心'">
           <Icon icon="lucide:arrow-left" :width="16" />
-          <span>返回</span>
+          <span>{{ artifactId ? '返回 Agent' : '返回' }}</span>
         </button>
         <div class="da-brand">
-          <span class="da-brand__title">职业分析 · 岗位舆图</span>
+          <span class="da-brand__title">{{ artifactId ? '职业分析 · 本次岗位匹配' : '职业分析 · 岗位舆图' }}</span>
         </div>
       </div>
-      <div class="da-header__center">
+      <div v-if="!artifactId" class="da-header__center">
         <div class="da-header-search">
           <Icon icon="lucide:search" :width="14" class="da-header-search__icon" />
           <input
@@ -1752,9 +1819,26 @@ onBeforeUnmount(() => {
     </header>
 
     <!-- ═══ 主体三栏 ═══ -->
-    <div class="da-body">
+    <div v-if="artifactId && artifactHandoff.loading.value" class="da-artifact-state" role="status">正在载入本次匹配结果…</div>
+    <div v-else-if="artifactId && artifactError" class="da-artifact-state" role="alert"><strong>无法展示匹配结果</strong><p>{{ artifactError }}</p><button type="button" @click="returnToAgent">返回原对话</button></div>
+    <div v-else class="da-body">
       <!-- 左面板 -->
       <aside class="da-left">
+        <div v-if="artifactId" class="da-section da-artifact-result">
+          <span class="da-artifact-result__eyebrow">来自本次 Agent 对话</span>
+          <h1>{{ matchArtifact?.artifact.title }}</h1>
+          <p>{{ matchArtifact?.artifact.summary }}</p>
+          <div class="da-artifact-result__metric"><span>匹配分</span><strong>{{ matchArtifact?.preview.total_score }}</strong><small>/ 100</small></div>
+          <div class="da-artifact-result__metric"><span>技能覆盖率</span><strong>{{ matchArtifact?.preview.coverage }}%</strong></div>
+          <div v-if="matchArtifact?.preview.candidates?.length" class="da-artifact-result__candidates">
+            <span class="da-artifact-result__eyebrow">候选方向对比</span>
+            <div v-for="candidate in matchArtifact.preview.candidates" :key="candidate.role" class="da-artifact-result__candidate">
+              <span>{{ candidate.role }}</span><strong>{{ candidate.score }}</strong>
+            </div>
+          </div>
+          <span class="da-artifact-result__note">中央岗位图谱仅定位目标岗位，不是本次匹配结果的额外分数。</span>
+        </div>
+        <template v-else>
         <!-- #8 KPI 卡片 (带 tooltip 增强可信度) -->
         <div class="da-section">
           <div class="da-section__title"><Icon icon="lucide:activity" :width="14" />方向概览 · {{ currentAnalysisLabel }}</div>
@@ -1809,6 +1893,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+        </template>
 
       </aside>
 
@@ -1819,7 +1904,7 @@ onBeforeUnmount(() => {
           <div class="da-bubble-job-tag" :class="{ 'da-bubble-job-tag--empty': !hasSelectedJob }">
             <Icon :icon="hasSelectedJob ? 'lucide:briefcase' : 'lucide:mouse-pointer-click'" :width="12" />
             <template v-if="hasSelectedJob">
-              <span class="da-bubble-job-tag__step">已选岗位</span>
+              <span class="da-bubble-job-tag__step">{{ artifactId ? '本次产物目标岗位' : '已选岗位' }}</span>
               <b :style="{ color: selectedJob?.domainColor }">{{ selectedJobLabel }}</b>
               <span class="da-bubble-job-tag__domain">{{ selectedJobDomainLabel }}</span>
             </template>
@@ -1832,7 +1917,12 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 下半：薪资柱状图 + 地图 -->
-        <div class="da-bottom" :class="{ 'da-bottom--focus-map': !hasSelectedProvince }">
+        <div v-if="artifactId" class="da-artifact-chart-wrap">
+          <div class="da-section__title"><Icon icon="lucide:chart-no-axes-combined" :width="15" />本次匹配指标</div>
+          <VChart class="da-artifact-chart" :option="matchArtifactChartOption" autoresize />
+          <p>指标仅取自当前对话中的同一份匹配产物。</p>
+        </div>
+        <div v-else class="da-bottom" :class="{ 'da-bottom--focus-map': !hasSelectedProvince }">
           <!-- 左：省份中位薪资排行（全岗位滑动） -->
           <Transition :css="false" @enter="onSalaryEnter" @leave="onSalaryLeave">
             <div v-if="hasSelectedProvince" class="da-salary-chart">
@@ -1893,7 +1983,17 @@ onBeforeUnmount(() => {
 
       <!-- 右面板 -->
       <aside class="da-right">
-        <Transition :css="false" mode="out-in" @enter="onRightEnter" @leave="onRightLeave">
+        <div v-if="artifactId" class="da-artifact-gaps">
+          <span class="da-artifact-result__eyebrow">岗位差距</span>
+          <h2>优先补齐的能力</h2>
+          <div v-if="matchArtifact?.preview.gaps?.length" class="da-artifact-gaps__list">
+            <span v-for="gap in matchArtifact.preview.gaps" :key="gap">{{ gap }}</span>
+          </div>
+          <p v-else>这份匹配产物没有列出具体能力差距。</p>
+          <p class="da-artifact-gaps__note">本页只展示当前产物已提供的指标与差距；不会将通用演示岗位统计当作你的个人匹配结果。</p>
+          <button type="button" @click="returnToAgent"><Icon icon="lucide:arrow-left" :width="14" />返回原对话</button>
+        </div>
+        <Transition v-else :css="false" mode="out-in" @enter="onRightEnter" @leave="onRightLeave">
           <div v-if="analysisStage === 'insight-ready'" key="insight" class="da-right-content">
             <!-- 省份对标图 -->
             <div class="da-section da-section--chart">
@@ -1966,7 +2066,7 @@ onBeforeUnmount(() => {
 
     <!-- 底部 CTA：已关注方向时出现 -->
     <Transition name="cta-slide">
-      <div v-if="analysisStage === 'insight-ready' && learningStore.targetRoles.length > 0 && ctaVisible" class="da-bottom-cta">
+      <div v-if="!artifactId && analysisStage === 'insight-ready' && learningStore.targetRoles.length > 0 && ctaVisible" class="da-bottom-cta">
         <span class="da-bottom-cta__text">
           已关注
           <strong>{{ learningStore.targetRoles.map(r => r.role).join(' / ') }}</strong>
@@ -3064,4 +3164,34 @@ onBeforeUnmount(() => {
   background: rgba(139,37,0,0.12); border-radius: 2px;
 }
 .da-left::-webkit-scrollbar-track, .da-right::-webkit-scrollbar-track, .rank-list::-webkit-scrollbar-track { background: transparent; }
+
+/* Agent 产物直接进入职业分析原有三栏与图表，不混用市场演示 KPI。 */
+.da-artifact-state { flex: 1; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 30px; text-align: center; color: var(--text-200); }
+.da-artifact-state p { max-width: 480px; margin: 0; line-height: 1.6; }
+.da-artifact-state button, .da-artifact-gaps button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--bg-300); border-radius: 8px; background: var(--bg-100); padding: 9px 12px; color: var(--text-100); cursor: pointer; }
+.da-artifact-result__eyebrow { display: block; color: var(--primary-100); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+.da-artifact-result h1 { margin: 12px 0 8px; font-size: 19px; line-height: 1.35; }
+.da-artifact-result p { margin: 0 0 20px; color: var(--text-200); font-size: 12px; line-height: 1.6; }
+.da-artifact-result__metric { display: flex; align-items: baseline; gap: 7px; border-top: 1px solid var(--bg-300); padding: 13px 0; }
+.da-artifact-result__metric span { flex: 1; font-size: 12px; color: var(--text-200); }
+.da-artifact-result__metric strong { font-size: 30px; color: var(--primary-100); font-variant-numeric: tabular-nums; }
+.da-artifact-result__metric small { color: var(--text-300); }
+.da-artifact-result__candidates { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--bg-300); }
+.da-artifact-result__candidate { display: flex; justify-content: space-between; gap: 10px; color: var(--text-200); font-size: 12px; }
+.da-artifact-result__candidate strong { color: var(--primary-100); font-variant-numeric: tabular-nums; }
+.da-artifact-result__note, .da-artifact-gaps__note { display: block; margin-top: 20px; color: var(--text-300); font-size: 11px; line-height: 1.6; }
+.da-page--artifact .da-bubble-svg { pointer-events: none; }
+.da-artifact-chart-wrap { flex: 1; min-height: 0; padding: 19px 22px; background: #f7f5f0; }
+.da-artifact-chart { width: 100%; height: calc(100% - 63px); min-height: 190px; }
+.da-artifact-chart-wrap p { margin: 0; color: var(--text-300); font-size: 11px; }
+.da-artifact-gaps h2 { margin: 12px 0 18px; font-size: 18px; }
+.da-artifact-gaps__list { display: flex; flex-wrap: wrap; gap: 8px; }
+.da-artifact-gaps__list span { padding: 9px 11px; border: 1px solid var(--bg-300); border-radius: 8px; background: var(--bg-100); font-size: 12px; }
+.da-artifact-gaps button { margin-top: 22px; }
+@media (max-width: 850px) {
+  .da-page--artifact .da-body { overflow-y: auto; flex-wrap: wrap; }
+  .da-page--artifact .da-left, .da-page--artifact .da-right { width: 100%; flex: 1 1 100%; min-width: 0; }
+  .da-page--artifact .da-map { flex: 1 1 100%; min-height: 550px; }
+}
+
 </style>

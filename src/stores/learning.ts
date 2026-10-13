@@ -2,7 +2,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Note, WrongQuestion, QuizRecord, Question, AIMessage, AIToolCall, SavedJob, TargetRole } from '@/types'
-import type { ArtifactRef, MessagePart } from '@/types'
+import type { ArtifactRef, MessagePart, TurnOutcome } from '@/types'
 import {
   mockNotes,
   mockWrongQuestions,
@@ -32,6 +32,7 @@ import {
   getAgentSessionId,
 } from '@/api/agent'
 import { useUserStore } from '@/stores/user'
+import { getApiMode } from '@/api/config'
 
 // 学习记录接口
 export interface LearningRecord {
@@ -454,6 +455,7 @@ export const useLearningStore = defineStore(
 
     function getAIResponseCategory(input: string): string {
       const t = input.toLowerCase()
+      if (t.includes('报告')) return '报告'
       if (t.includes('简历')) return '简历'
       if (t.includes('课程')) return '课程'
       if (t.includes('差距') || t.includes('匹配')) return '匹配'
@@ -497,6 +499,8 @@ export const useLearningStore = defineStore(
             { name: 'pipeline_run', status: 'done', summary: '解析简历结构与技能字段' },
             { name: 'llm_reason', status: 'done', summary: '对照岗位要求给出改进项' },
           ]
+        case '报告':
+          return [{ name: 'career_report', status: 'done', summary: '整理岗位匹配、能力差距与行动建议' }]
         case '课程':
           return [
             { name: 'learning_path', status: 'done', summary: '按缺口排序学习路径' },
@@ -514,37 +518,85 @@ export const useLearningStore = defineStore(
           return [{
             artifact_id: 'mock_artifact_direction', kind: 'match', status: 'completed', title: '候选职业方向',
             summary: 'Java 后端 / 大数据 / 测试开发，按覆盖率排序',
+            preview: {
+              type: 'match_preview', primary_role: 'Java 后端工程师', total_score: 76, coverage: 72,
+              gaps: ['消息队列', '系统设计'],
+              candidates: [
+                { role: 'Java 后端工程师', score: 76, coverage: 72 },
+                { role: '大数据开发工程师', score: 68, coverage: 65 },
+                { role: '测试开发工程师', score: 64, coverage: 61 },
+              ],
+            },
             actions: [{ id: 'open_match', label: '查看方向对比' }],
           }]
         case '画像':
           return [{
             artifact_id: 'mock_artifact_portrait', kind: 'portrait', status: 'completed', title: '四维能力画像',
             summary: 'D1 76 · D2 72 · D3 58 · D4 48，决定项：项目深度',
+            preview: { type: 'portrait_preview', scores: { d1: 76, d2: 72, d3: 58, d4: 48 }, strengths: ['基础素质', '专业技能'], weaknesses: ['项目深度'] },
             actions: [{ id: 'view_portrait', label: '打开画像' }],
           }]
         case '计划':
           return [{
             artifact_id: 'mock_artifact_plan', kind: 'action_plan', status: 'completed', title: '本周学习计划',
             summary: '第 1 周：项目深化 + 消息队列入门，周日验收',
+            preview: {
+              type: 'plan_preview', steps: 3, completed: 0, duration: '本周',
+              items: [
+                { id: 'project', title: '深化一个后端项目', detail: '补齐背景、技术难点、方案与量化结果，形成可讲述的项目故事。', keyword: 'Spring Boot', done: false },
+                { id: 'mq', title: '消息队列入门', detail: '理解异步解耦、重试与幂等，并在项目中完成一个最小实践。', keyword: '消息队列', done: false },
+                { id: 'review', title: '周日验收与复盘', detail: '用 10 分钟讲清项目改动，记录遇到的问题和下周行动。', keyword: 'Java', done: false },
+              ],
+            },
             actions: [{ id: 'continue_plan', label: '查看计划' }],
           }]
         case '匹配':
           return [{
             artifact_id: 'mock_artifact_match', kind: 'match', status: 'completed', title: '与 Java 后端的匹配结果',
             summary: '匹配分 76 · 覆盖率 72% · 缺消息队列与系统设计',
+            preview: { type: 'match_preview', total_score: 76, coverage: 72, gaps: ['消息队列', '系统设计'] },
             actions: [{ id: 'open_match', label: '查看匹配' }],
           }]
         case '简历':
           return [{
             artifact_id: 'mock_artifact_resume', kind: 'file', status: 'completed', title: '简历改进清单',
             summary: '项目描述过薄、缺技术难点，3 条可执行改进',
-            actions: [{ id: 'open_resume', label: '打开简历' }],
+            preview: {
+              type: 'resume_improvement_preview',
+              draft: { name: '演示学生', targetRole: 'Java 后端工程师', skills: ['Java', 'Spring Boot', 'MySQL'], projects: [{ name: '校园后端项目（演示）', role: '后端开发', desc: '使用 Spring Boot + MySQL 完成基础接口。' }] },
+              recommendations: [
+                { id: 'result', target: 'projects', title: '补充量化结果', detail: '项目描述增加业务规模、性能指标或可核验的结果。', applied: false },
+                { id: 'challenge', target: 'projects', title: '写清技术难点', detail: '按背景、难点、方案、结果四段式补充项目经历。', applied: false },
+                { id: 'skills', target: 'skills', title: '技能分层', detail: '将技能按熟练、熟悉、了解分层，避免笼统罗列。', applied: false },
+              ],
+            },
+            actions: [{ id: 'open_resume', label: '查看改进清单' }],
           }]
         case '课程':
           return [{
             artifact_id: 'mock_artifact_courses', kind: 'action_plan', status: 'completed', title: '课程学习顺序',
             summary: 'Spring Boot 进阶 → Redis → 消息队列 → 系统设计',
+            preview: {
+              type: 'plan_preview', steps: 4, completed: 0, duration: '四周',
+              items: [
+                { id: 'spring', title: 'Spring Boot 进阶', detail: '巩固服务分层、接口设计和异常处理。', keyword: 'Spring Boot', done: false },
+                { id: 'redis', title: 'Redis 缓存实践', detail: '在项目中加入缓存并观察命中率与一致性问题。', keyword: 'Redis', done: false },
+                { id: 'mq', title: '消息队列与异步任务', detail: '完成事件发布、消费与失败重试的最小实践。', keyword: '消息队列', done: false },
+                { id: 'design', title: '系统设计复盘', detail: '输出一页架构图，解释扩展性与关键权衡。', keyword: '系统设计', done: false },
+              ],
+            },
             actions: [{ id: 'continue_plan', label: '去学习' }],
+          }]
+        case '报告':
+          return [{
+            artifact_id: 'mock_artifact_report', kind: 'career_report', status: 'completed', title: 'Java 后端职业发展报告',
+            summary: '围绕岗位匹配、项目深度与本周行动生成的演示报告。',
+            preview: {
+              type: 'report_preview', chapters: ['岗位匹配摘要', '七维能力差距', '个性化成长计划', '关键技能要求'],
+              markdown: '# 职业生涯发展报告\n\n**目标岗位**：Java 后端工程师    **数据范围**：演示对话\n\n## 岗位匹配摘要\n\n当前技能覆盖了 Java、Spring Boot 与 MySQL；项目深度仍需补强。\n\n## 七维能力差距\n\n优先改进项目经验、技术表达与系统设计。\n\n## 个性化成长计划\n\n第一阶段：深化一个后端项目并补充量化结果。\n第二阶段：实践 Redis 和消息队列，完成一次架构复盘。\n\n## 关键技能要求\n\n- Java 与 Spring Boot\n- MySQL 与 Redis\n- 消息队列与系统设计\n',
+              word_count: 266,
+            },
+            actions: [{ id: 'open_report', label: '打开报告' }],
           }]
         default:
           return []
@@ -560,7 +612,9 @@ export const useLearningStore = defineStore(
     } {
       const category = getAIResponseCategory(input)
       const responses = mockAIResponses[category] || mockAIResponses['默认']
-      const content = responses[Math.floor(Math.random() * responses.length)]
+      const content = category === '报告'
+        ? '已整理一份 Java 后端职业发展报告演示稿，包含岗位匹配、能力差距、成长计划和关键技能。打开下方报告即可在平台报告编辑器中继续修改。'
+        : responses[Math.floor(Math.random() * responses.length)]
       const thinkingPool = mockThinkingTemplates[category] || mockThinkingTemplates['默认']
       const thinking = thinkingPool[Math.floor(Math.random() * thinkingPool.length)]
       return { content, thinking, category, toolCalls: mockToolCallsForCategory(category), artifacts: mockArtifactsForCategory(category) }
@@ -716,10 +770,17 @@ export const useLearningStore = defineStore(
           listSavedJobs(uid),
           listTargetRoles(uid),
         ])
-        if (jobs.length) savedJobs.value = jobs
-        if (roles.length) targetRoles.value = roles
+        // Empty is an authoritative server result too. In HTTP mode never let
+        // starter fixtures/local state leak into a user's real collection.
+        savedJobs.value = jobs
+        targetRoles.value = roles
       } catch (e) {
-        console.warn('[favorites] load failed, keeping local mock', e)
+        console.warn('[favorites] server read failed', e)
+        if (getApiMode() === 'http') {
+          // A failed real read is not evidence that the mock collection is real.
+          savedJobs.value = []
+          targetRoles.value = []
+        }
       }
     }
 
@@ -792,6 +853,7 @@ export const useLearningStore = defineStore(
       parts?: MessagePart[]
       artifacts?: ArtifactRef[]
       turnId?: string
+      outcome?: TurnOutcome
       sessionTitle?: string
       sessionSummary?: string
       fromApi: boolean
@@ -854,6 +916,7 @@ export const useLearningStore = defineStore(
         parts: publicTurnToMessageParts(data),
         artifacts: data?.artifacts || [],
         turnId: data?.turn_id,
+        outcome: data?.outcome,
         sessionTitle: data?.session_title || undefined,
         sessionSummary: data?.session_summary || undefined,
         fromApi: true,

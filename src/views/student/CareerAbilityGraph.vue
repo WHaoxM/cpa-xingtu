@@ -1,6 +1,6 @@
 <!-- 组件：职业能力图谱工具栏叠加层；由 CareerAbilityShell.vue 引入使用，非路由直接渲染；角色：STUDENT -->
 <script setup lang="ts">
-import { inject } from 'vue'
+import { inject, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import {
   GROUP_COLORS, GROUP_LABELS, RELATION_STYLES,
@@ -14,6 +14,10 @@ const showEdgeLabels = sg.showEdgeLabels
 const refreshLayout = sg.refreshLayout
 const layoutMode = sg.layoutMode
 const toggleLayout = sg.toggleLayout
+const toggleAllBoards = sg.toggleAllBoards
+const collapsedBoards = sg.collapsedBoards
+const openInspector = sg.openInspector
+const legendOpen = ref(false)
 </script>
 
 <template>
@@ -24,15 +28,25 @@ const toggleLayout = sg.toggleLayout
         <input type="checkbox" v-model="showEdgeLabels" />
         <span>显示连线标签</span>
       </label>
-      <button class="ag-toolbar__btn" @click="refreshLayout" title="刷新布局">
+      <button class="ag-toolbar__text-btn" @click="toggleAllBoards" :title="collapsedBoards.size ? '展开全部技能' : '收起全部技能'">
+        {{ collapsedBoards.size ? '展开全部' : '收起全部' }}
+      </button>
+      <button class="ag-toolbar__btn" @click="openInspector" title="查找节点" aria-label="查找节点">
+        <Icon icon="lucide:search" :width="15" />
+      </button>
+      <button class="ag-toolbar__btn" @click="refreshLayout" title="重置视图" aria-label="重置图谱视图">
         <Icon icon="lucide:refresh-cw" :width="15" />
       </button>
       <button class="ag-toolbar__btn" @click="toggleLayout" :title="layoutMode === 'single' ? '双栏模式' : '图谱模式'">
         <Icon :icon="layoutMode === 'single' ? 'lucide:columns' : 'lucide:maximize'" :width="15" />
       </button>
     </div>
-    <!-- 图例（左下角） -->
-    <div class="ag-legend">
+    <!-- 图例按需展开，避免压住左下角的板块与技能节点 -->
+    <div class="ag-legend-wrap">
+      <button class="ag-legend-toggle" :aria-expanded="legendOpen" @click="legendOpen = !legendOpen">
+        <Icon icon="lucide:layers-3" :width="14" /> 图例
+      </button>
+    <div v-if="legendOpen" class="ag-legend">
       <div class="ag-legend__title">图例</div>
       <div class="ag-legend__section">
         <div class="ag-legend__subtitle">技能板块</div>
@@ -48,7 +62,8 @@ const toggleLayout = sg.toggleLayout
           <span>{{ style.label }}</span>
         </div>
       </div>
-      <div class="ag-legend__hint">点击板块节点可折叠/展开子技能</div>
+      <div class="ag-legend__hint">点击板块展开子技能；在节点详情中可收起</div>
+    </div>
     </div>
   </div>
 </template>
@@ -87,14 +102,31 @@ const toggleLayout = sg.toggleLayout
   border-radius: var(--radius-sm, 2px); transition: all 0.15s;
 }
 .ag-toolbar__btn:hover { border-color: var(--primary-100); color: var(--primary-100); background: rgba(139,37,0,0.06); }
+.ag-toolbar__text-btn {
+  padding: 5px 7px; border: 0; background: transparent;
+  color: var(--primary-100); font: inherit; font-size: 12px; cursor: pointer;
+}
+.ag-toolbar__text-btn:hover { text-decoration: underline; }
 
 /* ═══ 图例（左下） ═══ */
-.ag-legend {
+.ag-legend-wrap {
   position: absolute; bottom: 18px; left: 18px; z-index: 20;
+  pointer-events: auto;
+}
+.ag-legend-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 11px; border: 1px solid var(--bg-300);
+  border-radius: var(--radius-sm); background: rgba(255,255,255,0.96);
+  color: var(--text-200); font: inherit; font-size: 12px; cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+.ag-legend-toggle:hover { color: var(--primary-100); border-color: var(--primary-100); }
+.ag-legend {
+  position: absolute; bottom: 42px; left: 0;
   background: rgba(255,255,255,0.92); backdrop-filter: blur(6px);
   border: 1px solid var(--bg-300, #CBCBC8);
   border-radius: var(--radius-md, 3px); padding: 12px 16px; min-width: 160px;
-  pointer-events: auto;
+  box-shadow: var(--shadow-md);
 }
 .ag-legend__title {
   font-size: 13px; font-weight: 600; color: var(--primary-100, #8B2500);
@@ -112,7 +144,8 @@ const toggleLayout = sg.toggleLayout
 }
 
 @media (max-width: 767px) {
-  .ag-legend { bottom: 10px; left: 10px; padding: 8px 12px; min-width: 130px; }
+  .ag-legend-wrap { bottom: 10px; left: 10px; }
+  .ag-legend { padding: 8px 12px; min-width: 130px; }
   .ag-toolbar { top: 8px; right: 10px; padding: 4px 8px; }
 }
 </style>

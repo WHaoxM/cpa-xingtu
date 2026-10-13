@@ -11,10 +11,8 @@ export async function getCareerSuggestions(
     return generateMockCareerSuggestions(targetRoles)
   }
 
-  const env = await httpPost<string[]>('/api/agent/career-suggestions', {
-    userId,
-    targetRoles,
-  })
+  // HTTP suggestions resolve saved roles and resume evidence by Principal.
+  const env = await httpPost<string[]>('/api/agent/career-suggestions', {})
   return env.data ?? []
 }
 
@@ -29,10 +27,9 @@ export async function analyzeReports(
   }
 
   const env = await httpPost<AIAnalysisResult>('/api/ai/growth-analysis', {
-    userId,
+    // The server resolves Principal, current portrait and report versions.
+    // Browser snapshots and a caller-supplied userId are not evidence.
     reportIds: records.map((r) => r.id),
-    snapshots: records.map((r) => r.snapshot),
-    targetRoles,
   })
   if (!env.data) {
     throw new Error(env.error || 'growth-analysis returned empty data')

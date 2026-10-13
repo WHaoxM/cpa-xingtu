@@ -1,6 +1,6 @@
 ﻿<!-- 页面：首页；路由：/app/dashboard（dashboard）；角色：STUDENT/ADMIN -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore, useCourseStore } from '@/stores'
 import { useLearningStore } from '@/stores/learning'
@@ -8,6 +8,10 @@ import { useResumeStore } from '@/stores/resume'
 import { useReportStore } from '@/stores/report'
 import { useOnboardingState } from '@/composables/useOnboardingState'
 import { Icon } from '@iconify/vue'
+import { getApiMode } from '@/api/config'
+import { getStudent4d, getStudentProfile } from '@/api/profile'
+import { getCompletedReportCount } from '@/api/report'
+import { ApiError } from '@/api/types'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -17,20 +21,34 @@ const resumeStore = useResumeStore()
 const reportStore = useReportStore()
 
 const { hasExplored, hasAssessed } = useOnboardingState()
+const backendConnected = getApiMode() === 'http'
+const backendProfileReady = ref(false)
+const backendPortraitReady = ref(false)
+const backendReportCount = ref(0)
+const backendStatusError = ref(false)
 
 // ── 基础状态 ──
 const currentUserId = computed(() => userStore.currentUser?.id ?? '')
 const isStudent = computed(() => userStore.isStudent)
 
-const isParsedOrReported = computed(() =>
-  resumeStore.isParsed || reportStore.portraitRecords.length > 0
-)
+const reportCount = computed(() => backendConnected
+  ? backendReportCount.value
+  : reportStore.portraitRecords.length + reportStore.careerRecords.length)
+const isParsedOrReported = computed(() => backendConnected
+  ? backendPortraitReady.value
+  : resumeStore.isParsed || reportStore.portraitRecords.length > 0)
+const explored = computed(() => backendConnected ? false : hasExplored.value)
+const assessed = computed(() => backendConnected ? backendPortraitReady.value : hasAssessed.value)
 
 // ── IntersectionObserver（滚动揭示） ──
 let _observer: IntersectionObserver | null = null
 
 onMounted(() => {
-  if (!learningStore.learningHistory.length) learningStore.loadFromStorage()
+  if (backendConnected) {
+    void loadBackendProgress()
+  } else if (!learningStore.learningHistory.length) {
+    learningStore.loadFromStorage()
+  }
   _observer = new IntersectionObserver(
     entries => entries.forEach(e => {
       if (e.isIntersecting) {
@@ -43,16 +61,34 @@ onMounted(() => {
   document.querySelectorAll('.reveal').forEach(el => _observer!.observe(el))
 })
 
+async function loadBackendProgress() {
+  const studentId = currentUserId.value
+  if (!studentId) return
+  const results = await Promise.allSettled([
+    getStudentProfile(studentId),
+    getStudent4d(studentId),
+    getCompletedReportCount(studentId),
+  ])
+  backendProfileReady.value = results[0]?.status === 'fulfilled' && Boolean(results[0].value.data)
+  const portraitFound = results[1]?.status === 'fulfilled' && Boolean(results[1].value.data)
+  backendPortraitReady.value = backendProfileReady.value && portraitFound
+  backendReportCount.value = results[2]?.status === 'fulfilled' ? results[2].value : 0
+  backendStatusError.value = (portraitFound && !backendProfileReady.value) || results.some(result =>
+    result.status === 'rejected' && (!(result.reason instanceof ApiError) || result.reason.status !== 404))
+}
+
 onUnmounted(() => { _observer?.disconnect() })
 
 // ── 学习历史 ──
 const userLearningHistory = computed(() => {
+  if (backendConnected) return [] // local demo history is not server evidence
   if (!currentUserId.value) return []
   return learningStore.learningHistory.filter(r => r.userId === currentUserId.value)
 })
 
 // ── Hero 精简 KPI ──
 const inProgressCourseCount = computed(() => {
+  if (backendConnected) return 0
   if (!currentUserId.value) return 0
   const list = courseStore.getUserProgress(currentUserId.value)
   const map = new Map<string, number>()
@@ -64,16 +100,17 @@ const inProgressCourseCount = computed(() => {
 
 // ── 目标岗位 ──
 const effectiveRole = computed(() => {
+  if (backendConnected) return null // backend role progress needs an owner-scoped read API
   const roles = learningStore.targetRoles
   return roles.length > 0 ? roles[roles.length - 1]!.role : null
 })
 
 // ── 当前阶段判断 ──
 const currentPhaseIndex = computed(() => {
-  if (!hasExplored.value) return 0
-  if (!hasAssessed.value) return 1
+  if (!explored.value) return 0
+  if (!assessed.value) return 1
   if (userLearningHistory.value.length === 0) return 2
-  if (!reportStore.records.length) return 3
+  if (!reportCount.value) return 3
   return 4
 })
 
@@ -104,28 +141,29 @@ const hasAnyLearningData = computed(() => userLearningHistory.value.length > 0)
 
 // ── 阶段成果摘要 ──
 const phaseStats = computed<(string | null)[]>(() => [
-  learningStore.targetRoles.length > 0
+  !backendConnected && learningStore.targetRoles.length > 0
     ? `已关注 ${learningStore.targetRoles.length} 个职业方向`
     : null,
   isParsedOrReported.value
-    ? resumeStore.isParsed ? '简历已解析，能力已评估' : '完成技能自评'
+    ? backendConnected ? '服务端能力画像已生成'
+      : resumeStore.isParsed ? '简历已解析，能力已评估' : '完成技能自评'
     : null,
   userLearningHistory.value.length > 0
     ? `已涉及 ${new Set(userLearningHistory.value.map(r => r.courseId)).size} 门课程`
     : null,
-  reportStore.portraitRecords.length + reportStore.careerRecords.length > 0
-    ? `书架已有 ${reportStore.portraitRecords.length + reportStore.careerRecords.length} 份报告`
+  reportCount.value > 0
+    ? `书架已有 ${reportCount.value} 份报告`
     : null,
 ])
 
 // ── 智能引导卡 ──
 const guideCard = computed(() => {
-  if (!hasExplored.value) return {
+  if (!explored.value) return {
     step: 1, title: '探索你的职业方向',
     desc: '了解行业趋势和岗位需求，选择一个目标职业方向。这是职涯规划的第一步。',
     cta: '开始探索', route: '/app/student/career-analysis', icon: 'lucide:compass',
   }
-  if (!hasAssessed.value) return {
+  if (!assessed.value) return {
     step: 2, title: '评估你的能力现状',
     desc: '上传简历或完成技能自评，AI 将分析你的能力与目标岗位的差距。',
     cta: '开始评估', route: '/app/student/career-navigation', icon: 'lucide:crosshair',
@@ -135,7 +173,7 @@ const guideCard = computed(() => {
     desc: '根据能力差距分析，制定学习计划，针对性地提升核心技能。',
     cta: '前往学习', route: '/app/student/learning', icon: 'lucide:trending-up',
   }
-  if (!reportStore.records.length) return {
+  if (!reportCount.value) return {
     step: 4, title: '沉淀你的成长成果',
     desc: '生成职业生涯发展报告，梳理学习成果和能力变化。',
     cta: '生成报告', route: '/app/student/career-report', icon: 'lucide:file-text',
@@ -156,17 +194,17 @@ const phasesList = [
 ] as const
 
 const phasesDone = computed(() => [
-  learningStore.targetRoles.length > 0,
+  !backendConnected && learningStore.targetRoles.length > 0,
   isParsedOrReported.value,
   userLearningHistory.value.length > 0,
-  reportStore.records.length > 0,
+  reportCount.value > 0,
 ])
 
 // ── 功能介绍卡片 ──
 const featureCards = [
   {
     title: '职业分析', icon: 'lucide:target', route: '/app/student/career-analysis',
-    desc: '不确定未来方向？这里汇集行业趋势与真实岗位数据，AI 帮你找到最匹配的发展路径。',
+    desc: '不确定未来方向？查看可用的职业与岗位来源；来源不足时不会把推荐标成已完成。',
   },
   {
     title: '技能自评', icon: 'lucide:check-square', route: '/app/exams',
@@ -254,7 +292,7 @@ const todayDisplay = computed(() => {
           <aside class="hc-hero-dash hc-card">
             <div class="hc-hero-dash__label">决策速览</div>
             <div class="hc-hero-dash__stat">
-              <span class="hc-hero-dash__num">{{ reportStore.portraitRecords.length + reportStore.careerRecords.length }}</span>
+              <span class="hc-hero-dash__num">{{ reportCount }}</span>
               <span class="hc-hero-dash__key">已沉淀报告</span>
             </div>
             <div class="hc-hero-dash__row">
@@ -304,6 +342,8 @@ const todayDisplay = computed(() => {
       <!-- D · 职业规划路径（纯进度可视化） -->
       <div class="hc-section-label reveal"><span>职业规划路径</span><span class="hc-section-label__line" /></div>
       <section class="hc-pipeline hc-card reveal">
+        <p v-if="backendConnected && backendStatusError" role="status">后端进度不一致或暂无法同步，相关步骤未标记为完成；请稍后刷新。</p>
+        <p v-else-if="backendConnected && backendProfileReady && !backendPortraitReady" role="status">简历已确认，能力画像仍待生成。</p>
         <div class="hc-pipeline__track">
           <div
             v-for="(phase, i) in phasesList"

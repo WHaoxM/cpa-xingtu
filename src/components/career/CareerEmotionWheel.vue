@@ -33,14 +33,14 @@ const defaultEmotions: Emotion[] = [
   { id: 'confident',label: '自信',   angle: 315,  color: 'rgba(139,124,246,0.8)' },
 ]
 
-const emotions = computed(() => props.emotions || defaultEmotions)
+const emotions = computed(() => props.emotions?.length ? props.emotions : defaultEmotions)
 const selectedIndex = ref(3) // 默认选中"兴奋"
 const wheelRef = ref<HTMLElement | null>(null)
 const isDragging = ref(false)
 const startAngle = ref(0)
 const currentRotation = ref(0)
 
-const selectedEmotion = computed(() => emotions.value[selectedIndex.value])
+const selectedEmotion = computed(() => emotions.value[selectedIndex.value] ?? emotions.value[0] ?? defaultEmotions[0]!)
 
 // 计算每个情绪的位置
 function getEmotionPosition(emotion: Emotion, index: number) {
@@ -88,14 +88,16 @@ function onPointerUp() {
 
 // 点击选择情绪
 function selectEmotion(index: number) {
+  const emotion = emotions.value[index]
+  if (!emotion) return
   selectedIndex.value = index
-  const targetRotation = -emotions.value[index].angle
+  const targetRotation = -emotion.angle
   gsap.to(currentRotation, {
     value: targetRotation,
     duration: 0.6,
     ease: 'power3.out',
   })
-  emit('select', selectedEmotion.value)
+  emit('select', emotion)
 }
 
 // 中心水晶球动画

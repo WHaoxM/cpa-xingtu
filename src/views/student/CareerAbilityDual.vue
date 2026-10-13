@@ -33,6 +33,7 @@ const introEmpty = computed(() =>
 
 /* ═══ 生成流程（使用 Shell 共享实例，避免重复启动和时序偏差） ═══ */
 const gen = sg.gen
+const graphEmpty = sg.graphEmpty
 
 /* ═══ 职业分析骨架屏：根据 gen.progress 逐区块解锁 ═══ */
 const revealedSections = computed(() => {
@@ -80,7 +81,7 @@ function logIcon(level: LogEntry['level']) {
           <h3 class="dual-card__title"><span class="dual-card__num">01</span> 职业分析</h3>
           <div class="dual-card__body">
             <!-- 空壳岗位提示（P0）：不展示其它岗位文案 -->
-            <div v-if="introEmpty && gen.isDone.value" class="dual-intro-empty">
+            <div v-if="introEmpty && (gen.isDone.value || graphEmpty)" class="dual-intro-empty">
               <div class="dual-intro-empty__title">该岗位暂无岗位介绍数据</div>
               <p class="dual-intro-empty__tip">当前岗位未收录说明。可回到「职业分析」选择已收录岗位，或经「职途导航」完成简历解析后查看匹配详情。</p>
             </div>
@@ -158,7 +159,7 @@ function logIcon(level: LogEntry['level']) {
           <h3 class="dual-card__title">
             <span class="dual-card__num">02</span> 图谱介绍
             <span class="dual-card__stats">
-              {{ visibleNodes.length }} 实体节点 · {{ visibleEdges.length }} 关系边
+              已展示 {{ visibleNodes.length }} / {{ allNodes.length }} 节点 · {{ visibleEdges.length }} / {{ allEdges.length }} 关系
             </span>
           </h3>
           <div class="dual-card__body dual-card__body--gen">
@@ -166,7 +167,7 @@ function logIcon(level: LogEntry['level']) {
             <div class="dual-gen-status">
               <span class="dual-gen-phase">{{ gen.phase.value || '准备中' }}</span>
               <span class="dual-gen-badge" :class="{ 'dual-gen-badge--done': gen.isDone.value }">
-                {{ gen.isDone.value ? '已完成' : '生成中…' }}
+                {{ graphEmpty ? '暂无数据' : gen.isDone.value ? '已完成' : '生成中…' }}
               </span>
             </div>
             <!-- 进度条 -->
@@ -177,11 +178,11 @@ function logIcon(level: LogEntry['level']) {
             <div class="dual-gen-stats">
               <div class="dual-gen-stat">
                 <span class="dual-gen-stat__value">{{ visibleNodes.length }}</span>
-                <span class="dual-gen-stat__label">实体节点</span>
+                <span class="dual-gen-stat__label">当前节点</span>
               </div>
               <div class="dual-gen-stat">
                 <span class="dual-gen-stat__value">{{ visibleEdges.length }}</span>
-                <span class="dual-gen-stat__label">关系边</span>
+                <span class="dual-gen-stat__label">当前关系</span>
               </div>
               <div class="dual-gen-stat">
                 <span class="dual-gen-stat__value">{{ new Set([...visibleNodes.map((n: any) => n.group)]).size }}</span>

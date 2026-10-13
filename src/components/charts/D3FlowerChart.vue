@@ -14,15 +14,15 @@ export const DEFAULT_FLOWER_COLORS: string[] = [
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, nextTick, shallowRef } from 'vue'
 import * as d3 from 'd3'
-import type { RadarDatum } from './D3RadarChart.vue'
 import { gsap } from '@/plugins/gsap'
 
 // 与顶部 <script> 同步（避免自引用）
 const DEFAULTS = ['#E07055', '#4EB0D4', '#60C47A', '#D4A83C', '#9070C8', '#D4704C', '#3CBAB0']
 
 const props = defineProps<{
-  data: RadarDatum[]
+  data: Array<{ axis: string; value: number | null }>
   colors?: string[]
+  zoom?: number
 }>()
 
 // ── Film Flowers 3 种花瓣路径（去掉有缺陷的 WIDE） ──
@@ -56,7 +56,8 @@ interface FlowerDatum {
   label: string
   line1: string
   line2: string
-  score: number
+  score: number | null
+  known: boolean
   color: string
   petalScale: number // 分数驱动：高分 → 大花瓣
   centerR: number   // 分数驱动：高分 → 大花心
@@ -65,19 +66,21 @@ interface FlowerDatum {
 
 const flowers = computed<FlowerDatum[]>(() =>
   props.data.map((d, i) => {
-    const score = Math.max(0, Math.min(100, d.value))
+    const known = typeof d.value === 'number' && Number.isFinite(d.value)
+    const score = known ? Math.max(0, Math.min(100, d.value!)) : null
     const def = FLOWER_DEFS[i % FLOWER_DEFS.length]!
-    const filledCount = Math.round(score * def.n / 100)
+    const filledCount = score === null ? 0 : Math.round(score * def.n / 100)
     // 尺寸系数：分=0 → ×0.50，分=100 → ×1.30
-    const sizeF = 0.50 + (score / 100) * 0.80
+    const sizeF = score === null ? 0.9 : 0.50 + (score / 100) * 0.80
     return {
       label: d.axis,
       line1: d.axis.slice(0, 2),
       line2: d.axis.slice(2) || '',
       score,
-      color: resolvedColors.value[i % resolvedColors.value.length]!,
+      known,
+      color: known ? resolvedColors.value[i % resolvedColors.value.length]! : '#84847F',
       petalScale: def.scale * sizeF,
-      centerR: 11 + Math.round((score / 100) * 7),
+      centerR: score === null ? 15 : 11 + Math.round((score / 100) * 7),
       petals: Array.from({ length: def.n }, (_, p) => ({
         rotateDeg: p * (360 / def.n),
         shape: def.shape,
@@ -95,7 +98,7 @@ interface SimNode extends d3.SimulationNodeDatum { id: number }
 
 // shallowRef：仿真 tick 高频替换整个数组，浅响应性能更优
 const nodePositions = shallowRef<Array<{ x: number; y: number }>>(
-  Array.from({ length: 7 }, () => ({ x: CX, y: CY }))
+  []
 )
 
 let simulation: d3.Simulation<SimNode, undefined> | null = null
@@ -106,20 +109,22 @@ onMounted(async () => {
   await nextTick()
 
   const flowerList = flowers.value
+  if (!flowerList.length) return
   // 最高分花朵：作为引力中心锚定在 SVG 中央
   const maxIdx = flowerList.reduce(
-    (mi, f, i) => f.score > flowerList[mi]!.score ? i : mi, 0
+    (mi, f, i) => (f.score ?? -1) > (flowerList[mi]!.score ?? -1) ? i : mi, 0
   )
   // 双层碰撞半径
   // hard：花心+4px，保证花心绝对不重叠
   // soft： 18-32px，允许花瓣大量交叠
   const hardRadii = flowerList.map(f => f.centerR + 4)
-  const softRadii = flowerList.map(f => 18 + (f.score / 100) * 14)
+  const softRadii = flowerList.map(f => f.score === null ? 25 : 18 + (f.score / 100) * 14)
 
-  // 初始位置：六边形排布，间距 55px
+  // 按实际维度数量排布；真实四维画像和演示七维画像共用同一组件。
   const nodes: SimNode[] = [
     { id: 0, x: CX, y: CY },
-    ...[0, 60, 120, 180, 240, 300].map((deg, k) => {
+    ...Array.from({ length: flowerList.length - 1 }, (_, k) => {
+      const deg = k * 360 / (flowerList.length - 1)
       const a = (deg * Math.PI) / 180
       return { id: k + 1, x: CX + Math.cos(a) * 55, y: CY + Math.sin(a) * 55 }
     }),
@@ -127,7 +132,7 @@ onMounted(async () => {
 
   // 各朵花独立频率与相位（7朵节奏各异，互不同步）
   const freqs  = nodes.map((_, i) => 0.40 + i * 0.05)
-  const phases = nodes.map((_, i) => i * ((Math.PI * 2) / 7))
+  const phases = nodes.map((_, i) => i * ((Math.PI * 2) / nodes.length))
 
   simulation = d3
     .forceSimulation(nodes)
@@ -252,12 +257,14 @@ onUnmounted(() => {
         外层 <g> 由力仿真驱动坐标，
         内层 <g class="dfc-flower"> 是 GSAP/hover 的缩放目标
       -->
-      <g
-        v-for="(flower, i) in flowers"
-        :key="flower.label"
-        :transform="`translate(${nodePositions[i]?.x ?? CX}, ${nodePositions[i]?.y ?? CY})`"
-      >
-        <g class="dfc-flower" filter="url(#dfc-organic)">
+      <g :transform="`translate(${CX} ${CY}) scale(${props.zoom ?? 1}) translate(${-CX} ${-CY})`">
+        <g
+          v-for="(flower, i) in flowers"
+          :key="flower.label"
+          :transform="`translate(${nodePositions[i]?.x ?? CX}, ${nodePositions[i]?.y ?? CY})`"
+        >
+          <title>{{ flower.label }}：{{ flower.known ? `${flower.score} 分` : '待核对' }}</title>
+          <g class="dfc-flower" filter="url(#dfc-organic)">
 
           <!-- ① 花瓣（Film Flowers 路径，旋转放射排列） -->
           <g
@@ -297,7 +304,7 @@ onUnmounted(() => {
           </g>
 
           <!-- ② 花心底圆（半径随分数变化） -->
-          <circle :r="flower.centerR" :fill="flower.color" fill-opacity="0.32" />
+          <circle :r="flower.centerR" :fill="flower.color" :fill-opacity="flower.known ? 0.32 : 0.72" />
           <circle :r="flower.centerR" fill="none" :stroke="flower.color" stroke-width="1.3" stroke-opacity="0.58" />
 
           <!-- ③ 维度名称（默认显示，hover 淡出） -->
@@ -319,11 +326,12 @@ onUnmounted(() => {
             text-anchor="middle"
             dominant-baseline="central"
             fill="rgba(255,255,255,0.97)"
-            font-size="15"
+            :font-size="flower.known ? 15 : 10"
             font-weight="700"
             filter="url(#dfc-txt-shadow)"
-          >{{ flower.score }}</text>
+          >{{ flower.known ? flower.score : '待核对' }}</text>
 
+          </g>
         </g>
       </g>
     </svg>

@@ -1,6 +1,6 @@
 ﻿<!-- 页面：技能提升；路由：student/learning（student-learning）；角色：STUDENT -->
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -12,6 +12,9 @@ import { JOB_PORTRAITS } from '@/mock/careerPortraits'
 import D3Treemap from '@/components/charts/D3Treemap.vue'
 import type { TreemapCategory, TreemapCourse } from '@/components/charts/D3Treemap.vue'
 import D3ChordDiagram from '@/components/charts/D3ChordDiagram.vue'
+import { useAgentArtifactHandoff, commitMockArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
+import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
+import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -19,10 +22,76 @@ const userStore = useUserStore()
 const courseStore = useCourseStore()
 const learningStore = useLearningStore()
 
-onMounted(() => {
+const hasArtifactQuery = computed(() => Object.prototype.hasOwnProperty.call(route.query, 'artifact_id'))
+const artifactId = computed(() => typeof route.query.artifact_id === 'string' ? route.query.artifact_id.trim() : '')
+const handoff = useAgentArtifactHandoff(() => artifactId.value)
+type PlanItem = { id: string; title: string; detail: string; keyword: string; done: boolean }
+type PlanPreviewData = { type?: string; steps?: number; completed?: number; duration?: string; items?: PlanItem[] }
+const artifactReady = computed(() => handoff.ready.value && handoff.artifact.value?.kind === 'action_plan')
+const planPreview = computed<PlanPreviewData | null>(() => artifactReady.value
+  ? handoff.artifact.value?.preview as PlanPreviewData ?? null
+  : null)
+const planBody = computed(() => handoff.source.value === 'http' ? handoff.artifact.value?.content?.body || '' : '')
+const planItems = computed<PlanItem[]>(() => {
+  if (handoff.source.value === 'http') return []
+  const items = planPreview.value?.items
+  if (Array.isArray(items) && items.length) return items
+  const artifact = handoff.artifact.value
+  return artifactReady.value && artifact
+    ? [{ id: 'summary', title: artifact.title, detail: artifact.summary || '请结合课程目录安排下一步学习。', keyword: '', done: false }]
+    : []
+})
+const completedPlanCount = computed(() => planItems.value.filter(item => item.done).length)
+const savedPlanResourceUri = computed(() => {
+  const artifact = handoff.artifact.value
+  const planId = artifact?.resource_id
+  if (!artifactReady.value || handoff.source.value !== 'http'
+    || artifact?.resource_type !== 'agent_action_plan'
+    || typeof planId !== 'string' || !/^plan_[a-f0-9]{20}$/.test(planId)) return ''
+  return `career://me/action-plans/${planId}`
+})
+
+function backToAgent() {
+  void router.push({ name: 'student-ai-assistant', query: handoff.sessionId.value ? { session_id: handoff.sessionId.value } : {} })
+}
+
+function discussSavedPlan() {
+  if (!savedPlanResourceUri.value) return
+  openAgentWithResource(router, { kind: 'career_resource', uri: savedPlanResourceUri.value }, handoff.sessionId.value)
+}
+
+function browseOrdinaryLearning() {
+  const query = { ...route.query }
+  delete query.artifact_id
+  delete query.session_id
+  void router.replace({ path: route.path, query })
+}
+
+function togglePlanItem(id: string) {
+  const artifact = handoff.artifact.value
+  if (!artifactReady.value || !artifact) return
+  const preview = (artifact.preview && typeof artifact.preview === 'object' ? artifact.preview : {}) as PlanPreviewData
+  if (!Array.isArray(preview.items) || !preview.items.length) preview.items = planItems.value.map(item => ({ ...item }))
+  const item = preview.items.find(candidate => candidate.id === id)
+  if (!item) return
+  item.done = !item.done
+  preview.steps = preview.items.length
+  preview.completed = preview.items.filter(candidate => candidate.done).length
+  artifact.preview = preview
+  commitMockArtifactHandoff(handoff.sessionId.value, artifact)
+}
+
+function findPlanCourse(item: PlanItem) {
+  keyword.value = item.keyword || item.title
+  selectedCategory.value = 'all'
+  page.value = 1
+}
+
+watch(hasArtifactQuery, (hasArtifact) => {
+  if (hasArtifact) return
   const uid = userStore.currentUser?.id
   courseStore.loadFromApi(uid).catch(() => {})
-})
+}, { immediate: true })
 
 /* ═══ 来源岗位（从 CourseSystemGraph 跳转时携带 ?role=xxx） ═══ */
 const fromRole = computed<string>(() => (route.query.role as string) || '')
@@ -352,11 +421,39 @@ const chordResult = computed(() => {
           <Icon icon="lucide:map" :width="13" />
           <span>返回图谱</span>
         </button>
+        <button v-if="hasArtifactQuery" class="lc-back-btn" @click="backToAgent">
+          <Icon icon="lucide:arrow-left" :width="13" />
+          <span>返回对话</span>
+        </button>
       </div>
     </header>
 
+    <section v-if="hasArtifactQuery && !artifactReady" class="lc-agent-state" role="status">
+      <Icon :icon="handoff.loading.value ? 'lucide:loader-circle' : 'lucide:circle-alert'" :width="22" />
+      <strong>{{ handoff.loading.value ? '正在读取对话计划' : '暂时无法打开这份计划' }}</strong>
+      <p v-if="!handoff.loading.value">{{ handoff.error.value || '成果物类型与学习计划不匹配。' }}</p>
+      <button type="button" @click="browseOrdinaryLearning">浏览普通学习中心</button>
+    </section>
+
+    <section v-if="artifactReady" class="lc-agent-plan" aria-label="对话学习计划">
+      <div class="lc-agent-plan__head">
+        <div><span>来自 Agent 对话 · {{ handoff.source.value === 'http' ? '已保存计划' : '演示计划' }}</span><h2>{{ handoff.artifact.value?.title }}</h2><p>{{ handoff.artifact.value?.summary }}</p></div>
+        <strong v-if="handoff.source.value === 'mock'">{{ completedPlanCount }} / {{ planItems.length }} 已完成</strong>
+      </div>
+      <div v-if="planBody" class="lc-agent-plan__body" v-html="renderMarkdown(planBody)" />
+      <div v-else class="lc-agent-plan__items">
+        <div v-for="item in planItems" :key="item.id" class="lc-agent-plan__item" :class="{ 'lc-agent-plan__item--done': item.done }">
+          <button type="button" class="lc-agent-plan__check" :aria-label="item.done ? `取消完成 ${item.title}` : `完成 ${item.title}`" @click="togglePlanItem(item.id)"><Icon :icon="item.done ? 'lucide:check-circle-2' : 'lucide:circle'" :width="19" /></button>
+          <div><h3>{{ item.title }}</h3><p>{{ item.detail }}</p></div>
+          <button type="button" class="lc-agent-plan__course" @click="findPlanCourse(item)">找相关课程 <Icon icon="lucide:arrow-right" :width="12" /></button>
+        </div>
+      </div>
+      <button v-if="savedPlanResourceUri" type="button" class="lc-agent-plan__ordinary" @click="discussSavedPlan">带这份已保存计划继续和 AI 助手讨论 <Icon icon="lucide:arrow-up-right" :width="13" /></button>
+      <button type="button" class="lc-agent-plan__ordinary" @click="browseOrdinaryLearning">退出计划，浏览全部课程</button>
+    </section>
+
     <!-- ═══ 分类筛选栏 ═══ -->
-    <nav class="lc-filters">
+    <nav v-if="!hasArtifactQuery || artifactReady" class="lc-filters">
       <button
         class="lc-filter-btn"
         :class="{ 'lc-filter-btn--active': selectedCategory === 'all' }"
@@ -372,7 +469,7 @@ const chordResult = computed(() => {
     </nav>
 
     <!-- ═══ D3 可视化区 ═══ -->
-    <section class="lc-viz card-base">
+    <section v-if="!hasArtifactQuery || artifactReady" class="lc-viz card-base">
       <div class="lc-viz__treemap">
         <div class="lc-viz__panel-head">
           <span class="lc-viz__panel-title">课程结构分布</span>
@@ -403,7 +500,7 @@ const chordResult = computed(() => {
     </section>
 
     <!-- ═══ 课程 Grid ═══ -->
-    <section class="lc-courses">
+    <section v-if="!hasArtifactQuery || artifactReady" class="lc-courses">
       <div v-if="fromRole" class="lc-role-banner">
         <Icon icon="lucide:zap" :width="14" />
         <span>已为岗位「{{ fromRole }}」推荐相关课程，金色边框为推荐课程</span>
@@ -475,6 +572,30 @@ const chordResult = computed(() => {
 </template>
 
 <style scoped>
+.lc-agent-state, .lc-agent-plan { border: 1px solid var(--color-border, #e5ddd3); border-radius: 16px; background: var(--color-surface, #fff); }
+.lc-agent-state { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; padding: 28px; }
+.lc-agent-state p { margin: 0; color: var(--color-text-muted, #766f68); }
+.lc-agent-state button, .lc-agent-plan__ordinary { border: 0; background: transparent; color: var(--primary-100, #8b2500); cursor: pointer; padding: 4px 0; }
+.lc-agent-plan { padding: 22px; }
+.lc-agent-plan__head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+.lc-agent-plan__head span { color: var(--primary-100, #8b2500); font-size: 12px; }
+.lc-agent-plan__head h2 { margin: 6px 0; font-size: 21px; }
+.lc-agent-plan__head p { margin: 0; color: var(--color-text-muted, #766f68); line-height: 1.6; }
+.lc-agent-plan__head strong { flex: none; font-size: 13px; font-weight: 600; color: var(--primary-100, #8b2500); }
+.lc-agent-plan__body { margin: 20px 0 12px; line-height: 1.8; overflow-wrap: anywhere; color: var(--color-text, #312b26); }
+.lc-agent-plan__body :deep(.md-p) { margin: 0 0 12px; }
+.lc-agent-plan__body :deep(.md-ol), .lc-agent-plan__body :deep(.md-ul) { margin: 0 0 12px; padding-left: 22px; }
+.lc-agent-plan__body :deep(.md-li) { margin-bottom: 8px; }
+.lc-agent-plan__items { display: grid; gap: 8px; margin: 20px 0 12px; }
+.lc-agent-plan__item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--color-border, #e5ddd3); border-radius: 11px; }
+.lc-agent-plan__item--done { opacity: .62; }
+.lc-agent-plan__item h3 { margin: 0 0 4px; font-size: 14px; }
+.lc-agent-plan__item p { margin: 0; color: var(--color-text-muted, #766f68); font-size: 12px; line-height: 1.55; }
+.lc-agent-plan__check, .lc-agent-plan__course { display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--primary-100, #8b2500); cursor: pointer; }
+.lc-agent-plan__check { flex: none; padding: 4px; }
+.lc-agent-plan__course { gap: 4px; margin-left: auto; white-space: nowrap; font-size: 12px; }
+.lc-agent-plan__ordinary { font-size: 12px; }
+@media (max-width: 720px) { .lc-agent-plan__head, .lc-agent-plan__item { align-items: flex-start; } .lc-agent-plan__head { flex-direction: column; } .lc-agent-plan__course { align-self: center; } }
 /* ═══ 根容器 ═══ */
 .lc-page {
   display: flex;
