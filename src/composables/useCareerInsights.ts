@@ -94,11 +94,11 @@ export const CAREER_DOMAINS: BubbleDomain[] = [
     jobs: ['测试开发工程师', '质量平台工程师', '性能测试工程师'],
   },
   {
-    id: 'data', role: '数据开发', name: '数据智能', color: '#C9A227',
+    id: 'data', role: '数据分析', name: '数据智能', color: '#C9A227',
     jobs: ['数据分析师', '数据开发工程师', '增长分析师'],
   },
   {
-    id: 'ml', role: 'AI 工程', name: 'AI 工程', color: '#1B4E79',
+    id: 'ml', role: '机器学习工程师', name: 'AI 工程', color: '#1B4E79',
     jobs: ['算法工程师', 'AI 应用工程师', '大模型工程师'],
   },
 ]

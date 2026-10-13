@@ -15,6 +15,104 @@ export type ParseUploadData = {
   raw_text?: string
 }
 
+export type ResumeCandidate = {
+  task_id: string
+  student_id: string
+  status: 'needs_input' | 'partial' | 'failed' | 'completed'
+  confirmed?: boolean
+  candidate_profile?: Record<string, unknown>
+  structure_validation?: { ok?: boolean; issues?: string[] }
+  source_evidence?: {
+    page_count?: number
+    observed_pages?: number[]
+    missing_pages?: number[]
+    engine?: string
+    blocks?: Array<{ block_id: string; text: string; page: number; block_type: string }>
+  }
+  next_action?: string
+  profile_ready?: boolean
+  portrait_task?: {
+    task_id: string
+    status: string
+    next_action?: string
+    summary?: string
+    missing_fields?: string[]
+    portrait_candidate?: Record<string, unknown>
+    portrait_id?: string | number | null
+    portrait?: Record<string, unknown> | null
+    action_available?: boolean
+    resume_state?: string
+  } | null
+}
+
+export type ConfirmedPipelineResult = {
+  task_id: string
+  student_id?: string
+  status?: string
+  resource_type?: string
+  resource_id?: string
+  profile_ready?: boolean
+  portrait_ready?: boolean
+  next_action?: string
+  summary?: string
+  missing_fields?: string[]
+  portrait_candidate?: Record<string, unknown>
+  portrait?: Record<string, unknown> | null
+  portrait_id?: string | number | null
+  [key: string]: unknown
+}
+
+export type PipelineTaskEvent = {
+  event_id: number
+  task_id: string
+  type: 'pipeline.status'
+  status: string
+  occurred_at: string
+}
+
+export type PipelineEventPage = {
+  task: { task_id: string; pipeline: string; status: string }
+  events: PipelineTaskEvent[]
+  cursor: number
+  has_more: boolean
+  resume_state: 'not_available'
+}
+
+/** Cursor-based replay of MySQL-committed business transitions, not a progress estimate. */
+export async function getPipelineEvents(taskId: string, cursor = 0) {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的任务引用')
+  return httpGet<PipelineEventPage>(`/api/pipeline/events/${encodeURIComponent(taskId)}`, { cursor })
+}
+
+/** Same PipelineRunner L0 entry used by the main Agent; never a completed profile on upload. */
+export async function uploadResumeCandidate(file: File) {
+  if (getApiMode() === 'mock') throw new Error('mock 模式不使用真实确认管线')
+  const form = new FormData()
+  form.append('file', file)
+  return httpFormPost<ResumeCandidate>('/api/profile/student/upload', form)
+}
+
+/** Resolve a chat artifact reference through the server owner check. */
+export async function getResumeCandidate(taskId: string) {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的简历任务引用')
+  return httpGet<ResumeCandidate>(`/api/profile/student/candidate/${encodeURIComponent(taskId)}`)
+}
+
+export async function confirmResumeCandidate(taskId: string, acknowledgePartial = false) {
+  return httpPost<ConfirmedPipelineResult>('/api/profile/student/confirm', {
+    task_id: taskId,
+    confirmed: true,
+    acknowledge_partial: acknowledgePartial,
+  })
+}
+
+export async function runConfirmedStudentPipeline(
+  pipeline: 'L2_generate_portrait',
+  options: { job_id?: string; job_portrait_id?: string; title?: string } = {},
+) {
+  return httpPost<ConfirmedPipelineResult>('/api/profile/student/pipeline', { pipeline, ...options })
+}
+
 export type ExtractedSkill = {
   name: string
   category?: string

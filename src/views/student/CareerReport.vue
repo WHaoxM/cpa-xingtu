@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as d3 from 'd3'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { useResumeStore } from '@/stores/resume'
 import { useUserStore } from '@/stores'
@@ -20,13 +20,45 @@ import type { RadarDatum } from '@/components/charts/D3RadarChart.vue'
 import { gsap } from '@/plugins/gsap'
 import { MotionPathPlugin } from 'gsap/MotionPathPlugin'
 import parchmentBaseUrl from '@/assets/images/parchment-base.jpg'
+import { useAgentArtifactHandoff, commitMockArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
+import { getApiMode } from '@/api/config'
+import { getReportList } from '@/api/report'
+import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
+import { hasServerReportCollection } from '@/composables/agentResourceHandoffContract'
 const parchmentBg = `url("${parchmentBaseUrl}")`
 
+const route = useRoute()
 const router = useRouter()
+const hasArtifactQuery = computed(() => Object.prototype.hasOwnProperty.call(route.query, 'artifact_id'))
+const artifactId = computed(() => typeof route.query.artifact_id === 'string' ? route.query.artifact_id.trim() : '')
+const handoff = useAgentArtifactHandoff(() => artifactId.value)
+type ReportArtifactPreview = { type?: string; markdown?: string; chapters?: string[]; word_count?: number }
+const artifactReady = computed(() => handoff.ready.value && handoff.artifact.value?.kind === 'career_report')
+const reportPreview = computed<ReportArtifactPreview | null>(() => artifactReady.value
+  ? handoff.artifact.value?.preview as ReportArtifactPreview ?? null
+  : null)
+
+function backToAgent() {
+  void router.push({ name: 'student-ai-assistant', query: handoff.sessionId.value ? { session_id: handoff.sessionId.value } : {} })
+}
+
+function browseOrdinaryReport() {
+  const query = { ...route.query }
+  delete query.artifact_id
+  delete query.session_id
+  void router.replace({ path: route.path, query })
+}
 const resumeStore = useResumeStore()
 const userStore = useUserStore()
 const learningStore = useLearningStore()
 const reportStore = useReportStore()
+const hasServerReports = ref(false)
+
+function askAgentToCheckExistingReports() {
+  if (!hasServerReports.value || hasArtifactQuery.value) return
+  // This editor's calculated text and local saves are not server evidence.
+  openAgentWithResource(router, { kind: 'career_resource', uri: 'career://me/reports' })
+}
 
 const reportSaved = ref(false)
 
@@ -40,6 +72,20 @@ const effectiveTargetRoles = computed<string[]>(() => {
 
 function saveCareerReport() {
   const today = new Date().toISOString().slice(0, 10)
+  if (artifactReady.value && handoff.artifact.value) {
+    reportStore.addRecord({
+      type: 'career',
+      title: `${today} · ${handoff.artifact.value.title}`,
+      snapshot: {
+        artifactId: handoff.artifact.value.artifact_id,
+        sourceSessionId: handoff.sessionId.value,
+        markdown: reportTextEditable.value,
+        chapters: reportPreview.value?.chapters || [],
+      },
+    })
+    reportSaved.value = true
+    return
+  }
   const roles = effectiveTargetRoles.value
   const topJob = selectedJob.value
   reportStore.addRecord({
@@ -60,6 +106,7 @@ function saveCareerReport() {
 const activeMode = ref<'analysis' | 'report'>('analysis')
 const selectedJobId = ref<string>('')
 const reportTextEditable = ref('')
+const agentReportOriginal = ref('')
 const climbingSvgEl = ref<SVGSVGElement | null>(null)
 let climbTimeline: gsap.core.Timeline | null = null
 const expandedStages = ref<Set<string>>(new Set())
@@ -1225,7 +1272,7 @@ function applyPolish() {
 }
 
 function refreshReportData() {
-  reportTextEditable.value = reportText.value
+  reportTextEditable.value = artifactReady.value ? agentReportOriginal.value : reportText.value
 }
 
 function exportPrint() { showExportMenu.value = false; window.print() }
@@ -1289,7 +1336,7 @@ function selectJob(id: string) {
     planTimers.push(setTimeout(() => { planLoading.value = false }, shortDone))
   }
 }
-function goBack() { router.push({ name: 'student-career-navigation' }) }
+function goBack() { artifactReady.value || hasArtifactQuery.value ? backToAgent() : router.push({ name: 'student-career-navigation' }) }
 function goToFavorites() { router.push({ name: 'student-favorites' }) }
 function goToLearningCenter() {
   if (!selectedJob.value) return
@@ -1299,13 +1346,64 @@ function toggleStage(phase: string) {
   if (expandedStages.value.has(phase)) expandedStages.value.delete(phase)
   else expandedStages.value.add(phase)
 }
-onMounted(async () => {
+async function initReportVisualization() {
   await nextTick()
+  if (hasArtifactQuery.value) return
   initBubbleChart()
   if (bubbleSvgRef.value) {
     bubbleResizeObserver = new ResizeObserver(() => initBubbleChart())
     bubbleResizeObserver.observe(bubbleSvgRef.value)
   }
+}
+
+onMounted(initReportVisualization)
+
+onMounted(async () => {
+  const uid = userStore.currentUser?.id
+  if (getApiMode() !== 'http' || !uid) return
+  try {
+    const rows = await getReportList(uid)
+    hasServerReports.value = hasServerReportCollection(getApiMode(), rows)
+  } catch {
+    hasServerReports.value = false
+  }
+})
+
+watch(hasArtifactQuery, async (hasArtifact, previous) => {
+  if (hasArtifact) {
+    stopBubbleChart()
+    bubbleResizeObserver?.disconnect()
+    bubbleResizeObserver = null
+  } else if (previous) {
+    activeMode.value = 'analysis'
+    reportTextEditable.value = ''
+    agentReportOriginal.value = ''
+    reportSaved.value = false
+    await initReportVisualization()
+  }
+})
+
+watch(artifactReady, ready => {
+  if (!ready) return
+  const artifact = handoff.artifact.value
+  const markdown = reportPreview.value?.markdown
+  agentReportOriginal.value = typeof markdown === 'string' && markdown.trim()
+    ? markdown
+    : `# ${artifact?.title || '职业报告'}\n\n## 报告摘要\n\n${artifact?.summary || '请在此编辑来自 Agent 对话的报告。'}\n`
+  reportTextEditable.value = agentReportOriginal.value
+  activeMode.value = 'report'
+  reportSaved.value = false
+}, { immediate: true })
+
+watch(reportTextEditable, markdown => {
+  const artifact = handoff.artifact.value
+  if (!artifactReady.value || !artifact) return
+  const preview = (artifact.preview && typeof artifact.preview === 'object' ? artifact.preview : {}) as ReportArtifactPreview
+  preview.markdown = markdown
+  preview.chapters = [...markdown.matchAll(/^##\s+(.+)$/gm)].map(match => match[1] || '').filter(Boolean)
+  preview.word_count = markdown.length
+  artifact.preview = preview
+  commitMockArtifactHandoff(handoff.sessionId.value, artifact)
 })
 
 onBeforeUnmount(() => {
@@ -1330,15 +1428,17 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div class="cr-header__tabs">
-        <button class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'analysis' }" @click="activeMode = 'analysis'">
+        <button v-if="!hasArtifactQuery" class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'analysis' }" @click="activeMode = 'analysis'">
           <Icon icon="lucide:bar-chart-3" :width="13"/><span>职业分析</span>
         </button>
-        <button class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'report' }" @click="switchToReport">
+        <button v-if="!hasArtifactQuery || artifactReady" class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'report' }" @click="switchToReport">
           <Icon icon="lucide:file-text" :width="13"/><span>报告编辑</span>
         </button>
       </div>
       <div class="cr-header__right">
+        <button v-if="hasArtifactQuery" class="cr-back" @click="browseOrdinaryReport">退出对话产物</button>
         <button
+          v-if="!hasArtifactQuery || artifactReady"
           class="cr-save-btn"
           :disabled="reportSaved"
           @click="saveCareerReport"
@@ -1348,7 +1448,7 @@ onBeforeUnmount(() => {
           <span>{{ reportSaved ? '已保存' : '保存报告' }}</span>
         </button>
         <!-- 导出按钮（仅报告模式） -->
-        <div v-if="activeMode === 'report'" class="cr-export-wrap">
+        <div v-if="(!hasArtifactQuery || artifactReady) && activeMode === 'report'" class="cr-export-wrap">
           <button class="cr-export-btn" @click="showExportMenu = !showExportMenu">
             <Icon icon="lucide:download" :width="12"/><span>导出</span><Icon icon="lucide:chevron-down" :width="10"/>
           </button>
@@ -1359,20 +1459,35 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <!-- 生成报告按钮（仅分析模式） -->
-        <button v-else class="cr-report-btn" :disabled="!selectedJob" @click="switchToReport">
+        <button v-else-if="!hasArtifactQuery" class="cr-report-btn" :disabled="!selectedJob" @click="switchToReport">
           <Icon icon="lucide:file-text" :width="12"/><span>生成报告</span>
         </button>
         <button class="cr-my-reports-btn" @click="router.push({ name: 'student-my-reports' })">
           <Icon icon="lucide:book-open" :width="12"/><span>我的报告</span>
         </button>
+        <button v-if="hasServerReports && !hasArtifactQuery" class="cr-my-reports-btn" title="仅引用服务端已有报告，由 Agent 逐份核验；不包含本页计算或本地保存内容" @click="askAgentToCheckExistingReports">
+          <Icon icon="lucide:message-circle" :width="12"/><span>与 Agent 讨论已有报告</span>
+        </button>
         <UserInfoBar />
       </div>
     </header>
 
+    <section v-if="hasArtifactQuery && !artifactReady" class="cr-agent-state" role="status">
+      <Icon :icon="handoff.loading.value ? 'lucide:loader-circle' : 'lucide:circle-alert'" :width="26" />
+      <h2>{{ handoff.loading.value ? '正在读取对话报告' : '无法打开这份报告' }}</h2>
+      <p v-if="!handoff.loading.value">{{ handoff.error.value || '成果物类型与职业报告不匹配。' }}</p>
+      <button type="button" @click="browseOrdinaryReport">浏览普通职业报告</button>
+    </section>
+
+    <div v-if="artifactReady" class="cr-agent-context">
+      <strong>来自 Agent 对话 · 演示报告</strong>
+      <span>{{ handoff.artifact.value?.title }} · 编辑内容将同步到原对话产物</span>
+    </div>
+
     <!-- ═══════════════════════════════════════════ -->
     <!--              模式 A：职业分析                 -->
     <!-- ═══════════════════════════════════════════ -->
-    <div v-if="activeMode === 'analysis'" class="cr-main">
+    <div v-if="(!hasArtifactQuery || artifactReady) && activeMode === 'analysis'" class="cr-main">
 
       <!-- ══ 左栏：攀岩墙路径图 ══ -->
       <div class="cr-left">
@@ -1751,7 +1866,7 @@ onBeforeUnmount(() => {
     <!-- ═══════════════════════════════════════════ -->
     <!--              模式 B：报告编辑                 -->
     <!-- ═══════════════════════════════════════════ -->
-    <div v-else class="cr-report-main">
+    <div v-else-if="!hasArtifactQuery || artifactReady" class="cr-report-main">
 
       <!-- 左栏：报告预览 -->
       <div class="cr-rp-preview">
@@ -1811,8 +1926,8 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- ══ FOOTER ══ -->
-    <footer class="cr-footer">
-      <span class="cr-footer-source">数据来源：简历解析 + 岗位模型匹配</span>
+    <footer v-if="!hasArtifactQuery || artifactReady" class="cr-footer">
+      <span class="cr-footer-source">{{ artifactReady ? '数据来源：Agent 对话演示产物' : '数据来源：简历解析 + 岗位模型匹配' }}</span>
       <span v-if="activeMode === 'report'" class="cr-footer-wc">字数：{{ wordCount }}</span>
       <span class="cr-footer-time">{{ new Date().toLocaleDateString('zh-CN') }}</span>
       <button v-if="activeMode === 'analysis'" class="cr-footer-go" @click="switchToReport">
@@ -1828,6 +1943,13 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.cr-agent-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px; text-align: center; }
+.cr-agent-state h2 { margin: 12px 0 5px; font-size: 18px; }
+.cr-agent-state p { color: var(--text-200); }
+.cr-agent-state button { margin-top: 12px; padding: 8px 14px; border: 1px solid var(--bg-300); border-radius: 7px; background: var(--bg-200); cursor: pointer; }
+.cr-agent-context { display: flex; gap: 12px; align-items: center; padding: 8px 20px; border-bottom: 1px solid var(--bg-300); background: color-mix(in srgb, var(--primary-100) 5%, var(--bg-100)); font-size: 12px; }
+.cr-agent-context strong { color: var(--primary-100); }
+.cr-agent-context span { color: var(--text-200); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ══ 页面容器 ══ */
 .cr-page {
   position: relative; width: 100%; height: 100vh; max-height: 100vh;

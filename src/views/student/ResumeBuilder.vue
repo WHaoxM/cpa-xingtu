@@ -1,7 +1,7 @@
 <!-- 页面：快速制作简历（仿 magicv.art 三栏）；路由：student/resume-builder；角色：STUDENT -->
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { ElMessage } from 'element-plus'
 import { useResumeStore } from '@/stores/resume'
@@ -9,10 +9,72 @@ import { useUserStore } from '@/stores'
 import TiptapEditor from '@/components/TiptapEditor.vue'
 import { parseResumeText } from '@/api/pipeline'
 import { DEMO_STUDENT_ID } from '@/api/config'
+import { useAgentArtifactHandoff, commitMockArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 
+const route       = useRoute()
 const router      = useRouter()
 const resumeStore = useResumeStore()
 const userStore   = useUserStore()
+const hasArtifactQuery = computed(() => Object.prototype.hasOwnProperty.call(route.query, 'artifact_id'))
+const artifactId = computed(() => typeof route.query.artifact_id === 'string' ? route.query.artifact_id.trim() : '')
+const handoff = useAgentArtifactHandoff(() => artifactId.value)
+type ResumeRecommendation = { id: string; target: 'basic' | 'skills' | 'projects' | 'selfEval'; title: string; detail: string; applied: boolean }
+type ResumeArtifactPreview = {
+  type?: string
+  draft?: { name?: string; targetRole?: string; skills?: string[]; projects?: ProjectEntry[]; summary?: string; selfEval?: string }
+  recommendations?: ResumeRecommendation[]
+}
+const artifactReady = computed(() => handoff.ready.value && handoff.artifact.value?.kind === 'file')
+const resumePreview = computed<ResumeArtifactPreview | null>(() => artifactReady.value
+  ? handoff.artifact.value?.preview as ResumeArtifactPreview ?? null
+  : null)
+const recommendations = computed<ResumeRecommendation[]>(() => {
+  const items = resumePreview.value?.recommendations
+  if (Array.isArray(items) && items.length) return items
+  const artifact = handoff.artifact.value
+  return artifactReady.value && artifact
+    ? [{ id: 'summary', target: 'projects', title: artifact.title, detail: artifact.summary || '请结合简历内容编辑相关模块。', applied: false }]
+    : []
+})
+
+function backToAgent() {
+  void router.push({ name: 'student-ai-assistant', query: handoff.sessionId.value ? { session_id: handoff.sessionId.value } : {} })
+}
+
+function browseOrdinaryResume() {
+  const query = { ...route.query }
+  delete query.artifact_id
+  delete query.session_id
+  void router.replace({ path: route.path, query })
+}
+
+function commitResumePreview() {
+  const artifact = handoff.artifact.value
+  if (!artifactReady.value || !artifact) return
+  const preview = (artifact.preview && typeof artifact.preview === 'object' ? artifact.preview : {}) as ResumeArtifactPreview
+  preview.draft = {
+    name: form.value.name,
+    targetRole: form.value.targetRole,
+    skills: [...form.value.skills],
+    projects: form.value.projects.map(project => ({ ...project })),
+    summary: form.value.summary,
+    selfEval: form.value.selfEval,
+  }
+  artifact.preview = preview
+  commitMockArtifactHandoff(handoff.sessionId.value, artifact)
+}
+
+function toggleRecommendation(id: string) {
+  const artifact = handoff.artifact.value
+  if (!artifactReady.value || !artifact) return
+  const preview = (artifact.preview && typeof artifact.preview === 'object' ? artifact.preview : {}) as ResumeArtifactPreview
+  if (!Array.isArray(preview.recommendations) || !preview.recommendations.length) preview.recommendations = recommendations.value.map(item => ({ ...item }))
+  const item = preview.recommendations.find(candidate => candidate.id === id)
+  if (!item) return
+  item.applied = !item.applied
+  artifact.preview = preview
+  commitMockArtifactHandoff(handoff.sessionId.value, artifact)
+}
 
 /* ══ 类型定义 ══ */
 interface ProjectEntry { name: string; role: string; desc: string }
@@ -31,6 +93,26 @@ const form = ref({
   workExps:   [] as WorkExpEntry[],
   educations: [] as EduEntry[],
   selfEval:   '',
+})
+
+watch(() => handoff.artifact.value, artifact => {
+  if (!artifactReady.value || !artifact) return
+  const draft = resumePreview.value?.draft
+  if (!draft) return
+  form.value.name = draft.name || ''
+  form.value.targetRole = draft.targetRole || ''
+  form.value.skills = Array.isArray(draft.skills) ? [...draft.skills] : []
+  form.value.projects = Array.isArray(draft.projects) && draft.projects.length
+    ? draft.projects.map(project => ({ ...project }))
+    : [{ name: '', role: '', desc: '' }]
+  form.value.summary = draft.summary || ''
+  form.value.selfEval = draft.selfEval || ''
+}, { immediate: true })
+
+watch(form, () => { if (artifactReady.value) commitResumePreview() }, { deep: true })
+
+watch(hasArtifactQuery, hasArtifact => {
+  if (!hasArtifact) clearForm()
 })
 
 /* ══ UI 状态 ══ */
@@ -250,11 +332,12 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
 
     <!-- ══ HEADER ══ -->
     <header class="rb-hdr">
-      <button class="rb-hdr-back" @click="router.push({ name: 'student-career-navigation' })">
-        <Icon icon="lucide:arrow-left" :width="14"/>返回
+      <button class="rb-hdr-back" @click="hasArtifactQuery ? backToAgent() : router.push({ name: 'student-career-navigation' })">
+        <Icon icon="lucide:arrow-left" :width="14"/>{{ hasArtifactQuery ? '返回对话' : '返回' }}
       </button>
-      <span class="rb-hdr-title">快速制作简历</span>
+      <span class="rb-hdr-title">{{ artifactReady ? '简历改进 · ' + handoff.artifact.value?.title : '快速制作简历' }}</span>
       <div class="rb-hdr-actions">
+        <button v-if="hasArtifactQuery" class="rb-ghost-btn rb-agent-exit" type="button" @click="browseOrdinaryResume">退出对话产物</button>
         <button class="rb-ghost-btn" type="button" @click="showImport = !showImport">
           <Icon icon="lucide:sparkles" :width="13"/>智能填充
         </button>
@@ -262,13 +345,20 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
           <Icon icon="lucide:download" :width="13"/>下载 PDF
           <span class="rb-soon-badge">即将开放</span>
         </button>
-        <button class="rb-use-btn" @click="useResume">
+        <button class="rb-use-btn" :disabled="hasArtifactQuery && !artifactReady" @click="useResume">
           <Icon icon="lucide:check" :width="13"/>使用此简历
         </button>
       </div>
     </header>
 
-    <div v-if="showImport" class="rb-import-panel">
+    <div v-if="hasArtifactQuery && !artifactReady" class="rb-agent-state" role="status">
+      <Icon :icon="handoff.loading.value ? 'lucide:loader-circle' : 'lucide:circle-alert'" :width="26" />
+      <h2>{{ handoff.loading.value ? '正在读取对话中的简历' : '无法打开这份简历改进产物' }}</h2>
+      <p v-if="!handoff.loading.value">{{ handoff.error.value || '成果物类型与简历页面不匹配。' }}</p>
+      <button type="button" @click="browseOrdinaryResume">浏览普通简历制作</button>
+    </div>
+
+    <div v-if="(!hasArtifactQuery || artifactReady) && showImport" class="rb-import-panel">
       <textarea
         v-model="importText"
         class="rb-import-ta"
@@ -285,10 +375,19 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
     </div>
 
     <!-- ══ BODY 三栏 ══ -->
-    <div class="rb-body">
+    <div v-if="!hasArtifactQuery || artifactReady" class="rb-body">
 
       <!-- ══ LEFT: 模块导航 ══ -->
       <aside class="rb-left">
+        <div v-if="artifactReady" class="rb-agent-advice">
+          <span class="rb-agent-advice__eyebrow">来自 Agent 对话 · 演示简历</span>
+          <strong>{{ handoff.artifact.value?.title }}</strong>
+          <p>{{ handoff.artifact.value?.summary }}</p>
+          <div v-for="item in recommendations" :key="item.id" class="rb-agent-advice__item">
+            <button type="button" :aria-label="item.applied ? `取消完成 ${item.title}` : `完成 ${item.title}`" @click="toggleRecommendation(item.id)"><Icon :icon="item.applied ? 'lucide:check-circle-2' : 'lucide:circle'" :width="15" /></button>
+            <div><b>{{ item.title }}</b><small>{{ item.detail }}</small><button type="button" class="rb-agent-advice__jump" @click="activeModule = item.target">去修改 →</button></div>
+          </div>
+        </div>
         <div class="rb-left-section-hd">布局</div>
         <div class="rb-module-list">
           <button
@@ -712,6 +811,20 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
 </template>
 
 <style scoped>
+.rb-agent-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; text-align: center; }
+.rb-agent-state h2 { margin: 14px 0 6px; font-size: 18px; }
+.rb-agent-state p { color: #aaa; }
+.rb-agent-state button { margin-top: 12px; padding: 9px 14px; border: 1px solid #62594d; border-radius: 7px; background: transparent; color: #e2d7c8; cursor: pointer; }
+.rb-agent-exit { cursor: pointer !important; color: #d8c8b5 !important; }
+.rb-agent-advice { margin: 4px 4px 18px; padding: 12px; border: 1px solid rgba(220,185,142,.24); border-radius: 10px; background: rgba(130,76,25,.11); }
+.rb-agent-advice__eyebrow { display: block; color: #c7a477; font-size: 10px; margin-bottom: 5px; }
+.rb-agent-advice > strong { display: block; font-size: 12px; line-height: 1.4; }
+.rb-agent-advice > p { color: #ad9d8c; font-size: 11px; line-height: 1.5; }
+.rb-agent-advice__item { display: flex; align-items: flex-start; gap: 7px; padding: 8px 0; border-top: 1px solid rgba(220,185,142,.13); }
+.rb-agent-advice__item > button { flex: none; border: 0; background: transparent; color: #d6ae75; cursor: pointer; padding: 0; }
+.rb-agent-advice__item b { display: block; font-size: 11px; font-weight: 600; }
+.rb-agent-advice__item small { display: block; margin-top: 3px; color: #ad9d8c; font-size: 10px; line-height: 1.5; }
+.rb-agent-advice__jump { margin-top: 5px; padding: 0; border: 0; background: transparent; color: #d6ae75; font-size: 10px; cursor: pointer; }
 /* ══ 页面容器 ══ */
 .rb-page {
   --accent: #8B2500;

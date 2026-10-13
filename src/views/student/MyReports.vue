@@ -8,6 +8,10 @@ import { useUserStore } from '@/stores/user'
 import { useLearningStore } from '@/stores'
 import type { ReportRecord, AIAnalysisResult } from '@/types'
 import { mockReportRecords } from '@/mock/data'
+import { getApiMode } from '@/api/config'
+import { getReportList } from '@/api/report'
+import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
+import { hasServerReportCollection } from '@/composables/agentResourceHandoffContract'
 import BookshelfScene from '@/components/bookshelf/BookshelfScene.vue'
 import BookOpenOverlay from '@/components/bookshelf/BookOpenOverlay.vue'
 import AIMascot from '@/components/ai-mascot/AIMascot.vue'
@@ -29,6 +33,14 @@ const overlayOrigin = ref({ x: 0, y: 0 })
 
 const analysisResult = ref<AIAnalysisResult | null>(null)
 const showResultCard = ref(false)
+// The store may contain persisted fixtures or locally fabricated saves. Only a
+// fresh owner-scoped HTTP response can make the collection handoff visible.
+const hasServerReports = ref(false)
+
+function askAgentToCheckReports() {
+  if (!hasServerReports.value) return
+  openAgentWithResource(router, { kind: 'career_resource', uri: 'career://me/reports' })
+}
 
 function onAnalysisReady(result: AIAnalysisResult) {
   analysisResult.value = result
@@ -57,6 +69,14 @@ function removeAndCloseOverlay(id: string) {
 onMounted(async () => {
   const uid = userStore.currentUser?.id
   await reportStore.fetchReportList(uid)
+  if (getApiMode() === 'http' && uid) {
+    try {
+      const serverRows = await getReportList(uid)
+      hasServerReports.value = hasServerReportCollection(getApiMode(), serverRows)
+    } catch {
+      hasServerReports.value = false
+    }
+  }
   // fixtures/API 已返回列表时不再灌入旧 mockReportRecords
   if (!reportStore.mockInitialized) {
     if (reportStore.records.length === 0) {
@@ -69,6 +89,10 @@ onMounted(async () => {
 
 <template>
   <div class="bookcase-page page page--compact">
+    <div v-if="hasServerReports" class="agent-handoff">
+      <span>可让 Agent 核验服务端报告；本地演示报告不会作为可信依据。</span>
+      <button type="button" @click="askAgentToCheckReports">让 Agent 查看我的报告</button>
+    </div>
     <div class="bookcases-layout">
       <section class="bookcase-unit">
         <div class="bookcase-label">
@@ -129,6 +153,29 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.agent-handoff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+}
+
+.agent-handoff button {
+  flex-shrink: 0;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: #fff;
+  padding: 0.25rem 0.55rem;
+  cursor: pointer;
+}
+
 .bookcase-page {
   display: flex;
   flex-direction: column;

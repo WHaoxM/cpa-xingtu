@@ -1,7 +1,7 @@
 <!-- 页面：个人能力画像；路由：student/career-portrait；角色：STUDENT -->
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { gsap } from '@/plugins/gsap'
 import UserInfoBar from '@/components/UserInfoBar.vue'
@@ -11,8 +11,11 @@ import { callAgentPortraitStreaming, PHASE_META } from '@/composables/useAgentPo
 import type { AgentPortraitResult, AgentPhase, PhaseData, PersonInfo, AbilityDimension, SummarySource } from '@/composables/useAgentPortrait'
 import type { PortraitReplaySnapshot, PortraitSessionStatus } from '@/composables/usePortraitSession'
 import D3FlowerChart, { DEFAULT_FLOWER_COLORS } from '@/components/charts/D3FlowerChart.vue'
-import type { RadarDatum } from '@/components/charts/D3RadarChart.vue'
-import type { SevenDim } from '@/types'
+import D3RadarChart, { type RadarDatum } from '@/components/charts/D3RadarChart.vue'
+import { useAgentArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
+import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
+import { getApiMode } from '@/api/config'
+import type { PortraitPreview, SevenDim } from '@/types'
 
 function dimBarStyle(idx: number, score: number): Record<string, string> {
   const hex = DEFAULT_FLOWER_COLORS[idx] ?? DEFAULT_FLOWER_COLORS[0]!
@@ -25,19 +28,73 @@ function dimBarStyle(idx: number, score: number): Record<string, string> {
   }
 }
 
+type RealPortraitData = {
+  status: 'partial' | 'completed'
+  taskId: string
+  name: string
+  school: string
+  major: string
+  degree: string
+  targetRole: string
+  pagesObserved: number
+  pageCount: number | null
+  skills: string[]
+  projects: Array<{ name: string; role: string; isTeam: boolean | null; description: string }>
+  competitions: Array<{ name: string; level: string; award: string }>
+  dimensions: Array<{ key: string; label: string; score: number | null; evidence: string[] }>
+  missingFacts: string[]
+  totalScore: number | null
+}
+
 const props = withDefaults(defineProps<{
   embedded?: boolean
   replaySnapshots?: PortraitReplaySnapshot[]
   resultData?: AgentPortraitResult | null
   sessionStatus?: PortraitSessionStatus
+  realPortrait?: RealPortraitData | null
 }>(), {
   embedded: false,
   replaySnapshots: () => [],
   resultData: null,
   sessionStatus: 'idle',
+  realPortrait: null,
 })
+const realFlowerData = computed(() => (props.realPortrait?.dimensions || []).map(dimension => ({
+  axis: dimension.label,
+  value: dimension.score,
+})))
+const realScoreCount = computed(() => props.realPortrait?.dimensions.filter(dimension => dimension.score !== null).length ?? 0)
+const realVisualKey = computed(() => props.realPortrait?.dimensions.map(dimension => dimension.score ?? 'pending').join('-') || '')
 
 const router = useRouter()
+const route = useRoute()
+const artifactId = computed(() => {
+  const value = route.query.artifact_id
+  return typeof value === 'string' ? value : ''
+})
+const artifactHandoff = useAgentArtifactHandoff(() => artifactId.value)
+const artifactPreview = computed<PortraitPreview | null>(() => {
+  const artifact = artifactHandoff.artifact.value
+  if (!artifact || artifact.kind !== 'portrait') return null
+  const preview = artifact.preview as PortraitPreview | undefined
+  if (!preview || typeof preview !== 'object' || preview.type !== 'portrait_preview') return null
+  const scores = preview.scores
+  if (!scores || !['d1', 'd2', 'd3', 'd4'].every(key => {
+    const score = scores[key as keyof typeof scores]
+    return typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 100
+  })) return null
+  return preview
+})
+const artifactError = computed(() => {
+  if (!artifactId.value || artifactHandoff.loading.value) return ''
+  return artifactHandoff.error.value || (!artifactPreview.value ? '这份成果物缺少可用于四维画像的有效分数，无法展示为能力画像。' : '')
+})
+function returnToAgent() {
+  void router.push({ name: 'student-ai-assistant', query: artifactHandoff.sessionId.value ? { session_id: artifactHandoff.sessionId.value } : {} })
+}
+function discussCurrentPortrait() {
+  openAgentWithResource(router, { kind: 'career_resource', uri: 'career://me/portrait' })
+}
 const resumeStore = useResumeStore()
 const reportStore = useReportStore()
 
@@ -56,7 +113,12 @@ const phaseIndex = computed(() => {
 
 const phasePersonInfo = ref<PersonInfo | null>(null)
 const phaseCompleteness = ref(0)
-const phaseDimensions = ref<AbilityDimension[]>([])
+type DisplayDimension = Omit<AbilityDimension, 'key' | 'level' | 'source'> & {
+  key: string
+  level?: AbilityDimension['level']
+  source?: AbilityDimension['source']
+}
+const phaseDimensions = ref<DisplayDimension[]>([])
 const phaseCompetitiveness = ref(0)
 const phaseSkillTags = ref<{ name: string; weight: number; category: string }[]>([])
 const phaseHonors = ref<PersonInfo['honors']>([])
@@ -242,6 +304,7 @@ function animatePhase4() {
 
 /* ═══ 阶段回调处理 ═══ */
 function applyPhaseData(data: PhaseData) {
+  if (artifactId.value) return
   if (portraitAgentLoading.value) {
     portraitAgentLoading.value = false
   }
@@ -348,7 +411,8 @@ watch(
   { deep: true, immediate: true },
 )
 
-onMounted(async () => {
+async function initializePortrait() {
+  if (props.realPortrait) return
   if (!resumeStore.isParsed) {
     if (!props.embedded) {
       router.replace({ name: 'student-career-navigation' })
@@ -361,10 +425,11 @@ onMounted(async () => {
   }
 
   await nextTick()
+  if (artifactId.value) return
   resetPortraitState()
   portraitAgentLoading.value = true
   try {
-    portraitData.value = await callAgentPortraitStreaming(
+    const result = await callAgentPortraitStreaming(
       {
         resumeText: resumeStore.rawText || resumeStore.fileName,
         parsedSkills: resumeStore.parsedSkills,
@@ -374,11 +439,39 @@ onMounted(async () => {
       },
       applyPhaseData,
     )
+    if (artifactId.value) return
+    portraitData.value = result
     currentPhase.value = 'done'
   } catch {
     portraitAgentLoading.value = false
   }
+}
+
+onMounted(() => {
+  if (!artifactId.value) void initializePortrait()
 })
+
+watch(artifactId, (current, previous) => {
+  if (!current && previous && !props.embedded) void initializePortrait()
+})
+
+watch([artifactId, artifactPreview], ([id, preview]) => {
+  if (!id || props.embedded) return
+  resetPortraitState()
+  if (!preview?.scores) return
+  const labels: Record<'d1' | 'd2' | 'd3' | 'd4', string> = {
+    d1: '基础素质', d2: '专业技能', d3: '项目经验', d4: '综合潜力',
+  }
+  phaseDimensions.value = (['d1', 'd2', 'd3', 'd4'] as const).map(key => ({
+    key,
+    label: labels[key],
+    score: preview.scores![key]!,
+    desc: '',
+  }))
+  displaySummary.value = artifactHandoff.artifact.value?.summary || ''
+  summaryDone.value = true
+  currentPhase.value = 'done'
+}, { immediate: true })
 
 onBeforeUnmount(() => {
   if (typingTimer) clearInterval(typingTimer)
@@ -391,20 +484,20 @@ onBeforeUnmount(() => {
     <!-- HEADER -->
     <header v-if="!props.embedded" class="tp-header">
       <div class="tp-header__left">
-        <button class="tp-back" @click="goBack"><Icon icon="lucide:arrow-left" :width="14"/><span>重新上传</span></button>
+        <button class="tp-back" @click="artifactId ? returnToAgent() : goBack()"><Icon icon="lucide:arrow-left" :width="14"/><span>{{ artifactId ? '返回 Agent 对话' : '重新上传' }}</span></button>
         <span class="tp-brand-name">职途导航</span>
         <div class="tp-header-tag">个人能力画像</div>
       </div>
       <div class="tp-header__right">
         <UserInfoBar />
-        <button class="tp-export-btn" @click="exportPortrait">
+        <button v-if="!artifactId" class="tp-export-btn" @click="exportPortrait">
           <Icon icon="lucide:download" :width="12"/><span>导出报告</span>
         </button>
       </div>
     </header>
 
     <!-- ═══ 阶段进度指示器 ═══ -->
-    <div v-if="phaseIndex >= 0 && currentPhase !== 'done'" class="tp-phase-bar">
+    <div v-if="!artifactId && phaseIndex >= 0 && currentPhase !== 'done'" class="tp-phase-bar">
       <div
         v-for="(pm, idx) in PHASE_META" :key="pm.key"
         class="tp-phase-step"
@@ -424,8 +517,153 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+    <!-- 同一画像组件的真实任务视图：保留原有全屏构图，缺证维度不补零。 -->
+    <div v-if="props.realPortrait" class="tp-portrait tp-portrait--real">
+      <div class="tp-artifact__intro tp-real__intro">
+        <span class="tp-portrait__section-lbl">职途导航 · 简历证据画像</span>
+        <div class="tp-real__title-row">
+          <h1>{{ props.realPortrait.status === 'partial' ? '你的能力轮廓，正在形成' : '你的个人能力画像' }}</h1>
+          <span class="tp-real__state">{{ props.realPortrait.status === 'partial' ? '候选画像 · 未发布' : '已保存画像' }}</span>
+        </div>
+        <p>{{ props.realPortrait.status === 'partial' ? '真实简历已经进入画像链路；待核对维度保留空缺，不以零分或演示数据代替。' : '以下内容来自已保存的服务端画像及其对应简历，不使用本地演示分数。' }}</p>
+        <button v-if="getApiMode() === 'http'" type="button" class="tp-real__agent-link" @click="discussCurrentPortrait">
+          与 AI 助手讨论当前画像 <Icon icon="lucide:arrow-up-right" :width="15" />
+        </button>
+        <p v-if="getApiMode() === 'http'" class="tp-real__handoff-note">助手会按当前登录身份重新读取最新画像；若本页是历史任务快照，以服务端当前版本为准。</p>
+      </div>
+
+      <div class="tp-portrait__header">
+        <div class="tp-portrait__header-top">
+          <div class="tp-portrait__avatar">{{ props.realPortrait.name ? props.realPortrait.name.charAt(0) : '职' }}</div>
+          <div class="tp-portrait__info">
+            <div class="tp-portrait__name-row">
+              <span class="tp-portrait__name">{{ props.realPortrait.name || '简历档案' }}</span>
+              <span v-if="props.realPortrait.degree" class="tp-portrait__grade">{{ props.realPortrait.degree }}</span>
+              <span v-if="props.realPortrait.targetRole" class="tp-portrait__target">{{ props.realPortrait.targetRole }}</span>
+            </div>
+            <div v-if="props.realPortrait.school || props.realPortrait.major" class="tp-portrait__school-row">
+              <Icon icon="lucide:school" :width="12" class="tp-portrait__meta-icon" />
+              <span v-if="props.realPortrait.school">{{ props.realPortrait.school }}</span>
+              <span v-if="props.realPortrait.school && props.realPortrait.major" class="tp-portrait__sep">·</span>
+              <span v-if="props.realPortrait.major">{{ props.realPortrait.major }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="tp-portrait__score-banner">
+          <div class="tp-portrait__score-card tp-portrait__score-card--completeness">
+            <span class="tp-portrait__score-val">{{ props.realPortrait.pagesObserved }}<em v-if="props.realPortrait.pageCount !== null"> / {{ props.realPortrait.pageCount }}</em></span>
+            <span class="tp-portrait__score-lbl">有文字证据页</span>
+          </div>
+          <div class="tp-portrait__score-card tp-portrait__score-card--honors">
+            <span class="tp-portrait__score-val">{{ realScoreCount }}<em> / {{ props.realPortrait.dimensions.length }}</em></span>
+            <span class="tp-portrait__score-lbl">有分数维度</span>
+          </div>
+          <div class="tp-portrait__score-card tp-portrait__score-card--competitiveness" :class="{ 'tp-real__score-pending': props.realPortrait.totalScore === null }">
+            <span class="tp-portrait__score-val">{{ props.realPortrait.totalScore === null ? '待核对' : props.realPortrait.totalScore }}<em v-if="props.realPortrait.totalScore !== null">分</em></span>
+            <span class="tp-portrait__score-lbl">综合竞争力</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="tp-portrait__viz-row">
+        <div class="tp-portrait__radar-wrap tp-real__flower">
+          <D3FlowerChart :key="realVisualKey" :data="realFlowerData" :colors="DEFAULT_FLOWER_COLORS" :zoom="1.6" />
+        </div>
+        <div class="tp-portrait__dims">
+          <div v-for="(dimension, index) in props.realPortrait.dimensions" :key="dimension.key" class="tp-portrait__dim-item">
+            <div class="tp-portrait__dim-top">
+              <span class="tp-portrait__dim-label">{{ dimension.label }}</span>
+              <span class="tp-real__dim-status">{{ dimension.score === null ? '待核对' : props.realPortrait.status === 'partial' ? '候选分' : '已保存' }}</span>
+            </div>
+            <div class="tp-portrait__dim-bar-wrap">
+              <div class="tp-portrait__dim-track" :class="{ 'tp-real__track-pending': dimension.score === null }">
+                <div v-if="dimension.score !== null" class="tp-portrait__dim-bar" :style="dimBarStyle(index, dimension.score)"></div>
+              </div>
+              <span class="tp-portrait__dim-score">{{ dimension.score === null ? '—' : dimension.score }}</span>
+            </div>
+            <details v-if="dimension.evidence.length" class="tp-real__evidence">
+              <summary>查看 {{ dimension.evidence.length }} 条依据</summary>
+              <ul><li v-for="(evidence, evidenceIndex) in dimension.evidence" :key="evidenceIndex">{{ evidence }}</li></ul>
+            </details>
+          </div>
+        </div>
+      </div>
+      <p class="tp-real__legend">彩色花瓣与进度条表示服务端分数；灰色轮廓和虚线表示尚无可确认分数，而不是零分。</p>
+
+      <div v-if="props.realPortrait.skills.length || props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-portrait__highlights tp-real__highlights">
+        <div class="tp-real__section-heading">
+          <div><span class="tp-portrait__section-lbl">简历中的实践</span><h2>做过的事，取得的成果</h2></div>
+          <span class="tp-real__source-label">依简历原有顺序 · 非能力排名</span>
+        </div>
+        <div class="tp-real__story-grid">
+          <section v-if="props.realPortrait.projects.length" class="tp-real__story-column" aria-label="项目经历">
+            <div class="tp-real__column-heading"><Icon icon="lucide:layers-3" :width="17" /><h3>项目经历</h3><span>{{ props.realPortrait.projects.length }} 项</span></div>
+            <div v-for="(project, index) in props.realPortrait.projects.slice(0, 2)" :key="index" class="tp-portrait__project-card tp-real__project-card">
+              <div class="tp-portrait__project-accent"></div>
+              <div class="tp-portrait__project-body">
+                <div class="tp-real__project-title"><span class="tp-real__ordinal">{{ String(index + 1).padStart(2, '0') }}</span><h4>{{ project.name || '未命名项目' }}</h4></div>
+                <div v-if="project.role || project.isTeam !== null" class="tp-real__project-meta"><span v-if="project.role">{{ project.role }}</span><span v-if="project.isTeam !== null">{{ project.isTeam ? '团队项目' : '独立项目' }}</span></div>
+                <p v-if="project.description" class="tp-portrait__project-desc">{{ project.description }}</p>
+              </div>
+            </div>
+            <details v-if="props.realPortrait.projects.length > 2" class="tp-real__more">
+              <summary>查看其余 {{ props.realPortrait.projects.length - 2 }} 项项目 <Icon icon="lucide:chevron-down" :width="15" /></summary>
+              <div v-for="(project, index) in props.realPortrait.projects.slice(2)" :key="index" class="tp-portrait__project-card tp-real__project-card">
+                <div class="tp-portrait__project-accent"></div>
+                <div class="tp-portrait__project-body">
+                  <div class="tp-real__project-title"><span class="tp-real__ordinal">{{ String(index + 3).padStart(2, '0') }}</span><h4>{{ project.name || '未命名项目' }}</h4></div>
+                  <div v-if="project.role || project.isTeam !== null" class="tp-real__project-meta"><span v-if="project.role">{{ project.role }}</span><span v-if="project.isTeam !== null">{{ project.isTeam ? '团队项目' : '独立项目' }}</span></div>
+                  <p v-if="project.description" class="tp-portrait__project-desc">{{ project.description }}</p>
+                </div>
+              </div>
+            </details>
+          </section>
+          <section v-if="props.realPortrait.competitions.length" class="tp-real__story-column tp-real__awards" aria-label="竞赛与荣誉">
+            <div class="tp-real__column-heading"><Icon icon="lucide:award" :width="17" /><h3>竞赛与荣誉</h3><span>{{ props.realPortrait.competitions.length }} 项</span></div>
+            <div v-for="(competition, index) in props.realPortrait.competitions.slice(0, 4)" :key="index" class="tp-real__award-row">
+              <span class="tp-real__award-mark"><Icon icon="lucide:trophy" :width="15" /></span>
+              <span class="tp-real__award-name">{{ competition.name }}</span>
+              <span v-if="competition.award && competition.award !== '其他'" class="tp-real__award-level">{{ competition.award }}</span>
+              <span v-else-if="competition.level && competition.level !== '其他'" class="tp-real__award-level">{{ competition.level }}</span>
+            </div>
+            <details v-if="props.realPortrait.competitions.length > 4" class="tp-real__more">
+              <summary>查看其余 {{ props.realPortrait.competitions.length - 4 }} 项竞赛 <Icon icon="lucide:chevron-down" :width="15" /></summary>
+              <div v-for="(competition, index) in props.realPortrait.competitions.slice(4)" :key="index" class="tp-real__award-row">
+                <span class="tp-real__award-mark"><Icon icon="lucide:trophy" :width="15" /></span>
+                <span class="tp-real__award-name">{{ competition.name }}</span>
+                <span v-if="competition.award && competition.award !== '其他'" class="tp-real__award-level">{{ competition.award }}</span>
+                <span v-else-if="competition.level && competition.level !== '其他'" class="tp-real__award-level">{{ competition.level }}</span>
+              </div>
+            </details>
+          </section>
+        </div>
+        <div v-if="props.realPortrait.skills.length" class="tp-real__skill-area">
+          <div class="tp-real__column-heading"><Icon icon="lucide:sparkles" :width="16" /><h3>简历提及的技能</h3><span>{{ props.realPortrait.skills.length }} 项</span></div>
+          <div class="tp-portrait__tags tp-real__skills"><span v-for="(skill, index) in props.realPortrait.skills.slice(0, 10)" :key="skill + index" class="tp-portrait__tag tp-portrait__tag--gen">{{ skill }}</span></div>
+          <details v-if="props.realPortrait.skills.length > 10" class="tp-real__more tp-real__more--skills"><summary>查看其余 {{ props.realPortrait.skills.length - 10 }} 项技能 <Icon icon="lucide:chevron-down" :width="15" /></summary><div class="tp-portrait__tags tp-real__skills"><span v-for="(skill, index) in props.realPortrait.skills.slice(10)" :key="skill + index" class="tp-portrait__tag tp-portrait__tag--gen">{{ skill }}</span></div></details>
+          <p class="tp-real__hint">这些是简历中的原始技能词，不等同于已核定的能力分数。</p>
+        </div>
+      </div>
+
+      <div v-if="props.realPortrait.missingFacts.length" class="tp-portrait__summary tp-real__followup">
+        <span class="tp-portrait__section-lbl">下一步 · 补足可核对依据</span>
+        <p>{{ props.realPortrait.missingFacts.length }} 项事实仍需核对；未发布画像不能继续生成正式匹配与报告。这不代表你没有相关能力。</p>
+        <div class="tp-real__fact-list"><span v-for="fact in props.realPortrait.missingFacts" :key="fact">{{ fact }}</span></div>
+      </div>
+      <details class="tp-real__source"><summary>查看任务来源</summary><span>{{ props.realPortrait.taskId }}</span></details>
+    </div>
+
     <!-- 初始加载中（Phase 1 到达前） -->
-    <div v-if="portraitAgentLoading" class="tp-loading-wrap">
+    <div v-else-if="artifactId && artifactHandoff.loading.value" class="tp-loading-wrap" role="status">
+      <Icon icon="lucide:loader-circle" :width="34" class="tp-loading-spin" />
+      <p class="tp-loading-msg">正在载入本次 Agent 画像…</p>
+    </div>
+    <div v-else-if="artifactId && artifactError" class="tp-loading-wrap" role="alert">
+      <Icon icon="lucide:circle-alert" :width="34" />
+      <p class="tp-loading-msg">{{ artifactError }}</p>
+      <button type="button" class="tp-artifact__back" @click="returnToAgent">返回原对话</button>
+    </div>
+    <div v-else-if="portraitAgentLoading" class="tp-loading-wrap">
       <div class="tp-loading-seal">
         <Icon icon="lucide:loader-circle" :width="34" class="tp-loading-spin" />
       </div>
@@ -434,6 +672,12 @@ onBeforeUnmount(() => {
 
     <!-- 画像内容（按阶段渐进渲染） -->
     <div v-else-if="phaseIndex >= 0" class="tp-portrait">
+
+      <div v-if="artifactId" class="tp-artifact__intro">
+        <span class="tp-portrait__section-lbl">本次 Agent 对话生成</span>
+        <h1>{{ artifactHandoff.artifact.value?.title || '四维能力画像' }}</h1>
+        <p>以下四维分数直接来自同一份对话产物；其他简历档案与七维评价未随本产物提供。</p>
+      </div>
 
       <!-- [A] 个人信息 + 评分横幅（Phase ① parsing） -->
       <div v-if="phasePersonInfo" class="tp-portrait__header">
@@ -495,7 +739,8 @@ onBeforeUnmount(() => {
       <!-- [B+C] 雷达图 + 分项评分（Phase ② evaluating） -->
       <div v-if="phaseDimensions.length" class="tp-portrait__viz-row">
         <div class="tp-portrait__radar-wrap">
-          <D3FlowerChart :data="radarData" :colors="DEFAULT_FLOWER_COLORS" />
+          <D3RadarChart v-if="artifactId" :data="radarData" :show-legend="false" />
+          <D3FlowerChart v-else :data="radarData" :colors="DEFAULT_FLOWER_COLORS" />
         </div>
         <div class="tp-portrait__dims">
           <div
@@ -504,11 +749,11 @@ onBeforeUnmount(() => {
           >
             <div class="tp-portrait__dim-top">
               <span class="tp-portrait__dim-label">{{ dim.label }}</span>
-              <span class="tp-portrait__dim-badge"
+              <span v-if="!artifactId" class="tp-portrait__dim-badge"
                 :class="`tp-portrait__dim-badge--${dim.level === '优秀' ? 'good' : dim.level === '良好' ? 'mid' : 'low'}`">
                 {{ dim.level }}
               </span>
-              <span class="tp-portrait__dim-src"
+              <span v-if="!artifactId" class="tp-portrait__dim-src"
                 :class="{ 'tp-portrait__dim-src--agent': dim.source === 'agent' }"
                 :title="dim.source === 'agent' ? 'AI 模型计算（后端论文算法）' : '基于简历数据直接计算'">
                 <Icon :icon="dim.source === 'agent' ? 'lucide:bot' : 'lucide:calculator'" :width="9"/>
@@ -523,7 +768,7 @@ onBeforeUnmount(() => {
               </div>
               <span class="tp-portrait__dim-score">{{ dim.score }}</span>
             </div>
-            <p class="tp-portrait__dim-desc">{{ dim.desc }}</p>
+            <p v-if="dim.desc" class="tp-portrait__dim-desc">{{ dim.desc }}</p>
           </div>
           <!-- 技能标签（内嵌于维度面板底部） -->
           <div v-if="phaseSkillTags.length" class="tp-portrait__tags-inline">
@@ -539,6 +784,11 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
+      </div>
+
+      <div v-if="artifactId && (artifactPreview?.strengths?.length || artifactPreview?.weaknesses?.length)" class="tp-artifact__insights">
+        <div v-if="artifactPreview?.strengths?.length"><strong>优势</strong><span v-for="item in artifactPreview.strengths" :key="item">{{ item }}</span></div>
+        <div v-if="artifactPreview?.weaknesses?.length"><strong>待提升</strong><span v-for="item in artifactPreview.weaknesses" :key="item">{{ item }}</span></div>
       </div>
 
       <!-- [D] 经历亮点（Phase ③ analyzing） -->
@@ -578,13 +828,13 @@ onBeforeUnmount(() => {
       <!-- [E] AI 综合评语 + 建议 + 自我评价（Phase ④ summarizing） -->
       <div v-if="currentPhase === 'summarizing' || currentPhase === 'done'" class="tp-portrait__summary">
         <span class="tp-portrait__section-lbl">
-          <Icon icon="lucide:bot" :width="10" style="vertical-align: middle; margin-right: 4px;"/>AI 综合评语
+          <Icon icon="lucide:bot" :width="10" style="vertical-align: middle; margin-right: 4px;"/>{{ artifactId ? '本次产物摘要' : 'AI 综合评语' }}
         </span>
-        <p class="tp-portrait__summary-text" @click="stopTyping">
-          {{ displaySummary }}<span v-if="!summaryDone" class="tp-typing-cursor">|</span>
+        <p class="tp-portrait__summary-text" @click="!artifactId && stopTyping()">
+          {{ displaySummary }}<span v-if="!summaryDone && !artifactId" class="tp-typing-cursor">|</span>
         </p>
         <!-- 三条具体建议 -->
-        <div class="tp-portrait__suggestions">
+        <div v-if="!artifactId" class="tp-portrait__suggestions">
           <div
             v-for="(s, i) in portraitSuggestions" :key="i"
             class="tp-portrait__suggestion"
@@ -602,7 +852,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- [H] 操作区（Phase ④ 完成后显示） -->
-      <div v-if="currentPhase === 'summarizing' || currentPhase === 'done'" class="tp-portrait__step-guide">
+      <div v-if="!artifactId && (currentPhase === 'summarizing' || currentPhase === 'done')" class="tp-portrait__step-guide">
         <div class="tp-portrait__step-guide-inner">
           <div class="tp-portrait__step-guide-info">
             <span class="tp-portrait__step-guide-title">能力画像已生成 —— 下一步</span>
@@ -652,7 +902,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* ── CSS vars ── */
-:root {
+.tp-page {
   --tp-bg: #F5F5F3;
   --tp-panel: #EDEDEB;
   --tp-border: #E3E3E0;
@@ -677,6 +927,19 @@ onBeforeUnmount(() => {
   font-family: var(--font-title), sans-serif;
   overflow: hidden;
 }
+.tp-artifact__intro {
+  padding: 18px 22px;
+  border: 1px solid rgba(212, 201, 181, .22);
+  border-radius: 12px;
+  background: rgba(212, 201, 181, .06);
+}
+.tp-artifact__intro h1 { margin: 6px 0; color: #f3eee5; font-size: clamp(21px, 3vw, 30px); }
+.tp-artifact__intro p { margin: 0; color: rgba(212, 201, 181, .78); font-size: 12px; line-height: 1.6; }
+.tp-artifact__back { border: 1px solid rgba(212, 201, 181, .5); border-radius: 7px; padding: 8px 13px; background: transparent; color: #eee5d6; cursor: pointer; }
+.tp-artifact__insights { display: grid; gap: 10px; padding: 16px 20px; border: 1px solid rgba(212, 201, 181, .16); border-radius: 10px; }
+.tp-artifact__insights div { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.tp-artifact__insights strong { min-width: 55px; color: rgba(212, 201, 181, .9); font-size: 11px; }
+.tp-artifact__insights span { border-radius: 6px; background: rgba(212, 201, 181, .12); padding: 5px 8px; color: #f3eee5; font-size: 11px; }
 
 .tp-page--embedded {
   height: 100%;
@@ -1464,6 +1727,96 @@ onBeforeUnmount(() => {
   border-color: color-mix(in srgb, var(--tp-red) 18%, var(--tp-embedded-border) 82%);
 }
 
+/* 服务端画像沿用原有画像舞台、花形图与分项条，不把 partial 伪装成完成。 */
+.tp-page--embedded .tp-portrait--real {
+  align-items: center;
+  gap: 18px;
+  padding: clamp(22px, 3vw, 46px);
+}
+.tp-portrait--real > * { width: min(100%, 1120px); flex-shrink: 0; }
+.tp-page--embedded .tp-real__intro {
+  background: linear-gradient(130deg, #fffdfa, #f6efe4);
+  border-color: color-mix(in srgb, var(--tp-gold) 20%, var(--tp-embedded-border) 80%);
+  box-shadow: var(--shadow-sm);
+}
+.tp-real__title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.tp-page--embedded .tp-real__intro h1 { color: var(--tp-embedded-text); font-size: clamp(24px, 3.1vw, 38px); line-height: 1.2; }
+.tp-page--embedded .tp-real__intro p { color: var(--tp-embedded-sub); }
+.tp-real__agent-link { display: inline-flex; align-items: center; gap: 7px; margin-top: 14px; border: 1px solid var(--tp-red); border-radius: 7px; padding: 9px 13px; background: var(--tp-red); color: #fff; font-size: 12px; font-weight: 650; cursor: pointer; }
+.tp-real__agent-link:hover { filter: brightness(.92); }
+.tp-real__agent-link:focus-visible { outline: 2px solid var(--tp-red); outline-offset: 3px; }
+.tp-real__handoff-note { margin: 8px 0 0 !important; font-size: 11px; }
+.tp-real__state {
+  padding: 5px 11px;
+  border: 1px solid color-mix(in srgb, var(--tp-red) 28%, var(--tp-embedded-border) 72%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tp-red) 8%, white);
+  color: var(--tp-red);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.tp-real__score-pending .tp-portrait__score-val { font-size: 19px; }
+.tp-page--embedded .tp-real__flower { height: clamp(300px, 32vw, 360px); min-height: 300px; }
+.tp-page--embedded .tp-portrait--real .tp-portrait__dims { padding: 20px 24px; justify-content: center; }
+.tp-portrait--real .tp-portrait__dim-item { gap: 7px; }
+.tp-real__dim-status { color: var(--tp-embedded-muted); font-size: 10px; }
+.tp-real__track-pending { background: repeating-linear-gradient(90deg, #d1cbc1 0 8px, #efebe4 8px 14px) !important; }
+.tp-real__evidence { color: var(--tp-embedded-sub); font-size: 10px; line-height: 1.55; }
+.tp-real__evidence summary { cursor: pointer; }
+.tp-real__evidence ul { margin: 7px 0 0; padding-left: 16px; max-height: 190px; overflow-y: auto; }
+.tp-real__evidence li + li { margin-top: 5px; }
+.tp-real__legend { margin: -7px 0 0; color: var(--tp-embedded-muted); font-size: 10px; line-height: 1.5; }
+.tp-real__highlights { gap: 22px; padding: clamp(20px, 2.6vw, 30px) !important; }
+.tp-real__section-heading { display: flex; justify-content: space-between; align-items: end; gap: 18px; border-bottom: 1px solid var(--tp-embedded-border); padding-bottom: 16px; }
+.tp-real__section-heading h2 { margin: 6px 0 0; color: var(--tp-embedded-text); font-size: clamp(20px, 2vw, 27px); line-height: 1.25; font-weight: 650; letter-spacing: -.025em; }
+.tp-real__source-label { color: var(--tp-embedded-muted); font-size: 11px; line-height: 1.5; text-align: right; }
+.tp-real__story-grid { display: grid; grid-template-columns: minmax(0, 1.17fr) minmax(0, .83fr); gap: clamp(18px, 2.5vw, 30px); align-items: start; }
+.tp-real__story-column { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.tp-real__column-heading { display: flex; align-items: center; gap: 8px; color: var(--tp-red); margin-bottom: 4px; }
+.tp-real__column-heading h3 { color: var(--tp-embedded-text); font-size: 15px; font-weight: 650; margin: 0; }
+.tp-real__column-heading > span { margin-left: auto; font-size: 11px; color: var(--tp-embedded-muted); }
+.tp-page--embedded .tp-real__project-card { border-color: color-mix(in srgb, var(--tp-gold) 16%, var(--tp-embedded-border) 84%); background: color-mix(in srgb, var(--tp-panel) 14%, white); box-shadow: 0 4px 18px rgba(74, 54, 28, .035); }
+.tp-real__project-card .tp-portrait__project-accent { width: 4px; background: linear-gradient(180deg, var(--tp-red), var(--tp-gold)); }
+.tp-real__project-card .tp-portrait__project-body { padding: 17px 20px 18px; gap: 9px; min-width: 0; }
+.tp-real__project-title { display: flex; align-items: baseline; gap: 11px; min-width: 0; }
+.tp-real__project-title h4 { margin: 0; color: var(--tp-embedded-text); font-size: 15px; font-weight: 650; line-height: 1.4; overflow-wrap: anywhere; }
+.tp-real__ordinal { color: var(--tp-red); font-family: Georgia, serif; font-size: 18px; font-weight: 600; flex: none; }
+.tp-real__project-meta { display: flex; flex-wrap: wrap; gap: 7px; padding-left: 33px; }
+.tp-real__project-meta span { color: var(--tp-embedded-sub); background: color-mix(in srgb, var(--tp-gold) 8%, white); border: 1px solid color-mix(in srgb, var(--tp-gold) 14%, var(--tp-embedded-border) 86%); border-radius: 999px; padding: 3px 9px; font-size: 11px; line-height: 1.3; }
+.tp-real__project-card .tp-portrait__project-desc { display: block; margin: 0; padding-left: 33px; color: var(--tp-embedded-sub); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; -webkit-line-clamp: unset; line-clamp: unset; }
+.tp-real__award-row { display: flex; align-items: center; gap: 11px; min-height: 55px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--tp-gold) 16%, var(--tp-embedded-border) 84%); border-radius: 8px; background: rgba(255,255,255,.8); }
+.tp-real__award-mark { width: 29px; height: 29px; border-radius: 8px; flex: none; display: grid; place-items: center; color: var(--tp-gold); background: color-mix(in srgb, var(--tp-gold) 10%, white); }
+.tp-real__award-name { flex: 1; min-width: 0; color: var(--tp-embedded-text); font-size: 12px; font-weight: 560; line-height: 1.5; overflow-wrap: anywhere; }
+.tp-real__award-level { flex: none; max-width: 80px; color: var(--tp-red); background: color-mix(in srgb, var(--tp-red) 7%, white); border-radius: 999px; padding: 4px 7px; font-size: 10px; line-height: 1.3; text-align: center; }
+.tp-real__more { display: flex; flex-direction: column; gap: 10px; }
+.tp-real__more summary { display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; min-height: 37px; padding: 6px 12px; border: 1px dashed color-mix(in srgb, var(--tp-red) 22%, var(--tp-embedded-border) 78%); border-radius: 8px; color: var(--tp-red); background: color-mix(in srgb, var(--tp-red) 3%, white); font-size: 11px; font-weight: 600; list-style: none; }
+.tp-real__more summary::-webkit-details-marker { display: none; }
+.tp-real__more summary:focus-visible { outline: 2px solid var(--tp-red); outline-offset: 2px; }
+.tp-real__more[open] summary svg { transform: rotate(180deg); }
+.tp-real__skill-area { border-top: 1px solid var(--tp-embedded-border); padding-top: 18px; display: flex; flex-direction: column; gap: 10px; }
+.tp-real__skills { margin: 2px 0; }
+.tp-page--embedded .tp-real__skills .tp-portrait__tag--gen {
+  background: color-mix(in srgb, var(--tp-gold) 8%, white);
+  color: var(--tp-embedded-sub);
+  border-color: color-mix(in srgb, var(--tp-gold) 20%, var(--tp-embedded-border) 80%);
+}
+.tp-real__hint { margin: 0; color: var(--tp-embedded-muted); font-size: 10px; }
+.tp-real__followup { padding: 18px 20px; }
+.tp-real__followup p { margin: 0 0 12px; color: var(--tp-embedded-sub); font-size: 12px; line-height: 1.6; }
+.tp-real__fact-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.tp-real__fact-list span {
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--tp-red) 16%, var(--tp-embedded-border) 84%);
+  border-radius: 6px;
+  background: rgba(255,255,255,.78);
+  color: var(--tp-embedded-sub);
+  font-size: 11px;
+}
+.tp-real__source { color: var(--tp-embedded-muted); font-size: 10px; }
+.tp-real__source summary { cursor: pointer; }
+.tp-real__source span { overflow-wrap: anywhere; }
+
 /* ══════════════════════════════════════════
    打印 / 导出报告样式
 ══════════════════════════════════════════ */
@@ -1543,5 +1896,15 @@ onBeforeUnmount(() => {
   .tp-portrait { padding: 14px 14px; }
   .tp-portrait__viz-row { grid-template-columns: 1fr; }
   .tp-portrait__highlights-grid { grid-template-columns: 1fr; }
+  .tp-real__story-grid { grid-template-columns: 1fr; }
+  .tp-real__section-heading { align-items: start; flex-direction: column; gap: 5px; }
+  .tp-real__source-label { text-align: left; }
+}
+@media (max-width: 600px) {
+  .tp-header { padding: 0 14px; }
+  .tp-header__left { min-width: 0; gap: 8px; }
+  .tp-back { flex: none; min-height: 34px; white-space: nowrap; }
+  .tp-brand-name, .tp-header__right { display: none; }
+  .tp-header-tag { white-space: nowrap; padding: 4px 8px; }
 }
 </style>
