@@ -25,15 +25,17 @@ import {
   uploadResumeFile,
   extractSkillsOnly,
   nsleResume,
-  uploadResumeCandidate,
+  startResumeCandidate,
   getResumeCandidate,
   confirmResumeCandidate,
   runConfirmedStudentPipeline,
   getPipelineEvents,
   getPipelineStatus,
+  getResumeTrace,
   type ResumeCandidate,
   type ConfirmedPipelineResult,
   type PipelineTaskEvent,
+  type ResumeTraceEvent,
 } from '@/api/pipeline'
 import { inferRoleFromSkills, listInsights } from '@/api/career'
 import {
@@ -50,7 +52,7 @@ const route = useRoute()
 const userStore = useUserStore()
 const resumeStore = useResumeStore()
 
-type ParsePhase = 'idle' | 'parsing' | 'confirming' | 'needs_repair' | 'verified' | 'done'
+type ParsePhase = 'idle' | 'parsing' | 'failed' | 'confirming' | 'needs_repair' | 'verified' | 'done'
 type RightLayoutMode = 'idle' | 'split' | 'collapsing' | 'full'
 
 const pageRef = ref<HTMLElement | null>(null)
@@ -73,6 +75,11 @@ const rightRealView = ref<'portrait' | 'report'>('portrait')
 const taskEvents = ref<PipelineTaskEvent[]>([])
 const taskSnapshot = ref<{ task_id: string; pipeline: string; status: string } | null>(null)
 const eventError = ref('')
+const resumeTrace = ref<ResumeTraceEvent[]>([])
+const traceProgress = ref(0)
+const traceError = ref('')
+const activeResumeTaskId = ref('')
+const acceptingUpload = ref(false)
 type StoredTaskStatus = {
   task_id: string
   pipeline: string
@@ -90,10 +97,38 @@ type PortraitCandidate = {
 let eventCursor = 0
 let eventPollTimer: number | null = null
 let eventTaskId = ''
+let traceCursor = 0
+let traceTaskId = ''
+let resumeTaskPollTimer: number | null = null
 let resumeReportRequestSeq = 0
 function stopEventPoll() {
   if (eventPollTimer != null) window.clearTimeout(eventPollTimer)
   eventPollTimer = null
+  if (resumeTaskPollTimer != null) window.clearTimeout(resumeTaskPollTimer)
+  resumeTaskPollTimer = null
+}
+async function replayResumeTrace(taskId: string, reset = false) {
+  if (reset || traceTaskId !== taskId) {
+    traceTaskId = taskId
+    traceCursor = 0
+    resumeTrace.value = []
+    traceProgress.value = 0
+  }
+  try {
+    let more = true
+    while (more) {
+      const env = await getResumeTrace(taskId, traceCursor)
+      if (traceTaskId !== taskId) return
+      if (!env.success || !env.data) throw new Error(env.error || '解析轨迹读取失败')
+      resumeTrace.value.push(...env.data.events)
+      traceCursor = env.data.cursor
+      traceProgress.value = env.data.task.progress
+      more = env.data.has_more
+    }
+    traceError.value = ''
+  } catch (error) {
+    traceError.value = error instanceof Error ? error.message : '解析轨迹暂不可用'
+  }
 }
 async function replayTaskEvents(taskId: string, reset = false) {
   if (!isHttpMode || !/^task_[A-Za-z0-9]+$/.test(taskId)) return
@@ -149,7 +184,9 @@ const FACT_LABELS: Record<string, string> = {
 }
 const INTERNAL_CANDIDATE_KEYS = new Set([
   'source', 'source_sha256', 'raw_text_chars', 'structure_path', 'chunk_count',
-  'failed_offsets', 'error', 'next_action',
+  'failed_offsets', 'error', 'next_action', 'structure_calls', 'skill_mentions',
+  'entity_extraction_call', 'entity_extraction_status', 'entity_extraction_issues',
+  'entity_linking',
 ])
 const candidateProfile = computed(() => resumeCandidate.value?.candidate_profile || {})
 const candidateFields = computed(() => Object.entries(candidateProfile.value)
@@ -248,6 +285,64 @@ function displayCandidateValue(value: unknown): string {
 function candidateLabel(key: string): string { return CANDIDATE_LABELS[key] || key }
 
 let candidateLoadSeq = 0
+function applyResumeCandidate(taskId: string, candidate: ResumeCandidate) {
+  resumeCandidate.value = candidate
+  uploadedFileName.value = uploadedFileName.value || '会话中的简历候选'
+  if (candidate.status === 'completed' && candidate.confirmed && candidate.profile_ready) {
+    confirmedProfile.value = {
+      task_id: taskId, status: 'completed', profile_ready: true,
+      resource_id: candidate.student_id,
+    }
+    const portrait = candidate.portrait_task
+    if (portrait?.status === 'partial') partialPortrait.value = { ...portrait }
+    if (portrait?.status === 'completed' && portrait.portrait_id && portrait.portrait) {
+      authoritativePortrait.value = { ...portrait, portrait_ready: true }
+    }
+    if (!portrait?.portrait && portrait?.status !== 'partial') rightRealView.value = 'report'
+    parsePhase.value = 'verified'
+    void loadResumeDiagnosticReport(false)
+    void replayTaskEvents(portrait?.task_id || taskId, true)
+  } else {
+    parsePhase.value = candidate.status === 'needs_input' ? 'confirming' : 'needs_repair'
+    void replayTaskEvents(taskId)
+  }
+}
+
+async function pollPendingResumeTask(taskId: string, seq: number, reset = false) {
+  if (seq !== candidateLoadSeq) return
+  try {
+    const statusEnv = await getPipelineStatus(taskId)
+    if (seq !== candidateLoadSeq) return
+    const task = statusEnv.data as StoredTaskStatus | undefined
+    if (!statusEnv.success || !task) throw new Error(statusEnv.error || '简历任务状态不可读取')
+    if (task.pipeline !== 'L0_parse_resume') return
+    activeResumeTaskId.value = taskId
+    await replayResumeTrace(taskId, reset)
+    if (seq !== candidateLoadSeq) return
+    if (task.status === 'pending' || task.status === 'running') {
+      parsePhase.value = 'parsing'
+      if (reset) void replayTaskEvents(taskId, true)
+      resumeTaskPollTimer = window.setTimeout(() => {
+        void pollPendingResumeTask(taskId, seq)
+      }, 1500)
+      return
+    }
+    void replayTaskEvents(taskId)
+    if (task.status === 'failed') {
+      parseError.value = '服务端未能完成简历解析。请查看右侧真实轨迹后重新上传。'
+      parsePhase.value = 'failed'
+      return
+    }
+    const candidateEnv = await getResumeCandidate(taskId)
+    if (seq !== candidateLoadSeq) return
+    if (!candidateEnv.success || !candidateEnv.data) throw new Error(candidateEnv.error || '无法读取简历候选')
+    applyResumeCandidate(taskId, candidateEnv.data)
+  } catch (error) {
+    if (seq !== candidateLoadSeq) return
+    parseError.value = error instanceof Error ? error.message : '简历解析状态暂不可用'
+    parsePhase.value = 'idle'
+  }
+}
 watch(() => route.query.task_id, async value => {
   const seq = ++candidateLoadSeq
   if (!isHttpMode || typeof value !== 'string') return
@@ -263,6 +358,11 @@ watch(() => route.query.task_id, async value => {
   rightRealView.value = 'portrait'
   taskSnapshot.value = null
   eventError.value = ''
+  resumeTrace.value = []
+  traceProgress.value = 0
+  traceError.value = ''
+  traceTaskId = ''
+  traceCursor = 0
   parseError.value = ''
   if (!/^task_[A-Za-z0-9]+$/.test(value)) {
     parseError.value = '无效的简历任务引用'
@@ -270,30 +370,13 @@ watch(() => route.query.task_id, async value => {
     return
   }
   parsePhase.value = 'parsing'
+  activeResumeTaskId.value = value
   try {
     const env = await getResumeCandidate(value)
     if (seq !== candidateLoadSeq) return
     if (!env.success || !env.data) throw new Error(env.error || '无法读取简历候选')
-    resumeCandidate.value = env.data
-    uploadedFileName.value = '会话中的简历候选'
-    if (env.data.status === 'completed' && env.data.confirmed && env.data.profile_ready) {
-      confirmedProfile.value = {
-        task_id: value, status: 'completed', profile_ready: true,
-        resource_id: env.data.student_id,
-      }
-      const portrait = env.data.portrait_task
-      if (portrait?.status === 'partial') partialPortrait.value = { ...portrait }
-      if (portrait?.status === 'completed' && portrait.portrait_id && portrait.portrait) {
-        authoritativePortrait.value = { ...portrait, portrait_ready: true }
-      }
-      if (!portrait?.portrait && portrait?.status !== 'partial') rightRealView.value = 'report'
-      parsePhase.value = 'verified'
-      void loadResumeDiagnosticReport(false)
-      void replayTaskEvents(portrait?.task_id || value, true)
-    } else {
-      parsePhase.value = env.data.status === 'needs_input' ? 'confirming' : 'needs_repair'
-      void replayTaskEvents(value, true)
-    }
+    applyResumeCandidate(value, env.data)
+    void replayResumeTrace(value, true)
   } catch (e) {
     if (seq !== candidateLoadSeq) return
     try {
@@ -302,6 +385,11 @@ watch(() => route.query.task_id, async value => {
       const stored = await getPipelineStatus(value)
       if (seq !== candidateLoadSeq) return
       const task = stored.data as StoredTaskStatus | undefined
+      if (stored.success && task?.pipeline === 'L0_parse_resume'
+          && (task.status === 'pending' || task.status === 'running')) {
+        void pollPendingResumeTask(value, seq, true)
+        return
+      }
       if (stored.success && task?.pipeline === 'L2_generate_portrait') {
         const result = { task_id: value, ...(task.result || {}) } as ConfirmedPipelineResult
         if (task.status === 'partial') {
@@ -316,7 +404,13 @@ watch(() => route.query.task_id, async value => {
         }
       }
       await replayTaskEvents(value, true)
+      if (task?.pipeline === 'L0_parse_resume') void replayResumeTrace(value, true)
       if (seq !== candidateLoadSeq) return
+      if (task?.pipeline === 'L0_parse_resume' && task.status === 'failed') {
+        parseError.value = '服务端未能完成简历解析；右侧保留最后完成的后端检查点。'
+        parsePhase.value = 'failed'
+        return
+      }
       parseError.value = taskSnapshot.value
         ? '这份资料目前不能作为待确认简历打开；可在下方查看任务记录。'
         : (e instanceof Error ? e.message : '无法读取简历候选')
@@ -640,22 +734,29 @@ async function startParse() {
   partialPortrait.value = null
 
   if (isHttpMode) {
+    stopEventPoll()
+    candidateLoadSeq += 1
+    activeResumeTaskId.value = ''
+    resumeTrace.value = []
+    traceProgress.value = 0
+    traceError.value = ''
+    acceptingUpload.value = true
     try {
-      if (!uploadedFile.value) throw new Error('真实管线目前需上传文件；粘贴文本尚未接入可确认的持久任务。')
-      const env = await uploadResumeCandidate(uploadedFile.value)
+      const resumeFile = uploadedFile.value || new File([pasteText.value.trim()], 'pasted-resume.txt', { type: 'text/plain' })
+      const env = await startResumeCandidate(resumeFile)
       if (!env.success || !env.data?.task_id) throw new Error(env.error || '简历解析未返回权威任务 ID')
-      resumeCandidate.value = env.data
-      parsePhase.value = env.data.status === 'needs_input' ? 'confirming' : 'needs_repair'
-      // Keep the server-owned task reference in the URL so a refresh replays
-      // the same candidate/confirmation and its linked L2 state.
+      activeResumeTaskId.value = env.data.task_id
+      // The task ID is returned before OCR/model work; refresh can replay it.
       if (route.query.task_id !== env.data.task_id) {
-        void router.replace({ query: { ...route.query, task_id: env.data.task_id } })
+        await router.replace({ query: { ...route.query, task_id: env.data.task_id } })
       } else {
-        void replayTaskEvents(env.data.task_id, true)
+        void pollPendingResumeTask(env.data.task_id, ++candidateLoadSeq, true)
       }
     } catch (e) {
       parseError.value = e instanceof Error ? e.message : '解析失败'
       parsePhase.value = 'idle'
+    } finally {
+      acceptingUpload.value = false
     }
     return
   }
@@ -883,6 +984,13 @@ function resetPage() {
   taskEvents.value = []
   taskSnapshot.value = null
   eventError.value = ''
+  resumeTrace.value = []
+  traceProgress.value = 0
+  traceError.value = ''
+  traceCursor = 0
+  traceTaskId = ''
+  activeResumeTaskId.value = ''
+  acceptingUpload.value = false
   candidateLoadSeq += 1
   parsePhase.value = 'idle'
   if (route.query.task_id) void router.replace({ query: { ...route.query, task_id: undefined } })
@@ -941,8 +1049,25 @@ onBeforeUnmount(() => {
 /* ═══ 星图交互数据 ═══ */
 const showDashboard = computed(() => !isHttpMode && parsePhase.value !== 'idle')
 const showEmbeddedPortrait = computed(() => !isHttpMode && parsePhase.value !== 'idle' && resumeStore.isParsed)
-const showIdlePreview = computed(() => isHttpMode ? !showBackendWorkspace.value : parsePhase.value === 'idle')
-const isRightPanelActive = computed(() => showBackendWorkspace.value || (!isHttpMode && parsePhase.value !== 'idle'))
+const showUnifiedPreview = computed(() => parsePhase.value === 'idle' || (isHttpMode && !showBackendWorkspace.value))
+const showLiveResumeTrace = computed(() => isHttpMode && parsePhase.value !== 'idle')
+const isRightPanelActive = computed(() => showBackendWorkspace.value || (isHttpMode && parsePhase.value !== 'idle') || (!isHttpMode && parsePhase.value !== 'idle'))
+const realCurrentStage = computed(() => {
+  if (acceptingUpload.value && !activeResumeTaskId.value) return '正在提交文件，等待服务端分配任务编号'
+  const last = resumeTrace.value[resumeTrace.value.length - 1]
+  if (!last) return '任务已建立，等待后端开始解析'
+  const names: Record<string, string> = {
+    file_received: '后端已接收文件', source_extract: '正在提取文件原文',
+    source_extracted: '原文已提取，等待结构化', handoff_document: '文档已交给结构 Agent',
+    structure_extract: '模型正在识别简历事实', structure_model: '结构模型已返回',
+    structure_extracted: '结构化事实已生成', handoff_structure: '事实已交给实体 Agent',
+    entity_extract: '正在核验技能实体', entity_resolved: '实体处理已完成',
+    handoff_entity: '候选已交给证据 Agent', evidence_assemble: '正在整理证据',
+    evidence_assembled: '逐页证据已整理',
+    candidate_saved: '候选档案已保存', failed: '解析未完成',
+  }
+  return names[last.stage] || last.stage
+})
 const showLayoutToggle = computed(() => showBackendWorkspace.value || (showEmbeddedPortrait.value
   && parsePhase.value === 'done'
   && portraitSessionStatus.value === 'completed'
@@ -981,12 +1106,7 @@ const rightShellStyle = computed(() => ({
           <span class="rp-greeting">
             {{ (() => { const h = new Date().getHours(); return h < 12 ? '早上好' : h < 18 ? '下午好' : '晚上好' })() }}，{{ userStore.currentUser?.name || '同学' }}
           </span>
-          <h1 v-if="isHttpMode" class="rp-display-title">
-            <span class="rp-dt-a">先核对真实经历</span>
-            <span class="rp-dt-b">再看见能力证据</span>
-            <span class="rp-dt-c">让职业判断有据可依</span>
-          </h1>
-          <h1 v-else class="rp-display-title">
+          <h1 class="rp-display-title">
             <span class="rp-dt-a">找到你</span>
             <span class="rp-dt-b">在职场宇宙中</span>
             <span class="rp-dt-c">的坐标</span>
@@ -1061,14 +1181,13 @@ const rightShellStyle = computed(() => ({
             </div>
           </div>
 
-          <div v-if="!isHttpMode" class="rp-or-row">
+          <div class="rp-or-row">
             <span class="rp-or-line"></span>
             <span class="rp-or-text">或粘贴文字</span>
             <span class="rp-or-line"></span>
           </div>
 
           <textarea
-            v-if="!isHttpMode"
             class="rp-textarea"
             v-model="pasteText"
             placeholder="粘贴简历内容：工作经历、掌握技能、项目描述…"
@@ -1076,10 +1195,10 @@ const rightShellStyle = computed(() => ({
           />
 
           <!-- 方向预选 tiles (5 领域折叠卡片) -->
-          <div v-if="!isHttpMode" class="rp-dir-section">
+          <div class="rp-dir-section">
             <p class="rp-dir-label">
               {{ selectedDirection ? '已选方向' : '偏好方向' }}
-              <span v-if="!selectedDirection" class="rp-dir-hint">（可选，辅助分析）</span>
+              <span v-if="!selectedDirection" class="rp-dir-hint">{{ isHttpMode ? '（当前仅供页面预选）' : '（可选，辅助分析）' }}</span>
             </p>
             <div class="rp-dir-domains">
               <div
@@ -1110,9 +1229,9 @@ const rightShellStyle = computed(() => ({
           </div>
 
           <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
-          <p v-if="isHttpMode" class="rp-real-note">当前真实流程只接收文件上传；粘贴文本和预选方向尚未进入确认管线。上传后逐页核对，再尝试生成有证据的画像。</p>
+          <p v-if="isHttpMode" class="rp-real-note">文件或粘贴文本会进入同一条真实解析管线。偏好方向仅作页面选择，不作为简历事实或评分依据；上传后请逐项核对。</p>
           <p v-else class="rp-real-note rp-demo-note">纯演示使用固定样例画像；上传或粘贴内容仅用于触发演示，不会被真实解析。</p>
-          <button class="rp-parse-btn" :disabled="isHttpMode ? !uploadedFile : (!pasteText.trim() && !uploadedFile)" @click="startParse">
+          <button class="rp-parse-btn" :disabled="!pasteText.trim() && !uploadedFile" @click="startParse">
             <span>{{ isHttpMode ? '解析并核对简历' : '查看演示能力画像' }}</span>
             <Icon icon="lucide:arrow-right" :width="15" class="rp-parse-btn__arrow" />
           </button>
@@ -1120,10 +1239,19 @@ const rightShellStyle = computed(() => ({
 
         <!-- PARSING 态 -->
         <div v-else-if="parsePhase === 'parsing'" class="rp-loading-wrap">
-            <div class="rp-loading-seal">
-              <Icon icon="lucide:loader-circle" :width="34" class="rp-loading-spin" />
-            </div>
-            <p class="rp-loading-msg">{{ isHttpMode ? '服务端正在处理；此处不显示模拟百分比' : parseMsg }}</p>
+            <template v-if="isHttpMode">
+              <span class="rp-result-kicker">01 · 后端解析进行中</span>
+              <h3 class="rp-real-loading-title">正在读懂这份简历</h3>
+              <p class="rp-loading-msg">{{ realCurrentStage }}</p>
+              <div class="rp-real-progress-head"><span>已完成的后端检查点</span><strong>{{ activeResumeTaskId ? `${traceProgress}%` : '待分配' }}</strong></div>
+              <div class="rp-real-progress-track" role="progressbar" :aria-valuenow="traceProgress" aria-valuemin="0" aria-valuemax="100" aria-label="简历解析真实检查点进度"><span :style="{ width: traceProgress + '%' }"></span></div>
+              <p class="rp-real-progress-note">{{ activeResumeTaskId ? `已完成 ${Math.floor(traceProgress / 25)} / 4 个检查点。右侧 Agent Trace 展示每一步的数据交接。` : '服务端返回任务编号后开始显示实际进度；此处不会预估处理时间。' }}</p>
+              <small v-if="activeResumeTaskId" class="rp-real-task-id">{{ activeResumeTaskId }}</small>
+            </template>
+            <template v-else>
+              <div class="rp-loading-seal"><Icon icon="lucide:loader-circle" :width="34" class="rp-loading-spin" /></div>
+              <p class="rp-loading-msg">{{ parseMsg }}</p>
+            </template>
             <div v-if="!isHttpMode" class="rp-progress-area">
               <div class="rp-progress-track">
                 <div class="rp-progress-fill" :style="{ width: parseProgress + '%' }"></div>
@@ -1133,6 +1261,14 @@ const rightShellStyle = computed(() => ({
                 <span class="rp-progress-steps">{{ currentStep }} / {{ totalSteps }} 步</span>
               </div>
             </div>
+        </div>
+
+        <div v-else-if="parsePhase === 'failed'" class="rp-confirm-wrap">
+          <span class="rp-result-kicker">01 · 简历解析中断</span>
+          <h3>这次解析没有完成</h3>
+          <p class="rp-result-lead">服务端已保留最后完成的检查点和 Agent 轨迹。请从右侧查看中断阶段，必要时重新上传清晰文件。</p>
+          <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
+          <button class="rp-result-reset" @click="resetPage">重新上传</button>
         </div>
 
         <!-- 真实后端返回的候选与证据；用户确认前不宣称画像完成。 -->
@@ -1242,8 +1378,16 @@ const rightShellStyle = computed(() => ({
       <div class="rp-right" :class="{ 'rp-right--active': isRightPanelActive }">
         <CareerNavigationIdlePreview
           class="rp-right-idle-preview"
-          :class="{ 'rp-right-idle-preview--visible': showIdlePreview }"
-          :aria-hidden="!showIdlePreview"
+          :class="{ 'rp-right-idle-preview--visible': showUnifiedPreview }"
+          :aria-hidden="!showUnifiedPreview"
+          :live="showLiveResumeTrace"
+          :progress="traceProgress"
+          :task-id="activeResumeTaskId"
+          :trace="resumeTrace"
+          :trace-error="traceError"
+          :candidate-ready="!!resumeCandidate"
+          :confirmed="!!confirmedProfile?.profile_ready"
+          :failed="parsePhase === 'failed'"
         />
         <div
           class="rp-right-shell"
@@ -1304,6 +1448,18 @@ const rightShellStyle = computed(() => ({
             />
           </div>
           <div class="rp-right-dashboard-pane" ref="dashboardPaneRef">
+            <CareerNavigationIdlePreview
+              v-if="showBackendWorkspace"
+              :trace-only="true"
+              :live="true"
+              :task-id="activeResumeTaskId"
+              :progress="traceProgress"
+              :trace="resumeTrace"
+              :trace-error="traceError"
+              :candidate-ready="!!resumeCandidate"
+              :confirmed="!!confirmedProfile?.profile_ready"
+              :failed="parsePhase === 'failed'"
+            />
             <CareerAgentDashboard
               v-if="showDashboard"
               class="rp-right-dashboard"
@@ -1842,6 +1998,14 @@ const rightShellStyle = computed(() => ({
 .rp-loading-spin { color: var(--rp-red); animation: rp-spin 1.2s linear infinite; }
 @keyframes rp-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .rp-loading-msg { font-size: 13px; color: var(--rp-sub); letter-spacing: 0.03em; margin: 0; }
+.rp-real-loading-title { align-self: stretch; margin: 0; color: var(--rp-text); font: 500 clamp(26px, 3vw, 36px)/1.2 Georgia, 'Noto Serif SC', serif; }
+.rp-loading-wrap:has(.rp-real-loading-title) { align-items: stretch; justify-content: center; gap: 15px; }
+.rp-real-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 13px; color: var(--rp-sub); font-size: 12px; }
+.rp-real-progress-head strong { color: var(--rp-red); font: 600 24px/1.2 Georgia, serif; }
+.rp-real-progress-track { height: 9px; overflow: hidden; border-radius: 999px; background: color-mix(in srgb, var(--rp-red) 9%, var(--rp-border) 91%); }
+.rp-real-progress-track > span { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #d87e52, var(--rp-red)); transition: width .35s ease; }
+.rp-real-progress-note { margin: 0; color: var(--rp-sub); font-size: 12px; line-height: 1.65; }
+.rp-real-task-id { color: var(--rp-sub); font-size: 10px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
 .rp-progress-area { width: 300px; display: flex; flex-direction: column; gap: 8px; }
 .rp-progress-track {
   width: 100%; height: 12px;
@@ -2032,10 +2196,10 @@ const rightShellStyle = computed(() => ({
   border-left-color: var(--rp-border);
 }
 
-/* 真实任务的结果回到原来的画像舞台；全屏时不预留演示 Dashboard 栏。 */
+/* 真实任务的结果与后端 Agent Trace 并排，不能将轨迹藏在技术详情里。 */
 .rp-right-shell--real.rp-right-shell--immersive .rp-right-portrait-pane,
-.rp-right-shell--real .rp-right-portrait-pane { width: 100%; height: 100%; opacity: 1; }
-.rp-right-shell--real .rp-right-dashboard-pane { display: none; width: 0; }
+.rp-right-shell--real .rp-right-portrait-pane { width: calc(100% - 270px); height: 100%; opacity: 1; }
+.rp-right-shell--real .rp-right-dashboard-pane { display: block; width: 270px; opacity: 1; transform: none; border-left: 1px solid var(--rp-border); }
 .rp-right-shell--real .rp-right-portrait :deep(.tp-portrait--real) { padding-top: 66px; }
 
 .rp-right-dashboard,
@@ -2402,6 +2566,8 @@ const rightShellStyle = computed(() => ({
     border-left-width: 0;
     border-top: 1px solid var(--rp-border);
   }
+  .rp-right-shell--real .rp-right-portrait-pane { width: 100% !important; height: min(74%, 750px); }
+  .rp-right-shell--real .rp-right-dashboard-pane { width: 100% !important; height: 26%; min-height: 230px; opacity: 1; transform: none; border-left: 0; border-top: 1px solid var(--rp-border); }
   .rp-layout-toggle {
     top: 12px;
     right: 12px;

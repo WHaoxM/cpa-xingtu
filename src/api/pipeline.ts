@@ -70,6 +70,32 @@ export type PipelineTaskEvent = {
   occurred_at: string
 }
 
+export type ResumeTraceEvent = {
+  event_id: number
+  stage: string
+  kind: 'input' | 'tool_call' | 'tool_result' | 'agent_run' | 'model_call' | 'agent_result' | 'handoff' | 'artifact' | 'error'
+  actor: string
+  state: 'running' | 'completed' | 'failed'
+  progress: number
+  source: string
+  target: string
+  facts: Record<string, string | number | boolean | null>
+  occurred_at: string
+}
+
+export type ResumeTracePage = {
+  task: { task_id: string; pipeline: string; status: string; progress: number }
+  events: ResumeTraceEvent[]
+  cursor: number
+  has_more: boolean
+  progress_basis: string
+}
+
+export async function getResumeTrace(taskId: string, cursor = 0) {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的简历任务引用')
+  return httpGet<ResumeTracePage>(`/api/pipeline/trace/${encodeURIComponent(taskId)}`, { cursor })
+}
+
 export type PipelineEventPage = {
   task: { task_id: string; pipeline: string; status: string }
   events: PipelineTaskEvent[]
@@ -90,6 +116,16 @@ export async function uploadResumeCandidate(file: File) {
   const form = new FormData()
   form.append('file', file)
   return httpFormPost<ResumeCandidate>('/api/profile/student/upload', form)
+}
+
+/** Accept a durable L0 task immediately; result and real checkpoints are replayed separately. */
+export async function startResumeCandidate(file: File) {
+  if (getApiMode() === 'mock') throw new Error('mock 模式不使用真实确认管线')
+  const form = new FormData()
+  form.append('file', file)
+  return httpFormPost<{ task_id: string; student_id: string; filename: string;
+    status: 'pending'; progress: 0; delivery: 'queued' | 'retry_pending' }>(
+    '/api/profile/student/upload', form, { async: 1 })
 }
 
 /** Resolve a chat artifact reference through the server owner check. */
