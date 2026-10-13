@@ -5,6 +5,8 @@ import { UserRole } from '@/types'
 import { mockUsers } from '@/mock/data'
 import { loginLocal } from '@/api/auth'
 
+const backendDev = import.meta.env.MODE === 'backend-dev'
+
 export const useUserStore = defineStore(
   'user',
   () => {
@@ -38,10 +40,12 @@ export const useUserStore = defineStore(
       } catch {
         /* fall through */
       }
+      if (backendDev) return false
       return login(username, password, role)
     }
 
     function login(username: string, password: string, role?: UserRole): boolean {
+      if (backendDev) return false
       const user = mockUsers.find(u => {
         if (role && u.role !== role) return false
         return u.username === username
@@ -55,6 +59,7 @@ export const useUserStore = defineStore(
     }
 
     function loginByRole(role: UserRole): boolean {
+      if (backendDev) return false
       const user = mockUsers.find(u => u.role === role)
       if (user) {
         applySession(user)

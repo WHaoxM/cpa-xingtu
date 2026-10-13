@@ -8,6 +8,7 @@ import { useUserStore, useThemeStore } from '@/stores'
 import CloudTabNav from '@/components/book/CloudTabNav.vue'
 import BookPage from '@/components/book/BookPage.vue'
 import UserInfoBar from '@/components/UserInfoBar.vue'
+import AgentMark from '@/components/agent/AgentMark.vue'
 import { gsap } from '@/plugins/gsap'
 
 const route = useRoute()
@@ -80,8 +81,7 @@ const studentMenus = [
   { index: '/app/student/my-reports', icon: ICONS.fileText, title: '我的报告' },
   { index: '/app/student/favorites', icon: ICONS.bookmark, title: '心仪岗位' },
   // ── 助手（横切能力，置于末位）──
-  { index: '/app/student/ai-assistant', icon: ICONS.bot, title: 'AI 助手' },
-  { index: '/app/student/roles', icon: ICONS.users, title: '专家角色' },
+  { index: '/app/student/ai-assistant', icon: ICONS.bot, title: 'AI 工作台' },
 ]
 
 // 管理员菜单
@@ -246,7 +246,8 @@ onBeforeUnmount(() => {
         </div>
         <el-menu class="drawer__menu" :default-active="activeMenu" router>
           <el-menu-item v-for="menu in currentMenus" :key="menu.index" :index="menu.index">
-            <Icon :icon="menu.icon" class="menu-icon" />
+            <AgentMark v-if="menu.index === '/app/student/ai-assistant'" :size="20" class="menu-icon" />
+            <Icon v-else :icon="menu.icon" class="menu-icon" />
             <span>{{ menu.title }}</span>
           </el-menu-item>
         </el-menu>
@@ -577,5 +578,3 @@ onBeforeUnmount(() => {
   }
 }
 </style>
-
-

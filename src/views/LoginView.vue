@@ -14,6 +14,7 @@ import { gsap } from '@/plugins/gsap'
 const router = useRouter()
 const userStore = useUserStore()
 const mockMode = isMockMode()
+const backendDev = import.meta.env.MODE === 'backend-dev'
 
 const username = ref('')
 const password = ref('')
@@ -24,12 +25,12 @@ const showPassword = ref(false)
 const roleTabs = [
   { role: UserRole.STUDENT, icon: ICONS.graduationCap, label: '学生', color: '#10B981' },
   { role: UserRole.ADMIN, icon: ICONS.settings, label: '管理员', color: '#8B5CF6' },
-]
+].filter(tab => !backendDev || tab.role === UserRole.STUDENT)
 
 const quickLogins = [
   { role: UserRole.STUDENT, account: 'student001', name: '学生体验' },
   { role: UserRole.ADMIN, account: 'admin001', name: '管理员' },
-]
+].filter(item => !backendDev || item.role === UserRole.STUDENT)
 
 const features = [
   { name: '能力图谱', desc: '量化 6 维度职业能力，定位真实短板' },
@@ -125,6 +126,10 @@ onBeforeUnmount(() => {
         <Icon icon="lucide:database" :width="14" />
         <span>演示数据 · 无需后端</span>
       </div>
+      <div v-else-if="backendDev" class="stg mock-pill" title="仅本地联调：页面登录仍是演示入口，后端身份由 loopback 开发代理固定注入">
+        <Icon icon="lucide:plug-zap" :width="14" />
+        <span>后端联调 · 本地开发身份</span>
+      </div>
 
       <!-- 标题 -->
       <h1 class="stg login-headline">找到你的职业方向</h1>
@@ -179,7 +184,7 @@ onBeforeUnmount(() => {
 
         <!-- 提示 -->
         <div class="f-stg login-hint">
-          <span>演示账号 <strong>student001</strong> / <strong>123456</strong></span>
+          <span>{{ backendDev ? '本地学生演示入口' : '演示账号' }} <strong>student001</strong> / <strong>123456</strong></span>
         </div>
       </div>
 
@@ -500,4 +505,3 @@ onBeforeUnmount(() => {
   .feat-pill { font-size: 10px; }
 }
 </style>
-

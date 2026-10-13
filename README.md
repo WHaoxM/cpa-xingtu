@@ -35,7 +35,7 @@
 | 管理员 | admin001 | 123456 |
 
 > GitHub Pages / `npm run build` 默认 **`VITE_API_MODE=mock`**，登录页会显示「演示数据 · 无需后端」，所有接口走 `public/fixtures/`，不连接后端。  
-> 本地纯演示：`npm run dev:mock`；联调后端：`.env.local` 设 `VITE_API_MODE=http`。
+> 本地纯演示：`npm run dev:mock`；独立的宿主机后端联调前端：`npm run dev:backend`（仅监听 `127.0.0.1:5174`）。
 
 ## ⚡ 项目概述
 
@@ -148,26 +148,26 @@ npm run preview
 
 ### 本地联调（可选）
 
-如需连接 CPA-Agent 后端进行真实联调：
+先按主仓库说明启动 Docker MySQL/Neo4j/Redis，以及宿主机 `mkg` 后端。严格模式下，本地后端需显式开启 `CPA_DEV_AUTH=1`；该开发认证只接受 loopback 请求，不是生产登录。再启动**独立于默认 5173/mock 进程**的联调前端：
 
-```bash
-# 复制环境变量模板
-cp .env.example .env.local
-# Windows PowerShell:
-# Copy-Item .env.example .env.local
+```powershell
+Copy-Item .env.backend-dev.example .env.backend-dev
+npm run dev:backend
+# → http://127.0.0.1:5174
 ```
 
-`.env.local` 配置：
+`backend-dev` 模式读取 `.env.backend-dev`：`VITE_API_MODE=http`、同源 `/api` 经 Vite 代理到 `127.0.0.1:5001`；代理仅在本地 `5174` 模式覆盖注入固定 `X-Dev-Student-Id=student_001`。浏览器请求体里的 `student_id` 不能更改后端 Principal。需要使用另一隔离测试身份时，在被 Git 忽略的 `.env.backend-dev.local` 中覆盖 `VITE_DEV_STUDENT_ID`，并使用对应的本地学生 fixture；默认不会开放管理员后端身份。前端登录按钮仍是**演示入口**，页面明确标记“本地开发身份”，不能当真实认证验收。
 
-```env
-VITE_API_BASE_URL=http://127.0.0.1:5001
-```
+后端联调首页的完成标记只依据 owner 范围内的服务端画像与已完成报告；本地演示学习记录、简历缓存和计时器不充当业务完成证据。服务端画像与学生资料不一致时，首页显式提示状态异常，不显示“已完成”。
+
+可复核代理与身份边界：`http://127.0.0.1:5174/health` 应为 200；通过 5174 请求本人资料得到实际业务响应（无资料可为 404），访问不同学生 ID 应为 403；生产/演示构建不注入此开发身份。当前本机验证为 `200 / 404 / 403`。
 
 已接入后端的联调点：
 
 - `student/career-analysis`: `GET /api/career/landscape`
-- `student/ai-assistant`: `POST /api/agent/chat`（`mode=demo`）
-- `student/career-navigation`: `POST /api/pipeline/ext/parse/resume`、`POST /api/pipeline/trigger`、`GET /api/pipeline/status/{task_id}`
+- `student/ai-assistant`: `POST /api/agent/chat`（http 模式走真实 Ask/Agent，保留服务端 Principal）
+- `student/learning`: 对话中已保存的 `action_plan` 通过 `GET /api/agent/artifacts/<artifact_id>` 读取同 owner 的完整计划正文；HTTP 模式不伪造未落库的步骤勾选进度
+- `student/career-navigation`: 权威 `/api/profile/student/upload|confirm|pipeline` 与 `/api/pipeline/events/<task_id>`；页面到会话仅传经后端核验的 task 引用
 - `student/career-report`: `POST /api/report/generate`
 - `student/my-reports`: `GET /api/report/list`、`GET /api/report/{report_id}`
 

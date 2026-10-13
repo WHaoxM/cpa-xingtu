@@ -37,7 +37,14 @@ function mapUser(row: AuthUserRow): User & { password?: string } {
 export async function listAuthUsers(): Promise<Array<User & { password?: string }>> {
   void getApiMode()
   const env = await mockGet<AuthUserRow[]>('auth/users.json')
-  return (env.data ?? []).map(mapUser)
+  const users = (env.data ?? []).map(mapUser)
+  if (import.meta.env.MODE === 'backend-dev') {
+    // The Vite proxy injects one fixed local Principal. Do not present a
+    // different fixture identity as if it were authenticated by the backend.
+    return users.filter(user => user.role === UserRole.STUDENT &&
+      user.id === import.meta.env.VITE_DEV_STUDENT_ID)
+  }
+  return users
 }
 
 export async function loginLocal(
