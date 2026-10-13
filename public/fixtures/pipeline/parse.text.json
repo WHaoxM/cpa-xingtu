@@ -5,16 +5,34 @@
     "contact": {},
     "education": [
       {
-        "school": "示例大学",
+        "school": "四川轻化工大学",
         "major": "计算机科学与技术"
       }
     ],
     "skills": [
-      "Vue",
-      "TypeScript",
-      "Python"
+      "Python",
+      "LangGraph",
+      "Neo4j"
     ],
-    "raw_text": "钟梓珉\\n本科 计算机\\n技能：Vue、TypeScript、Python",
-    "text": "钟梓珉\n本科 计算机科学与技术\n技能：Vue、TypeScript、Python\n项目：CPA 职业导航平台前端"
+    "student_profile": {
+      "name": "钟梓珉",
+      "school": "四川轻化工大学",
+      "major": "计算机科学与技术",
+      "degree": "本科",
+      "skills": ["Python", "LangGraph", "Neo4j"],
+      "projects": [
+        {
+          "name": "职导星图 — 大学生职业规划智能体",
+          "role": "核心开发者",
+          "desc": "设计职业规划智能体与知识图谱检索流程"
+        }
+      ]
+    },
+    "structure_validation": {
+      "ok": true,
+      "issues": []
+    },
+    "raw_text": "钟梓珉\\n四川轻化工大学 计算机科学与技术 本科\\n技能：Python、LangGraph、Neo4j",
+    "text": "钟梓珉\n四川轻化工大学 计算机科学与技术 本科\n技能：Python、LangGraph、Neo4j\n项目：职导星图 — 大学生职业规划智能体"
   }
 }

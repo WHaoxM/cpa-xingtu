@@ -1003,9 +1003,9 @@ const rightShellStyle = computed(() => ({
           </p>
         </div>
         <div v-else class="rp-stage-intro">
-          <span class="rp-stage-intro__eyebrow">职途导航 · 真实资料</span>
-          <h1>{{ parsePhase === 'verified' ? '从简历走向能力画像' : '先看清简历里有什么' }}</h1>
-          <p>每一步都以已上传资料和服务端记录为准，未确认的事实不会变成正式分数。</p>
+          <span class="rp-stage-intro__eyebrow">{{ isHttpMode ? '职途导航 · 真实资料' : '职途导航 · 演示样例' }}</span>
+          <h1>{{ isHttpMode ? (parsePhase === 'verified' ? '从简历走向能力画像' : '先看清简历里有什么') : '看看样例能力画像' }}</h1>
+          <p>{{ isHttpMode ? '每一步都以已上传资料和服务端记录为准，未确认的事实不会变成正式分数。' : '这是固定样例的交互演示，不代表对刚才输入的简历完成了真实解析或评分。' }}</p>
         </div>
 
         <!-- Step indicator (compact inline) -->
@@ -1111,8 +1111,9 @@ const rightShellStyle = computed(() => ({
 
           <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
           <p v-if="isHttpMode" class="rp-real-note">当前真实流程只接收文件上传；粘贴文本和预选方向尚未进入确认管线。上传后逐页核对，再尝试生成有证据的画像。</p>
+          <p v-else class="rp-real-note rp-demo-note">纯演示使用固定样例画像；上传或粘贴内容仅用于触发演示，不会被真实解析。</p>
           <button class="rp-parse-btn" :disabled="isHttpMode ? !uploadedFile : (!pasteText.trim() && !uploadedFile)" @click="startParse">
-            <span>{{ isHttpMode ? '解析并核对简历' : '查看个人能力画像' }}</span>
+            <span>{{ isHttpMode ? '解析并核对简历' : '查看演示能力画像' }}</span>
             <Icon icon="lucide:arrow-right" :width="15" class="rp-parse-btn__arrow" />
           </button>
         </div>
