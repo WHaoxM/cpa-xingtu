@@ -13,9 +13,9 @@ const normalized = computed<AIToolCall>(() => {
   const row = props.tool as Record<string, unknown>
   return {
     name: String(row.name || row.tool_name || row.tool || 'tool'),
-    status: row.status === 'running' || row.status === 'error' || row.status === 'done'
+    status: row.status === 'running' || row.status === 'error' || row.status === 'done' || row.status === 'needs_input' || row.status === 'partial' || row.status === 'unknown'
       ? row.status
-      : 'done',
+      : row.status === 'failed' ? 'error' : 'unknown',
     summary: row.summary ? String(row.summary) : undefined,
   }
 })
@@ -23,6 +23,9 @@ const normalized = computed<AIToolCall>(() => {
 const statusLabel = computed(() => {
   if (normalized.value.status === 'running') return '运行中'
   if (normalized.value.status === 'error') return '失败'
+  if (normalized.value.status === 'needs_input') return '待用户确认'
+  if (normalized.value.status === 'partial') return '部分完成'
+  if (normalized.value.status === 'unknown') return '待核验'
   return '已完成'
 })
 </script>
@@ -56,6 +59,12 @@ const statusLabel = computed(() => {
   background: rgba(254, 242, 242, 0.88);
 }
 
+.tool-card--partial,
+.tool-card--needs_input {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(255, 251, 235, 0.9);
+}
+
 .tool-card--running {
   border-color: rgba(59, 130, 246, 0.35);
   background: rgba(239, 246, 255, 0.9);
@@ -80,4 +89,3 @@ const statusLabel = computed(() => {
   font-size: 12px;
 }
 </style>
-

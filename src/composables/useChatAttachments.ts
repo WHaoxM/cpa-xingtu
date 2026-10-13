@@ -1,6 +1,6 @@
-import { computed, ref } from 'vue'
+import { computed, onScopeDispose, ref } from 'vue'
 import { getApiMode } from '@/api/config'
-import { uploadAgentFile, type AgentFileMeta } from '@/api/agentMedia'
+import { getAgentFile, getAgentFileEvents, uploadAgentFile, type AgentFileMeta } from '@/api/agentMedia'
 
 export type ChatAttachmentStatus = 'reading' | 'ready' | 'error'
 
@@ -32,6 +32,45 @@ function extOf(name: string): string {
 export function useChatAttachments() {
   const attachments = ref<ChatAttachment[]>([])
   const busy = computed(() => attachments.value.some(a => a.status === 'reading'))
+  let disposed = false
+  onScopeDispose(() => { disposed = true })
+
+  async function followIngest(row: ChatAttachment, fileId: string) {
+    let cursor = 0
+    let failures = 0
+    while (!disposed && attachments.value.includes(row) && row.status === 'reading') {
+      try {
+        const replay = await getAgentFileEvents(fileId, cursor)
+        cursor = replay.cursor
+        failures = 0
+        const state = replay.snapshot.status
+        if (state === 'ready' || state === 'failed') {
+          const meta = await getAgentFile(fileId)
+          if (!meta) throw new Error('无法核验文件最终状态')
+          if (!attachments.value.includes(row) || disposed) return
+          if (meta.status === 'ready') {
+            row.excerpt = (meta.excerpt || meta.filename || row.name).slice(0, EXCERPT_CHARS)
+            row.status = 'ready'
+            return
+          }
+          if (meta.status === 'failed') {
+            row.error = meta.error || '文件解析失败，原文件已保留'
+            row.status = 'error'
+            return
+          }
+        }
+        if (replay.has_more) continue
+      } catch (error) {
+        failures += 1
+        if (failures >= 3) {
+          row.error = error instanceof Error ? `状态同步失败：${error.message}` : '状态同步失败，请稍后重试'
+          row.status = 'error' // UI sync failure, not a server-side ingest result.
+          return
+        }
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500))
+    }
+  }
 
   async function addFiles(
     fileList: FileList | File[],
@@ -74,11 +113,9 @@ export function useChatAttachments() {
           row.excerpt = (meta.excerpt || '').slice(0, EXCERPT_CHARS)
           continue
         }
-        if (meta.status === 'ingesting') {
-          // uploadAgentFile should have polled to ready|failed; lingering = error
-          row.status = 'error'
-          row.error = '文本仍在解析中，请稍后重试上传'
-          row.fileId = meta.file_id
+        if (meta.status === 'ingesting' || meta.status === 'queued') {
+          // Follow persisted transitions; never substitute a timer for completion.
+          void followIngest(row, meta.file_id)
           continue
         }
         if (meta.status !== 'ready') {

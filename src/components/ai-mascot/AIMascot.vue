@@ -5,6 +5,7 @@ import lottie from 'lottie-web'
 import type { AnimationItem } from 'lottie-web'
 import type { ReportRecord, AIAnalysisResult, TargetRole } from '@/types'
 import { analyzeReports } from '@/api/aiAnalysis'
+import { ElMessage } from 'element-plus'
 
 import RobotIdleData from '@/assets/animations/robot-idle.json'
 
@@ -170,8 +171,10 @@ async function handleClick() {
     bubbleVisible.value = false
     await new Promise(r => setTimeout(r, 250))
     emit('analysis-ready', result)
-  } catch {
+  } catch (error) {
     bubbleVisible.value = false
+    const message = error instanceof Error ? error.message : '成长分析暂不可用，请稍后重试'
+    ElMessage.error(message)
   }
 
   state.value = 'idle'

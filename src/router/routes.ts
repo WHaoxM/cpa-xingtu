@@ -35,9 +35,9 @@ export const routes: RouteRecordRaw[] = [
       },
       {
         path: 'student/ai-assistant',
-        name: 'student-ai-assistant',
-        component: () => import('@/views/student/AIAssistant.vue'),
-         meta: { title: 'AI 助手', requiresAuth: true, roles: [UserRole.STUDENT] },
+          name: 'student-ai-assistant',
+          component: () => import('@/views/student/AIAssistant.vue'),
+          meta: { title: 'AI 助手', requiresAuth: true, roles: [UserRole.STUDENT], immersive: true },
       },
       {
         path: 'student/roles',

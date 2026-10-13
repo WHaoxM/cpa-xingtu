@@ -1,4 +1,4 @@
-import { DEMO_STUDENT_ID, getApiMode } from './config'
+import { getApiMode } from './config'
 import { httpGet, httpPost, httpFormPost } from './adapters/httpAdapter'
 import { ApiError } from './types'
 
@@ -11,6 +11,27 @@ export type AgentFileMeta = {
   excerpt?: string
   error?: string
   ingest_engine?: string
+}
+
+export type AgentFileEvent = {
+  seq: number
+  event_id: string
+  status: 'queued' | 'ingesting' | 'ready' | 'failed'
+  phase: 'ingest' | 'upgrade'
+  attempt: number
+  occurred_at: string
+  job_id?: string | null
+  error?: string
+}
+
+export type AgentFileReplay = {
+  file_id: string
+  events: AgentFileEvent[]
+  cursor: number
+  has_more: boolean
+  latest_seq: number
+  snapshot: { status?: string; job_status?: string; upgrade_status?: string; updated_at?: string }
+  source: string
 }
 
 export type VoiceTurn = {
@@ -48,7 +69,8 @@ export async function uploadAgentFile(
   }
   const form = new FormData()
   form.append('file', file)
-  form.append('student_id', opts?.studentId || DEMO_STUDENT_ID)
+  // Optional legacy hint only; backend ownership is always resolved from Principal.
+  if (opts?.studentId) form.append('student_id', opts.studentId)
   if (opts?.sessionId) form.append('session_id', opts.sessionId)
   form.append('purpose', opts?.purpose || 'chat_attachment')
 
@@ -58,38 +80,21 @@ export async function uploadAgentFile(
     if (!data?.file_id) {
       throw new Error(env.error || '上传未返回 file_id（请确认后端已注册 /api/agent/files）')
     }
-    // Claude: bytes may be stored while ingest still running
-    if (data.status === 'ingesting') {
-      return pollFileUntilSettled(data.file_id, data)
-    }
+    // The file_id is authoritative even while a durable worker is still parsing.
+    // The UI follows the replayable state endpoint instead of inventing a timeout result.
     return data
   } catch (e) {
     throw unwrapError(e)
   }
 }
 
-async function pollFileUntilSettled(
-  fileId: string,
-  seed: AgentFileMeta,
-  /** ~120s — light first, then optional async MinerU escalation */
-  attempts = 240,
-): Promise<AgentFileMeta> {
-  let last = seed
-  for (let i = 0; i < attempts; i++) {
-    if (last.status === 'ready' || last.status === 'failed') return last
-    await new Promise(r => setTimeout(r, 500))
-    const next = await getAgentFile(fileId)
-    if (next) last = next
-  }
-  // Do not pretend ready — chat would mount empty text
-  if (last.status === 'ingesting') {
-    return {
-      ...last,
-      status: 'failed',
-      error: last.error || '文本解析超时，请稍后重试或换可选中文本的 PDF/DOCX',
-    }
-  }
-  return last
+export async function getAgentFileEvents(fileId: string, after = 0): Promise<AgentFileReplay> {
+  const env = await httpGet<AgentFileReplay>(`/api/agent/files/${encodeURIComponent(fileId)}/events`, {
+    after,
+    limit: 100,
+  })
+  if (!env.data) throw new Error(env.error || '文件解析状态未返回')
+  return env.data
 }
 
 export async function mountSessionResources(

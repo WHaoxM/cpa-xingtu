@@ -1,7 +1,7 @@
 import { getApiMode } from './config'
 import { mockGet, mockMutate } from './adapters/mockAdapter'
 import { httpDelete, httpGet, httpPost } from './adapters/httpAdapter'
-import type { AIToolCall, ArtifactRef, MessagePart, PublicTurn } from '@/types'
+import type { AIToolCall, ArtifactRef, MessagePart, PublicTurn, TurnOutcome } from '@/types'
 
 export type InteractionMode = 'ask' | 'agent' | 'experts'
 
@@ -72,6 +72,22 @@ export type AgentSessionCreateData = {
   created_at?: string
 }
 
+/** Owner-scoped artifact index. The full business payload may live in a domain store. */
+export type AgentArtifactDetail = ArtifactRef & {
+  resource_type?: string
+  resource_id?: string
+  session_id?: string
+  turn_id?: string
+  content?: { body: string; status: string }
+}
+
+export async function getAgentArtifact(artifactId: string): Promise<AgentArtifactDetail | null> {
+  if (getApiMode() === 'mock') return null
+  const env = await httpGet<AgentArtifactDetail>(`/api/agent/artifacts/${encodeURIComponent(artifactId)}`)
+  return env.data ?? null
+}
+
+
 export type AgentHistoryMessage = {
   id?: string
   message_id?: string
@@ -83,6 +99,7 @@ export type AgentHistoryMessage = {
   parts?: MessagePart[]
   artifacts?: ArtifactRef[]
   interaction_mode?: InteractionMode | string
+  outcome?: TurnOutcome
   tool_calls?: AgentToolCallRaw[]
   metadata?: {
     tool_calls?: AgentToolCallRaw[]
@@ -90,6 +107,7 @@ export type AgentHistoryMessage = {
     artifacts?: ArtifactRef[]
     turn_id?: string
     interaction_mode?: InteractionMode | string
+    outcome?: TurnOutcome
     upgrade_hint?: AgentUpgradeHint
     orchestration?: Record<string, unknown>
   }
@@ -159,10 +177,14 @@ export function mapAgentToolCalls(raw: unknown): AIToolCall[] {
     const summary = String(row.summary || row.result_preview || '已完成调用').slice(0, 160)
     const args = publicArgs(row.parameters) || stringifyArgs(row.parameters)
     const taskId = extractTaskId(row.parameters, summary)
+    const rawStatus = String(row.status || '').toLowerCase()
     const status: AIToolCall['status'] =
-      row.status === 'running' || row.status === 'error' || row.status === 'done'
-        ? row.status
-        : 'done'
+      ['done', 'completed', 'success'].includes(rawStatus) ? 'done'
+        : ['failed', 'error', 'denied'].includes(rawStatus) ? 'error'
+          : ['running', 'queued', 'pending'].includes(rawStatus) ? 'running'
+            : ['needs_input', 'approval_required'].includes(rawStatus) ? 'needs_input'
+              : rawStatus === 'partial' ? 'partial'
+            : 'unknown'
     return {
       name,
       status,
@@ -301,7 +323,11 @@ export async function chat(req: AgentChatRequest): Promise<AgentChatData> {
 export async function createSession(studentId?: string): Promise<AgentSessionCreateData> {
   if (getApiMode() === 'mock') {
     const env = await mockMutate<AgentSessionCreateData>('agent/session.create.json')
-    const data = (env.data ?? { session_id: `demo_sess_${Date.now().toString(36)}` }) as AgentSessionCreateData
+    // The fixture has a fixed session_id; a new task must not reuse the previous local transcript.
+    const data = {
+      ...((env.data ?? {}) as AgentSessionCreateData),
+      session_id: `demo_sess_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    }
     agentSessionId = data.session_id
     return data
   }

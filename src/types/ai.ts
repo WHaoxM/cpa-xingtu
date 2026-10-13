@@ -16,7 +16,7 @@ export interface AIAnalysisResult {
 /** Agent 工具调用卡片（对话内展示） */
 export interface AIToolCall {
   name: string
-  status?: 'running' | 'done' | 'error'
+  status?: 'running' | 'done' | 'error' | 'needs_input' | 'partial' | 'unknown'
   summary?: string
   args?: Record<string, string>
   resultPreview?: string
@@ -67,6 +67,8 @@ export interface MatchPreview {
   coverage?: number
   gaps?: string[]
   hard_pass?: boolean
+  primary_role?: string
+  candidates?: Array<{ role: string; score: number; coverage: number }>
 }
 
 /** 报告预览 */
@@ -144,8 +146,19 @@ export interface TurnEvent {
   [key: string]: unknown
 }
 
+/** Turn-level result only; it does not certify a portrait/report DB row exists. */
+export interface TurnOutcome {
+  status: 'completed' | 'needs_input' | 'running' | 'partial' | 'failed'
+  completion_scope: 'turn'
+  reason?: string
+  next_action?: 'none' | 'answer_in_session' | 'poll_run' | 'retry_new_turn'
+  resume_state?: 'not_available'
+  run_id?: string
+}
+
 export interface PublicTurn {
   turn_id?: string
+  outcome?: TurnOutcome
   reply: string
   tool_calls?: unknown[]
   thinking_steps?: string[]
@@ -178,6 +191,7 @@ export interface AIMessage {
   parts?: MessagePart[]
   artifacts?: ArtifactRef[]
   turnId?: string
+  outcome?: TurnOutcome
   attachments?: AIMessageAttachment[]
   interactionMode?: InteractionMode | string
   upgradeHint?: AgentUpgradeHint

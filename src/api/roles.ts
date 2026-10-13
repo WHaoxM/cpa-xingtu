@@ -5,6 +5,13 @@
 import { httpGet, httpPost } from './adapters/httpAdapter'
 import { mockGet } from './adapters/mockAdapter'
 import { getApiMode } from './config'
+import type { ApiEnvelope } from './types'
+
+// Role endpoints return a raw JSON object today; other API adapters may
+// return the common {success, data} envelope. Keep one explicit boundary.
+function rolePayload<T>(response: ApiEnvelope<T>): T {
+  return response.data !== undefined ? response.data : response as unknown as T
+}
 
 export interface RoleListItem {
   id: string
@@ -46,9 +53,9 @@ export interface ChatMessage {
  */
 export async function listRoles(): Promise<{ roles: RoleListItem[]; total: number }> {
   if (getApiMode() === 'mock') {
-    return mockGet('/api/roles/list') as Promise<{ roles: RoleListItem[]; total: number }>
+    return rolePayload(await mockGet<{ roles: RoleListItem[]; total: number }>('/api/roles/list'))
   }
-  return httpGet('/api/roles/list')
+  return rolePayload(await httpGet<{ roles: RoleListItem[]; total: number }>('/api/roles/list'))
 }
 
 /**
@@ -56,9 +63,9 @@ export async function listRoles(): Promise<{ roles: RoleListItem[]; total: numbe
  */
 export async function getRole(roleId: string): Promise<RoleDetail> {
   if (getApiMode() === 'mock') {
-    return mockGet(`/api/roles/${roleId}`) as Promise<RoleDetail>
+    return rolePayload(await mockGet<RoleDetail>(`/api/roles/${roleId}`))
   }
-  return httpGet(`/api/roles/${roleId}`)
+  return rolePayload(await httpGet<RoleDetail>(`/api/roles/${roleId}`))
 }
 
 /**
@@ -66,9 +73,9 @@ export async function getRole(roleId: string): Promise<RoleDetail> {
  */
 export async function getRoleGreeting(roleId: string): Promise<RoleGreeting> {
   if (getApiMode() === 'mock') {
-    return mockGet(`/api/roles/${roleId}/greeting`) as Promise<RoleGreeting>
+    return rolePayload(await mockGet<RoleGreeting>(`/api/roles/${roleId}/greeting`))
   }
-  return httpGet(`/api/roles/${roleId}/greeting`)
+  return rolePayload(await httpGet<RoleGreeting>(`/api/roles/${roleId}/greeting`))
 }
 
 /**

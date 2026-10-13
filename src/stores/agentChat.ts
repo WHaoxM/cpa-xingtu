@@ -71,6 +71,7 @@ function mapHistoryToMessages(rows: AgentHistoryMessage[]): AIMessage[] {
         parts: normalizeHistoryParts(r),
         artifacts: r.artifacts || r.metadata?.artifacts,
         turnId: r.turn_id || r.metadata?.turn_id,
+        outcome: r.outcome || r.metadata?.outcome,
         interactionMode: r.interaction_mode || r.metadata?.interaction_mode,
         upgradeHint,
       }

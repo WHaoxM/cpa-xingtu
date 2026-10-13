@@ -1,14 +1,24 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
+import { ElMessage } from 'element-plus'
 import type { ArtifactRef, PortraitPreview, MatchPreview, ReportPreview, PlanPreview } from '@/types'
+import { getAgentArtifact, type AgentArtifactDetail } from '@/api/agent'
+import { getApiMode } from '@/api/config'
+import { saveArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 
 const props = defineProps<{
   artifact: ArtifactRef
+  sessionId?: string | null
 }>()
 
 const router = useRouter()
+const detailOpen = ref(false)
+const detailLoading = ref(false)
+const detailError = ref('')
+const resolvedArtifact = ref<AgentArtifactDetail | null>(null)
+const shownArtifact = computed(() => resolvedArtifact.value ?? props.artifact)
 
 const kindLabel = computed(() => {
   const map: Record<string, string> = {
@@ -20,17 +30,20 @@ const kindLabel = computed(() => {
     file: '文件',
     pipeline_task: '管线任务',
   }
-  return map[props.artifact.kind] || '成果物'
+  return map[shownArtifact.value.kind] || '成果物'
 })
 
 const statusLabel = computed(() => {
   const map: Record<string, string> = {
     pending: '待处理',
     running: '处理中',
+    needs_input: '待用户确认',
+    partial: '部分完成',
     completed: '已完成',
     failed: '失败',
+    unverified: '待核验',
   }
-  return map[props.artifact.status] || props.artifact.status || '已生成'
+  return map[shownArtifact.value.status] || shownArtifact.value.status || '待核验'
 })
 
 const previewType = computed(() => {
@@ -59,31 +72,85 @@ const planPreview = computed(() => {
   return props.artifact.preview as unknown as PlanPreview
 })
 
-const legacyPreview = computed(() => {
-  if (previewType.value) return null
-  const p = props.artifact.preview
-  if (!p || typeof p !== 'object' || Array.isArray(p)) return []
-  return Object.entries(p as Record<string, unknown>).filter(([, v]) => v != null)
+const resumePreview = computed(() => {
+  if (previewType.value !== 'resume_improvement_preview') return null
+  return props.artifact.preview as { recommendations?: Array<{ applied?: boolean }> }
 })
-
-function previewText(value: unknown): string {
-  if (value == null) return ''
-  if (Array.isArray(value)) return value.map(v => String(v)).join('、')
-  if (typeof value === 'object') return '详情'
-  return String(value)
-}
 
 function dimLabel(dim: string): string {
   return { d1: '基础素质', d2: '专业技能', d3: '项目经验', d4: '综合潜力' }[dim] || dim
 }
 
-function runAction(actionId: string) {
-  if (actionId === 'view_portrait') router.push('/app/student/career-portrait')
-  else if (actionId === 'open_match') router.push('/app/student/career-analysis')
-  else if (actionId === 'open_report') router.push('/app/student/career-report')
-  else if (actionId === 'continue_plan') router.push('/app/student/learning')
-  else if (actionId === 'open_resume') router.push('/app/student/resume-builder')
-  else if (actionId === 'open_pipeline_task') router.push('/app/student/ai-assistant')
+function typedDetailPreview(type: string): Record<string, unknown> | null {
+  const preview = shownArtifact.value.preview
+  if (!preview || typeof preview !== 'object' || Array.isArray(preview)) return null
+  return (preview as Record<string, unknown>).type === type ? preview as Record<string, unknown> : null
+}
+const detailPortraitPreview = computed(() => typedDetailPreview('portrait_preview') as PortraitPreview | null)
+const detailMatchPreview = computed(() => typedDetailPreview('match_preview') as MatchPreview | null)
+const detailReportPreview = computed(() => typedDetailPreview('report_preview') as ReportPreview | null)
+const detailPlanPreview = computed(() => typedDetailPreview('plan_preview') as PlanPreview | null)
+
+async function openArtifact() {
+  detailOpen.value = true
+  detailError.value = ''
+  resolvedArtifact.value = null
+  detailLoading.value = true
+  try {
+    const fetched = await getAgentArtifact(props.artifact.artifact_id)
+    if (fetched) {
+      if (fetched.artifact_id !== props.artifact.artifact_id) throw new Error('成果物身份不一致')
+      resolvedArtifact.value = fetched
+    }
+  } catch {
+    detailError.value = '暂时无法核验最新产物，以下仅显示对话中保存的摘要。'
+  } finally {
+    detailLoading.value = false
+  }
+}
+
+async function runAction(actionId: string) {
+  if (actionId === 'open_pipeline_task') {
+    const taskId = String((props.artifact.preview as Record<string, unknown> | undefined)?.task_id || '')
+    if (/^task_[A-Za-z0-9]+$/.test(taskId)) {
+      void router.push({ name: 'student-career-navigation', query: { task_id: taskId } })
+    } else void openArtifact()
+    return
+  }
+  if (actionId === 'confirm_resume') {
+    const taskId = String((props.artifact.preview as Record<string, unknown> | undefined)?.task_id || '')
+    if (/^task_[A-Za-z0-9]+$/.test(taskId)) {
+      void router.push({ name: 'student-career-navigation', query: { task_id: taskId } })
+      return
+    }
+  }
+  const targetByAction: Record<string, string> = {
+    view_portrait: 'student-career-portrait',
+    open_match: 'student-career-analysis',
+    open_report: 'student-career-report',
+    continue_plan: 'student-learning',
+    open_resume: 'student-resume-builder',
+  }
+  const target = targetByAction[actionId]
+  if (target && props.artifact.status === 'completed') {
+    if (getApiMode() !== 'mock') {
+      if (actionId === 'continue_plan' && props.artifact.kind === 'action_plan' && props.sessionId) {
+        void router.push({ name: target, query: { artifact_id: props.artifact.artifact_id, session_id: props.sessionId } })
+        return
+      }
+      ElMessage.warning('这个功能页尚未接入正式业务记录，请先在对话中查看任务状态')
+      return
+    }
+    try {
+      const query = saveArtifactHandoff(props.artifact, props.sessionId || undefined)
+      void router.push({ name: target, query })
+    } catch (error) {
+      ElMessage.error(error instanceof Error ? error.message : '无法打开成果物')
+    }
+    return
+  }
+  // Unfinished or unsupported artifacts remain inspectable without opening unrelated data.
+  void openArtifact()
 }
 </script>
 
@@ -142,16 +209,16 @@ function runAction(actionId: string) {
     <div v-else-if="reportPreview" class="artifact-card__typed-preview">
       <div class="artifact-card__report-stats">
         <span v-if="reportPreview.chapters?.length" class="artifact-card__chip">{{ reportPreview.chapters.length }} 章</span>
-        <span v-if="reportPreview.word_count" class="artifact-card__chip">{{ Math.round(reportPreview.word_count / 100) }}k 字</span>
+        <span v-if="reportPreview.word_count" class="artifact-card__chip">{{ reportPreview.word_count.toLocaleString('zh-CN') }} 字</span>
       </div>
     </div>
 
     <!-- 计划预览：步骤 + 已完成 -->
-    <div v-else-if="planPreview" class="artifact-card__typed-preview">
+    <div v-else-if="planPreview && typeof planPreview.steps === 'number' && planPreview.steps > 0" class="artifact-card__typed-preview">
       <div class="artifact-card__plan-bar">
         <div
           class="artifact-card__plan-fill"
-          :style="{ width: planPreview.steps ? `${((planPreview.completed || 0) / planPreview.steps) * 100}%` : '0%' }"
+          :style="{ transform: `scaleX(${planPreview.steps ? (planPreview.completed || 0) / planPreview.steps : 0})` }"
         />
       </div>
       <span class="artifact-card__plan-text">
@@ -160,13 +227,8 @@ function runAction(actionId: string) {
       </span>
     </div>
 
-    <!-- 兼容旧 preview -->
-    <div v-else-if="legacyPreview.length" class="artifact-card__preview">
-      <span
-        v-for="[key, val] in legacyPreview"
-        :key="key"
-        class="artifact-card__chip"
-      >{{ key }}: {{ previewText(val) }}</span>
+    <div v-else-if="resumePreview?.recommendations?.length" class="artifact-card__typed-preview">
+      <span class="artifact-card__chip">{{ resumePreview.recommendations.filter(item => item.applied).length }} / {{ resumePreview.recommendations.length }} 条改进已处理</span>
     </div>
 
     <div v-if="artifact.actions?.length" class="artifact-card__actions">
@@ -180,16 +242,44 @@ function runAction(actionId: string) {
         {{ action.label }}
       </button>
     </div>
+    <div v-else class="artifact-card__actions"><button type="button" class="artifact-card__btn" @click="artifact.kind === 'pipeline_task' ? runAction('open_pipeline_task') : openArtifact()">{{ artifact.kind === 'pipeline_task' ? '查看任务' : '查看产物' }}</button></div>
   </section>
+
+  <el-dialog v-model="detailOpen" :title="shownArtifact.title || kindLabel" width="min(560px, calc(100vw - 24px))" append-to-body class="agent-artifact-dialog">
+    <div class="artifact-detail">
+      <div class="artifact-detail__meta"><span>{{ kindLabel }}</span><span>{{ statusLabel }}</span></div>
+      <p v-if="shownArtifact.summary" class="artifact-detail__summary">{{ shownArtifact.summary }}</p>
+      <p v-if="detailLoading" class="artifact-detail__notice" role="status">正在核验产物…</p>
+      <p v-else-if="detailError" class="artifact-detail__notice" role="status">{{ detailError }}</p>
+
+      <div v-if="detailPortraitPreview?.scores" class="artifact-detail__scores">
+        <div v-for="(score, dim) in detailPortraitPreview.scores" :key="dim"><span>{{ dimLabel(String(dim)) }}</span><strong>{{ score }}</strong></div>
+      </div>
+      <div v-if="detailMatchPreview" class="artifact-detail__scores">
+        <div v-if="detailMatchPreview.total_score != null"><span>匹配分</span><strong>{{ detailMatchPreview.total_score }}</strong></div>
+        <div v-if="detailMatchPreview.coverage != null"><span>覆盖率</span><strong>{{ detailMatchPreview.coverage }}%</strong></div>
+        <div v-if="detailMatchPreview.hard_pass === false"><span>硬约束</span><strong>未通过</strong></div>
+      </div>
+      <div v-if="detailPortraitPreview?.strengths?.length" class="artifact-detail__list"><strong>已有优势</strong><span>{{ detailPortraitPreview.strengths.join('、') }}</span></div>
+      <div v-if="detailPortraitPreview?.weaknesses?.length" class="artifact-detail__list"><strong>优先改进</strong><span>{{ detailPortraitPreview.weaknesses.join('、') }}</span></div>
+      <div v-if="detailMatchPreview?.gaps?.length" class="artifact-detail__list"><strong>能力差距</strong><span>{{ detailMatchPreview.gaps.join('、') }}</span></div>
+      <div v-if="detailReportPreview?.chapters?.length" class="artifact-detail__list"><strong>报告章节</strong><span>{{ detailReportPreview.chapters.join('、') }}</span></div>
+      <div v-if="detailReportPreview?.word_count" class="artifact-detail__list"><strong>内容长度</strong><span>{{ detailReportPreview.word_count.toLocaleString('zh-CN') }} 字</span></div>
+      <div v-if="detailPlanPreview && typeof detailPlanPreview.steps === 'number' && detailPlanPreview.steps > 0" class="artifact-detail__list"><strong>计划进度</strong><span>{{ detailPlanPreview.completed || 0 }} / {{ detailPlanPreview.steps }} 步<template v-if="detailPlanPreview.duration"> · {{ detailPlanPreview.duration }}</template></span></div>
+
+      <p class="artifact-detail__boundary">这是本次对话保存的索引与摘要。只有后端可核验的业务记录才能在对应功能页打开；尚未提交的结果不会冒充正式产物。</p>
+      <div class="artifact-detail__footer"><button type="button" @click="detailOpen = false">返回对话</button></div>
+    </div>
+  </el-dialog>
 </template>
 
 <style scoped>
 .artifact-card {
-  border: 1px solid rgba(20, 184, 166, 0.24);
-  border-radius: 14px;
-  background: rgba(240, 253, 250, 0.76);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-surface);
   padding: 12px;
-  color: #134e4a;
+  color: var(--color-text);
 }
 
 .artifact-card__head {
@@ -201,7 +291,7 @@ function runAction(actionId: string) {
 
 .artifact-card__status {
   margin-left: auto;
-  color: #0f766e;
+  color: var(--color-text-muted);
 }
 
 .artifact-card__title {
@@ -212,7 +302,7 @@ function runAction(actionId: string) {
 .artifact-card__summary {
   margin: 6px 0 0;
   font-size: 12px;
-  color: #0f766e;
+  color: var(--color-text-muted);
 }
 
 .artifact-card__typed-preview {
@@ -228,7 +318,8 @@ function runAction(actionId: string) {
 
 .artifact-card__chip {
   border-radius: 999px;
-  background: rgba(204, 251, 241, 0.9);
+  background: var(--chat-rail-bg);
+  color: var(--color-text-muted);
   padding: 2px 8px;
   font-size: 11px;
 }
@@ -268,14 +359,14 @@ function runAction(actionId: string) {
 .artifact-card__dim-label {
   display: block;
   font-size: 10px;
-  color: #0f766e;
+  color: var(--color-text-muted);
 }
 
 .artifact-card__dim-score {
   display: block;
   font-size: 16px;
   font-weight: 700;
-  color: #134e4a;
+  color: var(--color-text);
 }
 
 .artifact-card__match-stats {
@@ -291,7 +382,7 @@ function runAction(actionId: string) {
   display: block;
   font-size: 18px;
   font-weight: 700;
-  color: #134e4a;
+  color: var(--color-text);
 }
 
 .artifact-card__stat--warn .artifact-card__stat-val {
@@ -301,7 +392,7 @@ function runAction(actionId: string) {
 .artifact-card__stat-label {
   display: block;
   font-size: 10px;
-  color: #0f766e;
+  color: var(--color-text-muted);
 }
 
 .artifact-card__report-stats {
@@ -312,22 +403,24 @@ function runAction(actionId: string) {
 .artifact-card__plan-bar {
   height: 6px;
   border-radius: 3px;
-  background: rgba(20, 184, 166, 0.2);
+  background: var(--chat-rail-bg);
   overflow: hidden;
 }
 
 .artifact-card__plan-fill {
   height: 100%;
+  width: 100%;
   border-radius: 3px;
-  background: #14b8a6;
-  transition: width 0.4s ease;
+  background: var(--color-primary);
+  transform-origin: left center;
+  transition: transform 0.4s ease;
 }
 
 .artifact-card__plan-text {
   display: block;
   margin-top: 4px;
   font-size: 11px;
-  color: #0f766e;
+  color: var(--color-text-muted);
 }
 
 .artifact-card__actions {
@@ -339,11 +432,26 @@ function runAction(actionId: string) {
 
 .artifact-card__btn {
   border: 0;
-  border-radius: 999px;
-  background: #0f766e;
+  border-radius: 7px;
+  background: var(--color-text);
   color: white;
   cursor: pointer;
   padding: 5px 10px;
   font-size: 12px;
 }
+.artifact-card__btn:hover { opacity: .88; }
+.artifact-card__btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.artifact-detail { display: grid; gap: 14px; color: var(--color-text); }
+.artifact-detail__meta { display: flex; gap: 7px; color: var(--color-text-muted); font-size: 11px; }
+.artifact-detail__meta span { padding: 4px 7px; border-radius: 5px; background: var(--chat-rail-bg); }
+.artifact-detail__summary { margin: 0; color: var(--color-text); font-size: 14px; line-height: 1.65; }
+.artifact-detail__notice { margin: 0; color: var(--color-text-muted); font-size: 12px; }
+.artifact-detail__scores { display: grid; grid-template-columns: repeat(auto-fit,minmax(90px,1fr)); gap: 8px; }
+.artifact-detail__scores > div { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 9px; background: var(--chat-rail-bg); }
+.artifact-detail__scores span { color: var(--color-text-muted); font-size: 11px; }
+.artifact-detail__scores strong { color: var(--color-text); font-size: 20px; }
+.artifact-detail__list { display: flex; flex-direction: column; gap: 3px; padding-top: 8px; border-top: 1px solid var(--color-border); font-size: 12px; line-height: 1.5; }
+.artifact-detail__list strong { font-weight: 600; }.artifact-detail__list span { color: var(--color-text-muted); }
+.artifact-detail__boundary { margin: 4px 0 0; color: var(--color-text-muted); font-size: 11px; line-height: 1.55; }
+.artifact-detail__footer { display: flex; justify-content: flex-end; }.artifact-detail__footer button { border: 1px solid var(--color-border); border-radius: 7px; padding: 7px 12px; background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 12px; cursor: pointer; }
 </style>

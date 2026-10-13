@@ -79,6 +79,12 @@
   --color-text-subtle:   var(--ink-300);
   --color-cta:           var(--vermilion-500);
 
+  /* AI conversation surface and Element-Plus-X adapter below. */
+  --chat-user-bg:        color-mix(in srgb, var(--color-primary) 9%, var(--color-surface));
+  --chat-user-border:    color-mix(in srgb, var(--color-primary) 20%, var(--color-border));
+  --chat-rail-bg:        color-mix(in srgb, var(--color-surface) 86%, var(--color-background));
+  --chat-expert-bg:      color-mix(in srgb, var(--color-secondary) 5%, var(--color-surface));
+
   /* 间距 */
   --space-xs:  4px;
   --space-sm:  8px;
@@ -87,6 +93,49 @@
   --space-xl:  32px;
   --space-2xl: 48px;
   --space-3xl: 64px;
+}
+
+/* Element-Plus-X Agent workbench adapter: components inherit the product theme.
+ * Keep overrides here instead of restyling each imported component. */
+.ai-page {
+  --elx-color-primary: var(--color-primary);
+  --elx-color-success: var(--bamboo-green);
+  --elx-color-warning: var(--color-gold);
+  --elx-color-danger: var(--color-primary-dark);
+  --elx-text-color-primary: var(--color-text);
+  --elx-text-color-regular: var(--color-text-muted);
+  --elx-text-color-secondary: var(--color-text-subtle);
+  --elx-text-color-placeholder: var(--color-text-subtle);
+  --elx-bg-page: var(--color-background);
+  --elx-bg-surface: var(--color-surface);
+  --elx-border-color: var(--color-border);
+  --elx-border-radius-base: var(--radius-sm);
+  --elx-border-radius-small: var(--radius-sm);
+  --elx-border-radius-round: var(--radius-pill);
+  --elx-fill-color: var(--color-background);
+  --elx-fill-color-light: var(--chat-rail-bg);
+  --elx-padding-xs: var(--space-xs);
+  --elx-padding-sm: var(--space-sm);
+  --elx-padding-md: 12px;
+  --elx-padding-lg: var(--space-md);
+  --elx-padding-xl: 20px;
+  --elx-box-shadow: var(--shadow-md);
+  --elx-box-shadow-light: var(--shadow-sm);
+
+  /* XSender embeds x-sender, whose editor uses its own --chat-* hooks. */
+  --chat-primary: var(--color-primary);
+  --chat-highlight: var(--color-primary-dark);
+  --chat-text: var(--color-text);
+  --chat-text-assistant: var(--color-text-muted);
+  --chat-text-secondary: var(--color-text-muted);
+  --chat-text-placeholder: var(--color-text-subtle);
+  --chat-box: var(--color-surface);
+  --chat-box-shadow: var(--shadow-lg);
+  --chat-input: var(--color-surface);
+  --chat-input-border: var(--color-border);
+  --chat-input-shadow-color: color-mix(in srgb, var(--color-primary) 14%, transparent);
+  --chat-card: var(--chat-rail-bg);
+  --chat-highlight-card: var(--color-primary-light);
 }
 
 /* ── 字阶 Type Scale（6 级收敛，逐页改造时引用） ── */

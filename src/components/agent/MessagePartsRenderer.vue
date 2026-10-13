@@ -13,6 +13,7 @@ const props = defineProps<{
   message: AIMessage
   streamingText?: string
   isStreaming?: boolean
+  sessionId?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -65,10 +66,28 @@ function thoughtLabel(seconds?: number): string {
 function thinkingParas(text?: string): string[] {
   return String(text || '').split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
 }
+
+function outcomeLabel(): string {
+  const outcome = props.message.outcome
+  if (!outcome) return ''
+  switch (outcome.status) {
+    case 'needs_input': return '还需要一点信息，可以直接在这里继续回答。'
+    case 'running': return outcome.run_id ? `任务进行中（${outcome.run_id}）。` : '任务进行中。'
+    case 'partial': return '这轮尚未完整完成，以下内容可能不完整。可以补充信息后重试。'
+    case 'failed': return '这轮没有完成，请重试。'
+    default: return ''
+  }
+}
 </script>
 
 <template>
   <div class="parts">
+    <div
+      v-if="outcomeLabel()"
+      class="outcome-notice"
+      :class="`outcome-notice--${message.outcome?.status}`"
+      role="status"
+    >{{ outcomeLabel() }}</div>
     <div
       v-if="message.thinking"
       class="thought"
@@ -104,6 +123,7 @@ function thinkingParas(text?: string): string[] {
       <ArtifactCard
         v-else-if="part.type === 'artifact_ref'"
         :artifact="part.artifact"
+        :session-id="sessionId"
       />
 
       <!-- 引用来源 -->
@@ -161,6 +181,25 @@ function thinkingParas(text?: string): string[] {
 .parts {
   display: grid;
   gap: 10px;
+}
+
+.outcome-notice {
+  border-radius: 10px;
+  padding: 9px 11px;
+  background: #eff6ff;
+  color: #1e40af;
+  font-size: 12px;
+}
+
+.outcome-notice--partial,
+.outcome-notice--needs_input {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.outcome-notice--failed {
+  background: #fef2f2;
+  color: #991b1b;
 }
 
 .tool-row {
