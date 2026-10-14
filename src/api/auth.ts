@@ -59,7 +59,9 @@ async function ensureCsrf(): Promise<void> {
 
 export async function getAccountCsrfToken(): Promise<string> {
   if (!httpAuth) return ''
-  if (!csrfToken) await ensureCsrf()
+  // Flask-WTF tokens expire after an hour while account cookies live longer.
+  // Refresh before each business write instead of caching an expired token.
+  await ensureCsrf()
   return csrfToken
 }
 
@@ -98,7 +100,7 @@ export async function loginLocal(
 
 export async function logoutAccount(): Promise<void> {
   if (!httpAuth) return
-  if (!csrfToken) await ensureCsrf()
+  await ensureCsrf()
   await accountRequest('/logout', { method: 'POST' })
   csrfToken = ''
 }
