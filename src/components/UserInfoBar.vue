@@ -28,7 +28,12 @@ async function onLogout() {
     confirmButtonText: '退出',
     cancelButtonText: '取消',
   })
-  userStore.logout()
+  try {
+    await userStore.logout()
+  } catch {
+    ElNotification({ title: '退出失败', message: '后端会话未能结束，请检查连接后重试', type: 'error' })
+    return
+  }
   ElNotification({
     title: '已退出',
     message: '登录状态已清空',

@@ -1,4 +1,4 @@
-import { getApiMode, DEMO_STUDENT_ID } from './config'
+import { getApiMode } from './config'
 import { mockGet } from './adapters/mockAdapter'
 import { httpGet, httpPost } from './adapters/httpAdapter'
 
@@ -59,13 +59,14 @@ export async function getMatchResult(
 }
 
 export async function getMatchExplain(
-  studentId: string = DEMO_STUDENT_ID,
+  studentId: string | undefined,
   jobPortraitId: string,
 ): Promise<MatchExplain | null> {
   if (getApiMode() === 'mock') {
     const env = await mockGet<MatchExplain>('match/explain.json')
     return env.data ?? null
   }
+  if (!studentId) throw new Error('HTTP 匹配解释必须提供当前已登录账号 ID')
   const env = await httpGet<MatchExplain>(`/api/match/explain/${studentId}/${jobPortraitId}`)
   return env.data ?? null
 }

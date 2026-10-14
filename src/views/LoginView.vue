@@ -14,10 +14,11 @@ import { gsap } from '@/plugins/gsap'
 const router = useRouter()
 const userStore = useUserStore()
 const mockMode = isMockMode()
-const backendDev = import.meta.env.MODE === 'backend-dev'
 
 const username = ref('')
 const password = ref('')
+const displayName = ref('')
+const registering = ref(false)
 const selectedRole = ref<UserRole>(UserRole.STUDENT)
 const loading = ref(false)
 const showPassword = ref(false)
@@ -25,12 +26,12 @@ const showPassword = ref(false)
 const roleTabs = [
   { role: UserRole.STUDENT, icon: ICONS.graduationCap, label: '学生', color: '#10B981' },
   { role: UserRole.ADMIN, icon: ICONS.settings, label: '管理员', color: '#8B5CF6' },
-].filter(tab => !backendDev || tab.role === UserRole.STUDENT)
+]
 
 const quickLogins = [
   { role: UserRole.STUDENT, account: 'student001', name: '学生体验' },
   { role: UserRole.ADMIN, account: 'admin001', name: '管理员' },
-].filter(item => !backendDev || item.role === UserRole.STUDENT)
+].filter(() => mockMode)
 
 const features = [
   { name: '能力图谱', desc: '量化 6 维度职业能力，定位真实短板' },
@@ -44,17 +45,32 @@ async function handleLogin() {
     ElMessage.warning('填个账号密码呗')
     return
   }
+  if (registering.value && password.value.length < 12) {
+    ElMessage.warning('密码长度须为 12–128 位')
+    return
+  }
 
   loading.value = true
   await new Promise(resolve => setTimeout(resolve, 600))
 
-  const success = await userStore.loginAsync(username.value, password.value, selectedRole.value)
+  let success = false
+  try {
+    if (registering.value) {
+      success = await userStore.registerAsync(username.value.trim(), password.value, displayName.value.trim())
+    } else {
+      success = await userStore.loginAsync(username.value, password.value, selectedRole.value)
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '账号服务暂不可用')
+    loading.value = false
+    return
+  }
 
   if (success) {
-    ElMessage.success('进来了！')
+    ElMessage.success(registering.value ? '账号已创建并登录' : '进来了！')
     router.push('/app/dashboard')
   } else {
-    ElMessage.error('账号或密码不对（默认：123456）')
+    ElMessage.error(!mockMode ? '登录失败，请检查账号、密码或后端账号服务' : '账号或密码不对（默认：123456）')
   }
 
   loading.value = false
@@ -126,9 +142,9 @@ onBeforeUnmount(() => {
         <Icon icon="lucide:database" :width="14" />
         <span>演示数据 · 无需后端</span>
       </div>
-      <div v-else-if="backendDev" class="stg mock-pill" title="仅本地联调：页面登录仍是演示入口，后端身份由 loopback 开发代理固定注入">
+      <div v-else class="stg mock-pill" title="使用平台账号后端进行登录，身份由服务端会话确定">
         <Icon icon="lucide:plug-zap" :width="14" />
-        <span>后端联调 · 本地开发身份</span>
+        <span>后端账号 · Cookie 会话</span>
       </div>
 
       <!-- 标题 -->
@@ -137,8 +153,12 @@ onBeforeUnmount(() => {
 
       <!-- 表单卡片 -->
       <div class="login-card">
+        <div v-if="!mockMode" class="auth-mode-switch">
+          <button type="button" :class="{ active: !registering }" @click="registering = false">登录</button>
+          <button type="button" :class="{ active: registering }" @click="registering = true">注册学生账号</button>
+        </div>
         <!-- 角色切换 -->
-        <div class="f-stg role-tabs">
+        <div v-if="mockMode && !registering" class="f-stg role-tabs">
           <button
             v-for="tab in roleTabs"
             :key="tab.role"
@@ -153,6 +173,9 @@ onBeforeUnmount(() => {
 
         <!-- 输入框 -->
         <div class="f-stg input-group">
+          <div v-if="registering" class="input-wrap">
+            <input v-model="displayName" type="text" placeholder="姓名（可选）" class="custom-input" />
+          </div>
           <div class="input-wrap">
             <Icon :icon="ICONS.user" class="input-icon" />
             <input v-model="username" type="text" placeholder="账号" class="custom-input" @keydown.enter="handleLogin" />
@@ -173,7 +196,7 @@ onBeforeUnmount(() => {
         </button>
 
         <!-- 快速体验 -->
-        <div class="f-stg quick-section">
+        <div v-if="quickLogins.length" class="f-stg quick-section">
           <div class="quick-divider"><span>或快速体验</span></div>
           <div class="quick-buttons">
             <button v-for="item in quickLogins" :key="item.role" class="quick-btn" @click="quickLogin(item.role, item.account)">
@@ -184,7 +207,8 @@ onBeforeUnmount(() => {
 
         <!-- 提示 -->
         <div class="f-stg login-hint">
-          <span>{{ backendDev ? '本地学生演示入口' : '演示账号' }} <strong>student001</strong> / <strong>123456</strong></span>
+          <span v-if="!mockMode">{{ registering ? '注册仅开放学生账号，密码 12–128 位；管理员账号由平台管理员开通' : '使用已开通的平台账号登录' }}</span>
+          <span v-else>演示账号 <strong>student001</strong> / <strong>123456</strong></span>
         </div>
       </div>
 
@@ -285,6 +309,10 @@ onBeforeUnmount(() => {
   border: 1px solid var(--parchment-300);
   box-shadow: var(--shadow-sm);
 }
+
+.auth-mode-switch { display: flex; gap: 8px; margin-bottom: 18px; }
+.auth-mode-switch button { flex: 1; padding: 8px; border: 1px solid var(--parchment-300); border-radius: var(--radius-sm); background: var(--parchment-200); color: var(--ink-500); cursor: pointer; }
+.auth-mode-switch button.active { color: var(--vermilion-500); border-color: var(--vermilion-300); background: color-mix(in srgb, var(--vermilion-500) 6%, var(--color-surface) 94%); }
 
 /* --- 角色标签 --- */
 .role-tabs {

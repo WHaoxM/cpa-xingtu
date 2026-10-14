@@ -10,13 +10,14 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   // 延迟获取 store，确保 pinia 已初始化
   const userStore = useUserStore(pinia)
+  await userStore.refreshCookieSession()
 
   // 更新页面标题
   if (to.meta.title) {
-    document.title = `${to.meta.title} - 课程管理系统`
+    document.title = `${to.meta.title} - 职导星图`
   }
 
   // 检查是否是公开路由

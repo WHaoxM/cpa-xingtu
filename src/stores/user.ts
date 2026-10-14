@@ -3,9 +3,11 @@ import { ref, computed } from 'vue'
 import type { User } from '@/types'
 import { UserRole } from '@/types'
 import { mockUsers } from '@/mock/data'
-import { loginLocal } from '@/api/auth'
+import { currentAccount, loginLocal, logoutAccount, registerAccount } from '@/api/auth'
+import { getApiMode } from '@/api/config'
 
 const backendDev = import.meta.env.MODE === 'backend-dev'
+const httpAuth = getApiMode() === 'http'
 
 export const useUserStore = defineStore(
   'user',
@@ -13,6 +15,8 @@ export const useUserStore = defineStore(
     // State
     const currentUser = ref<User | null>(null)
     const token = ref<string>('')
+    let lastCookieCheckAt = 0
+    let cookieCheck: Promise<void> | null = null
     const isLoggedIn = computed(() => !!currentUser.value && !!token.value)
 
     // Getters
@@ -22,7 +26,7 @@ export const useUserStore = defineStore(
 
     function applySession(user: User): void {
       currentUser.value = user
-      token.value = `mock_token_${user.id}_${Date.now()}`
+      token.value = httpAuth ? 'cookie-session' : `mock_token_${user.id}_${Date.now()}`
     }
 
     /** Preferred: fixture/auth API. Falls back to inline mockUsers. */
@@ -33,19 +37,31 @@ export const useUserStore = defineStore(
     ): Promise<boolean> {
       try {
         const user = await loginLocal(username, password)
-        if (user && (!role || user.role === role)) {
+        if (user && (httpAuth || !role || user.role === role)) {
           applySession(user)
           return true
         }
-      } catch {
-        /* fall through */
+      } catch (error) {
+        if (httpAuth) throw error
       }
-      if (backendDev) return false
+      if (httpAuth || backendDev) return false
       return login(username, password, role)
     }
 
+    async function registerAsync(username: string, password: string, name: string): Promise<boolean> {
+      if (!httpAuth) return false
+      await registerAccount(username, password, name)
+      try {
+        if (await loginAsync(username, password, UserRole.STUDENT)) return true
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '账号服务暂不可用'
+        throw new Error(`账号已创建，但自动登录失败：${reason}。请切换到登录重试`)
+      }
+      throw new Error('账号已创建，但自动登录失败。请切换到登录重试')
+    }
+
     function login(username: string, password: string, role?: UserRole): boolean {
-      if (backendDev) return false
+      if (httpAuth || backendDev) return false
       const user = mockUsers.find(u => {
         if (role && u.role !== role) return false
         return u.username === username
@@ -68,9 +84,28 @@ export const useUserStore = defineStore(
       return false
     }
 
-    function logout(): void {
+    async function logout(): Promise<void> {
+      if (httpAuth) await logoutAccount()
       currentUser.value = null
       token.value = ''
+      lastCookieCheckAt = 0
+    }
+
+    async function refreshCookieSession(): Promise<void> {
+      if (!httpAuth) return
+      if (cookieCheck) return cookieCheck
+      if (Date.now() - lastCookieCheckAt < 5_000) return
+      cookieCheck = (async () => {
+        try {
+          applySession(await currentAccount())
+        } catch {
+          currentUser.value = null
+          token.value = ''
+        } finally {
+          lastCookieCheckAt = Date.now()
+        }
+      })()
+      try { await cookieCheck } finally { cookieCheck = null }
     }
 
     function updateUserInfo(info: Partial<User>): void {
@@ -94,8 +129,10 @@ export const useUserStore = defineStore(
       isAdmin,
       login,
       loginAsync,
+      registerAsync,
       loginByRole,
       logout,
+      refreshCookieSession,
       updateUserInfo,
       setUserStatus,
     }

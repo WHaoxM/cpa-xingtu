@@ -828,7 +828,8 @@ async function startParse() {
         }))
         const jobId = hybrid.candidates[0]?.job_portrait_id
         if (jobId) {
-          matchExplain.value = await getMatchExplain(DEMO_STUDENT_ID, String(jobId))
+          const currentStudentId = getApiMode() === 'mock' ? DEMO_STUDENT_ID : userStore.currentUser?.id
+          matchExplain.value = await getMatchExplain(currentStudentId, String(jobId))
         }
       }
     } catch (e) {

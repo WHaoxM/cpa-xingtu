@@ -1,11 +1,12 @@
 import { getApiBaseUrl } from '../config'
+import { getAccountCsrfToken } from '../auth'
 import { ApiError, toFriendlyApiError, type ApiEnvelope } from '../types'
 
 type Query = Record<string, string | number | boolean | undefined | null>
 
 async function fetchJson(url: string, init?: RequestInit): Promise<Response> {
   try {
-    return await fetch(url, init)
+    return await fetch(url, { credentials: 'include', ...init })
   } catch (err) {
     throw toFriendlyApiError(err)
   }
@@ -68,11 +69,13 @@ export async function httpSend<T = unknown>(
   body?: unknown,
   query?: Query,
 ): Promise<ApiEnvelope<T>> {
+  const csrfToken = await getAccountCsrfToken()
   const res = await fetchJson(buildUrl(path, query), {
     method,
     headers: {
       Accept: 'application/json',
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
@@ -93,9 +96,10 @@ export async function httpFormPost<T = unknown>(
   form: FormData,
   query?: Query,
 ): Promise<ApiEnvelope<T>> {
+  const csrfToken = await getAccountCsrfToken()
   const res = await fetchJson(buildUrl(path, query), {
     method: 'POST',
-    headers: { Accept: 'application/json' },
+    headers: { Accept: 'application/json', ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {}) },
     body: form,
   })
   return parse<T>(res)

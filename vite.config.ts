@@ -13,10 +13,6 @@ export default defineConfig(({ mode }) => {
     env.CPA_BACKEND_URL ||
     'http://127.0.0.1:5001'
   const backendDev = mode === 'backend-dev'
-  const devStudentId = String(env.VITE_DEV_STUDENT_ID || '').trim()
-  if (backendDev && !/^[A-Za-z0-9_-]{1,64}$/.test(devStudentId)) {
-    throw new Error('backend-dev requires a valid VITE_DEV_STUDENT_ID')
-  }
 
   return {
     // GitHub Pages: https://whaoxm.github.io/cpa-xingtu/
@@ -36,13 +32,6 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: proxyTarget,
           changeOrigin: true,
-          // Only the isolated loopback dev server grants its configured local
-          // Principal; browser-provided identity headers are overwritten.
-          ...(backendDev ? {
-            configure(proxy) {
-              proxy.on('proxyReq', request => request.setHeader('X-Dev-Student-Id', devStudentId))
-            },
-          } : {}),
         },
         '/health': {
           target: proxyTarget,

@@ -148,7 +148,7 @@ npm run preview
 
 ### 本地联调（可选）
 
-先按主仓库说明启动 Docker MySQL/Neo4j/Redis，以及宿主机 `mkg` 后端。严格模式下，本地后端需显式开启 `CPA_DEV_AUTH=1`；该开发认证只接受 loopback 请求，不是生产登录。再启动**独立于默认 5173/mock 进程**的联调前端：
+先按主仓库说明启动 Docker MySQL/Neo4j/Redis，以及宿主机 `mkg` 后端。后端须为 `CPA_DEMO_MODE=false`，配置随机、至少 32 字符的 `SECRET_KEY`；仅本机 HTTP 联调时设置 `CPA_AUTH_COOKIE_SECURE=false` 并绑定 `127.0.0.1`。完成账号 MySQL 迁移后，再启动**独立于默认 5173/mock 进程**的联调前端：
 
 ```powershell
 Copy-Item .env.backend-dev.example .env.backend-dev
@@ -156,11 +156,11 @@ npm run dev:backend
 # → http://127.0.0.1:5174
 ```
 
-`backend-dev` 模式读取 `.env.backend-dev`：`VITE_API_MODE=http`、同源 `/api` 经 Vite 代理到 `127.0.0.1:5001`；代理仅在本地 `5174` 模式覆盖注入固定 `X-Dev-Student-Id=student_001`。浏览器请求体里的 `student_id` 不能更改后端 Principal。需要使用另一隔离测试身份时，在被 Git 忽略的 `.env.backend-dev.local` 中覆盖 `VITE_DEV_STUDENT_ID`，并使用对应的本地学生 fixture；默认不会开放管理员后端身份。前端登录按钮仍是**演示入口**，页面明确标记“本地开发身份”，不能当真实认证验收。
+`backend-dev` 模式读取 `.env.backend-dev`：`VITE_API_MODE=http`、同源 `/api` 经 Vite 代理到 `127.0.0.1:5001`。代理不注入开发身份；页面通过 `/api/auth/csrf`、注册/登录、服务端 Cookie 与 `/api/auth/me` 使用平台账号。学生可在登录页注册新账号，管理员仅由后端可信 CLI 开户；HTTP 模式不会在认证失败时退回演示账号。新账号的 `acct_*` ID 不自动认领历史 `student_001` 资料，须自行导入和确认简历。公开 Pages 仍使用纯 Mock 登录。
 
 后端联调首页的完成标记只依据 owner 范围内的服务端画像与已完成报告；本地演示学习记录、简历缓存和计时器不充当业务完成证据。服务端画像与学生资料不一致时，首页显式提示状态异常，不显示“已完成”。
 
-可复核代理与身份边界：`http://127.0.0.1:5174/health` 应为 200；通过 5174 请求本人资料得到实际业务响应（无资料可为 404），访问不同学生 ID 应为 403；生产/演示构建不注入此开发身份。当前本机验证为 `200 / 404 / 403`。
+可复核代理与身份边界：`http://127.0.0.1:5174/health` 应为 200；未登录访问用户资料应为 401。注册/登录后 `/api/auth/me` 的 ID 应与注册所得相同；本人尚无资料可为 404，访问其他学生 ID 应为 403；退出后 `/api/auth/me` 应恢复 401。本机已用临时账号经 5174 代理和浏览器注册、刷新及退出复验，测试账号已清理。
 
 已接入后端的联调点：
 
