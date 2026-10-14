@@ -73,7 +73,9 @@ export type PipelineTaskEvent = {
 export type ResumeTraceEvent = {
   event_id: number
   stage: string
-  kind: 'input' | 'tool_call' | 'tool_result' | 'agent_run' | 'model_call' | 'agent_result' | 'handoff' | 'artifact' | 'error'
+  kind: 'input' | 'attempt' | 'tool_call' | 'tool_result' | 'agent_run' | 'model_call' | 'agent_result' | 'handoff' | 'artifact' | 'error'
+  /** null is the upload receipt or a legacy event with no reliable attempt boundary. */
+  attempt: number | null
   actor: string
   state: 'running' | 'completed' | 'failed'
   progress: number
@@ -84,7 +86,7 @@ export type ResumeTraceEvent = {
 }
 
 export type ResumeTracePage = {
-  task: { task_id: string; pipeline: string; status: string; progress: number }
+  task: { task_id: string; pipeline: string; status: string; progress: number; current_attempt: number }
   events: ResumeTraceEvent[]
   cursor: number
   has_more: boolean

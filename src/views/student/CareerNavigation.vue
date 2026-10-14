@@ -46,6 +46,7 @@ import {
 import { hybridCandidates, getMatchExplain, type MatchExplain } from '@/api/match'
 import { DEMO_STUDENT_ID, getApiMode } from '@/api/config'
 import { ApiError } from '@/api/types'
+import { splitResumeTraceAttempts } from '@/utils/resumeTraceAttempts'
 
 const router = useRouter()
 const route = useRoute()
@@ -77,7 +78,9 @@ const taskSnapshot = ref<{ task_id: string; pipeline: string; status: string } |
 const eventError = ref('')
 const resumeTrace = ref<ResumeTraceEvent[]>([])
 const traceProgress = ref(0)
+const traceAttempt = ref<number | null>(null)
 const traceError = ref('')
+const tracePartitions = computed(() => splitResumeTraceAttempts(resumeTrace.value, traceAttempt.value))
 const activeResumeTaskId = ref('')
 const acceptingUpload = ref(false)
 type StoredTaskStatus = {
@@ -99,6 +102,7 @@ let eventPollTimer: number | null = null
 let eventTaskId = ''
 let traceCursor = 0
 let traceTaskId = ''
+let traceReplaySeq = 0
 let resumeTaskPollTimer: number | null = null
 let resumeReportRequestSeq = 0
 function stopEventPoll() {
@@ -108,25 +112,34 @@ function stopEventPoll() {
   resumeTaskPollTimer = null
 }
 async function replayResumeTrace(taskId: string, reset = false) {
+  const replaySeq = ++traceReplaySeq
   if (reset || traceTaskId !== taskId) {
     traceTaskId = taskId
     traceCursor = 0
     resumeTrace.value = []
     traceProgress.value = 0
+    traceAttempt.value = null
   }
   try {
     let more = true
     while (more) {
       const env = await getResumeTrace(taskId, traceCursor)
-      if (traceTaskId !== taskId) return
+      if (traceTaskId !== taskId || replaySeq !== traceReplaySeq) return
       if (!env.success || !env.data) throw new Error(env.error || '解析轨迹读取失败')
+      const attempt = env.data.task.current_attempt
+      if (!Number.isInteger(attempt) || attempt < 0) throw new Error('服务端未提供可核验的解析轮次')
       resumeTrace.value.push(...env.data.events)
       traceCursor = env.data.cursor
       traceProgress.value = env.data.task.progress
+      traceAttempt.value = attempt
       more = env.data.has_more
     }
     traceError.value = ''
   } catch (error) {
+    if (traceTaskId !== taskId || replaySeq !== traceReplaySeq) return
+    // An unreadable trace cannot establish whether a worker has started a new attempt.
+    traceAttempt.value = null
+    traceProgress.value = 0
     traceError.value = error instanceof Error ? error.message : '解析轨迹暂不可用'
   }
 }
@@ -360,9 +373,11 @@ watch(() => route.query.task_id, async value => {
   eventError.value = ''
   resumeTrace.value = []
   traceProgress.value = 0
+  traceAttempt.value = null
   traceError.value = ''
   traceTaskId = ''
   traceCursor = 0
+  traceReplaySeq += 1
   parseError.value = ''
   if (!/^task_[A-Za-z0-9]+$/.test(value)) {
     parseError.value = '无效的简历任务引用'
@@ -739,7 +754,11 @@ async function startParse() {
     activeResumeTaskId.value = ''
     resumeTrace.value = []
     traceProgress.value = 0
+    traceAttempt.value = null
     traceError.value = ''
+    traceTaskId = ''
+    traceCursor = 0
+    traceReplaySeq += 1
     acceptingUpload.value = true
     try {
       const resumeFile = uploadedFile.value || new File([pasteText.value.trim()], 'pasted-resume.txt', { type: 'text/plain' })
@@ -987,9 +1006,11 @@ function resetPage() {
   eventError.value = ''
   resumeTrace.value = []
   traceProgress.value = 0
+  traceAttempt.value = null
   traceError.value = ''
   traceCursor = 0
   traceTaskId = ''
+  traceReplaySeq += 1
   activeResumeTaskId.value = ''
   acceptingUpload.value = false
   candidateLoadSeq += 1
@@ -1055,10 +1076,12 @@ const showLiveResumeTrace = computed(() => isHttpMode && parsePhase.value !== 'i
 const isRightPanelActive = computed(() => showBackendWorkspace.value || (isHttpMode && parsePhase.value !== 'idle') || (!isHttpMode && parsePhase.value !== 'idle'))
 const realCurrentStage = computed(() => {
   if (acceptingUpload.value && !activeResumeTaskId.value) return '正在提交文件，等待服务端分配任务编号'
-  const last = resumeTrace.value[resumeTrace.value.length - 1]
+  if (traceError.value) return '轨迹读取中断，等待下一次读取'
+  const current = tracePartitions.value.current
+  const last = current[current.length - 1]
   if (!last) return '任务已建立，等待后端开始解析'
   const names: Record<string, string> = {
-    file_received: '后端已接收文件', source_extract: '正在提取文件原文',
+    file_received: '后端已接收文件', attempt_started: '后端已领取任务，开始本轮解析', source_extract: '正在提取文件原文',
     source_extracted: '原文已提取，等待结构化', handoff_document: '文档已交给结构 Agent',
     structure_extract: '模型正在识别简历事实', structure_model: '结构模型已返回',
     structure_extracted: '结构化事实已生成', handoff_structure: '事实已交给实体 Agent',
@@ -1244,9 +1267,10 @@ const rightShellStyle = computed(() => ({
               <span class="rp-result-kicker">01 · 后端解析进行中</span>
               <h3 class="rp-real-loading-title">正在读懂这份简历</h3>
               <p class="rp-loading-msg">{{ realCurrentStage }}</p>
-              <div class="rp-real-progress-head"><span>已完成的后端检查点</span><strong>{{ activeResumeTaskId ? `${traceProgress}%` : '待分配' }}</strong></div>
-              <div class="rp-real-progress-track" role="progressbar" :aria-valuenow="traceProgress" aria-valuemin="0" aria-valuemax="100" aria-label="简历解析真实检查点进度"><span :style="{ width: traceProgress + '%' }"></span></div>
-              <p class="rp-real-progress-note">{{ activeResumeTaskId ? `已完成 ${Math.floor(traceProgress / 25)} / 4 个检查点。右侧 Agent Trace 展示每一步的数据交接。` : '服务端返回任务编号后开始显示实际进度；此处不会预估处理时间。' }}</p>
+              <div class="rp-real-progress-head"><span>已完成的后端检查点</span><strong>{{ !activeResumeTaskId ? '待分配' : traceError ? '暂不可读' : traceAttempt === null ? '读取中' : `${traceProgress}%` }}</strong></div>
+              <div v-if="traceAttempt !== null && !traceError" class="rp-real-progress-track" role="progressbar" :aria-valuenow="traceProgress" aria-valuemin="0" aria-valuemax="100" aria-label="简历解析真实检查点进度"><span :style="{ width: traceProgress + '%' }"></span></div>
+              <div v-else class="rp-real-progress-track" aria-hidden="true"></div>
+              <p class="rp-real-progress-note">{{ traceError ? '轨迹暂不可读取；不会把旧轮次的百分比当作当前进度。' : activeResumeTaskId && traceAttempt !== null ? `已完成 ${Math.floor(traceProgress / 25)} / 4 个检查点。右侧 Agent Trace 展示每一步的数据交接。` : '服务端返回任务编号并读取轨迹后显示实际进度；此处不会预估处理时间。' }}</p>
               <small v-if="activeResumeTaskId" class="rp-real-task-id">{{ activeResumeTaskId }}</small>
             </template>
             <template v-else>
@@ -1383,8 +1407,10 @@ const rightShellStyle = computed(() => ({
           :aria-hidden="!showUnifiedPreview"
           :live="showLiveResumeTrace"
           :progress="traceProgress"
+          :attempt="traceAttempt"
           :task-id="activeResumeTaskId"
-          :trace="resumeTrace"
+          :trace="tracePartitions.current"
+          :history-trace="tracePartitions.history"
           :trace-error="traceError"
           :candidate-ready="!!resumeCandidate"
           :confirmed="!!confirmedProfile?.profile_ready"
@@ -1455,7 +1481,9 @@ const rightShellStyle = computed(() => ({
               :live="true"
               :task-id="activeResumeTaskId"
               :progress="traceProgress"
-              :trace="resumeTrace"
+              :attempt="traceAttempt"
+              :trace="tracePartitions.current"
+              :history-trace="tracePartitions.history"
               :trace-error="traceError"
               :candidate-ready="!!resumeCandidate"
               :confirmed="!!confirmedProfile?.profile_ready"

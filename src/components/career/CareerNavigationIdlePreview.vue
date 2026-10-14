@@ -7,13 +7,15 @@ const props = withDefaults(defineProps<{
   live?: boolean
   traceOnly?: boolean
   progress?: number
+  attempt?: number | null
   taskId?: string
   trace?: ResumeTraceEvent[]
+  historyTrace?: ResumeTraceEvent[]
   traceError?: string
   candidateReady?: boolean
   confirmed?: boolean
   failed?: boolean
-}>(), { live: false, traceOnly: false, progress: 0, taskId: '', trace: () => [], traceError: '', candidateReady: false, confirmed: false, failed: false })
+}>(), { live: false, traceOnly: false, progress: 0, attempt: null, taskId: '', trace: () => [], historyTrace: () => [], traceError: '', candidateReady: false, confirmed: false, failed: false })
 
 const agents = [
   { name: 'DocumentAgent', label: '文档读取', done: 'source_extracted', running: 'source_extract' },
@@ -22,8 +24,8 @@ const agents = [
   { name: 'EvidenceAgent', label: '证据整理', done: 'evidence_assembled', running: 'evidence_assemble' },
 ] as const
 const currentEvent = computed(() => props.trace[props.trace.length - 1])
-const hasTeamHandoffs = computed(() => props.trace.some(event => event.stage === 'handoff_document'))
-const showTeam = computed(() => hasTeamHandoffs.value || props.progress < 100 || !props.trace.length)
+const hasTeamTrace = computed(() => props.trace.some(event => event.stage === 'attempt_started' || event.stage === 'handoff_document'))
+const showTeam = computed(() => hasTeamTrace.value || props.progress < 100 || !props.trace.length)
 const agentStates = computed(() => agents.map(agent => ({ ...agent,
   state: props.trace.some(event => event.stage === agent.done) ? 'done'
     : props.trace.some(event => event.stage === agent.running) ? 'running' : 'waiting',
@@ -34,7 +36,7 @@ const stepIndex = computed(() => Math.min(3, Math.floor(Math.max(0, props.progre
 const traceStatus = computed(() => props.traceError ? '读取中断' : props.failed ? '解析未完成' : props.confirmed ? '简历已确认' : props.candidateReady ? '待核对' : '协作中')
 function eventTitle(event: ResumeTraceEvent) {
   const labels: Record<string, string> = {
-    file_received: '已接收简历', source_extract: '读取文档内容', source_extracted: '文字与区块已提取',
+    file_received: '已接收简历', attempt_started: '开始本轮解析', source_extract: '读取文档内容', source_extracted: '文字与区块已提取',
     handoff_document: '将文档交给结构 Agent', structure_extract: '识别简历事实',
     structure_model: '调用结构识别模型', structure_extracted: '结构化结果已生成',
     handoff_structure: '将事实交给实体 Agent', entity_extract: '核验技能实体',
@@ -47,6 +49,7 @@ function eventTitle(event: ResumeTraceEvent) {
 }
 function eventDetail(event: ResumeTraceEvent) {
   const facts = event.facts || {}
+  if (event.stage === 'attempt_started') return facts.recovered ? `第 ${event.attempt} 次 · 故障恢复后重新执行` : `第 ${event.attempt} 次 · 任务已由后端领取`
   if (event.kind === 'handoff') return `${event.source} → ${event.target}`
   if (event.stage === 'source_extracted') return `${facts.block_count ?? 0} 段${typeof facts.text_chars === 'number' ? ` · ${facts.text_chars} 字` : ''}`
   if (event.stage === 'structure_extracted') return `${facts.field_count ?? 0} 字段 · ${facts.project_count ?? 0} 项目`
@@ -55,6 +58,10 @@ function eventDetail(event: ResumeTraceEvent) {
   if (event.kind === 'model_call') return `${facts.model ?? '模型'} · ${facts.status ?? '已返回'}`
   if (event.stage === 'candidate_saved') return `状态：${facts.candidate_status ?? '待核对'}`
   return event.source === event.target ? event.actor : `${event.source} → ${event.target}`
+}
+function eventAttemptLabel(event: ResumeTraceEvent) {
+  if (event.stage === 'file_received') return '输入收据'
+  return event.attempt === null ? '轮次未知' : `第 ${event.attempt} 次`
 }
 
 const stageLabels = ['结构解析', '维度评估', '经历映射', '总结生成']
@@ -346,8 +353,9 @@ const actionWidths = ['106px', '132px', '92px']
           <div class="cnip-live-status">
             <div><span>PHASE</span><strong>{{ currentAgent?.label || '等待接收' }}</strong></div>
             <div><span>STATUS</span><strong>{{ traceStatus }}</strong></div>
-            <div><span>PROGRESS</span><strong>{{ Math.round(progress) }}% · {{ Math.floor(progress / 25) }}/4 检查点</strong></div>
-            <div class="cnip-live-status__track"><span :style="{ width: `${Math.min(100, Math.max(0, progress))}%` }"></span></div>
+            <div><span>ATTEMPT</span><strong>{{ attempt === null ? '待服务端确认' : attempt === 0 ? '等待领取' : `第 ${attempt} 次执行` }}</strong></div>
+            <div><span>PROGRESS</span><strong>{{ traceError ? '暂不可读取' : attempt === null ? '等待后端轨迹' : `${Math.round(progress)}% · ${Math.floor(progress / 25)}/4 检查点` }}</strong></div>
+            <div class="cnip-live-status__track"><span :style="{ width: `${traceError || attempt === null ? 0 : Math.min(100, Math.max(0, progress))}%` }"></span></div>
           </div>
           <div v-if="showTeam" class="cnip-team">
             <div class="cnip-team__heading">AGENT TEAM <span>真实任务分工</span></div>
@@ -358,7 +366,7 @@ const actionWidths = ['106px', '132px', '92px']
             </div>
           </div>
           <p v-else class="cnip-legacy-note">这份任务生成于多 Agent 交接记录上线前；下方只展示当时实际保存的阶段日志，不补造协作步骤。</p>
-          <div class="cnip-trace-head">HANDOFF TRACE <span>{{ trace.length }} 条记录</span></div>
+          <div class="cnip-trace-head">CURRENT ATTEMPT TRACE <span>{{ trace.length }} 条记录</span></div>
           <p v-if="traceError" class="cnip-trace-error">轨迹暂不可读取：{{ traceError }}</p>
           <div class="cnip-trace-list" aria-live="polite">
             <article v-for="event in trace" :key="event.event_id" class="cnip-trace-event" :class="{ 'cnip-trace-event--handoff': event.kind === 'handoff', 'cnip-trace-event--error': event.kind === 'error' }">
@@ -368,6 +376,16 @@ const actionWidths = ['106px', '132px', '92px']
             </article>
             <p v-if="!trace.length" class="cnip-trace-empty">等待第一条服务端 Agent 记录…</p>
           </div>
+          <details v-if="historyTrace.length" class="cnip-trace-history">
+            <summary>输入收据与历史尝试 <span>{{ historyTrace.length }} 条 · 不计入当前 Agent 进度</span></summary>
+            <div class="cnip-trace-history__list">
+              <article v-for="event in historyTrace" :key="event.event_id" class="cnip-trace-event" :class="{ 'cnip-trace-event--handoff': event.kind === 'handoff', 'cnip-trace-event--error': event.kind === 'error' }">
+                <div class="cnip-trace-event__top"><span>{{ eventAttemptLabel(event) }} · {{ event.actor }}</span><time>{{ event.occurred_at.slice(11, 19) }}</time></div>
+                <strong>{{ eventTitle(event) }}</strong>
+                <p>{{ eventDetail(event) }}</p>
+              </article>
+            </div>
+          </details>
           <small v-if="taskId" class="cnip-trace-task">{{ taskId }}</small>
         </template>
         <template v-else>
@@ -442,6 +460,10 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-trace-event p { color: #a4a09b; overflow-wrap: anywhere; font: 10px/1.5 Consolas, monospace; margin: 4px 0 0; }
 .cnip-trace-empty, .cnip-trace-error { color: #aaa; font-size: 11px; padding: 10px 3px; }
 .cnip-trace-error { color: #eb9b85; padding: 0 14px; }
+.cnip-trace-history { border-top: 1px solid #303030; color: #a9a09a; font-size: 10px; }
+.cnip-trace-history summary { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px; cursor: pointer; }
+.cnip-trace-history summary span { color: #777; text-align: right; }
+.cnip-trace-history__list { display: grid; gap: 7px; max-height: 190px; overflow-y: auto; padding: 0 11px 11px; }
 .cnip-trace-task { color: #666; font: 9px Consolas, monospace; padding: 6px 14px 10px; }
 
 .cnip-portrait-side {
