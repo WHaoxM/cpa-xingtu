@@ -68,6 +68,48 @@ export type InferRoleResult = {
   skill_count?: number
   canonical_skills?: string[]
   evidence_summary?: string
+  status?: 'complete' | 'partial' | 'empty'
+  partial_reasons?: string[]
+  source_coverage?: Record<string, string>
+  market_data_status?: string
+  failed_sources?: string[]
+}
+
+export type SkillExplorationRoles = {
+  source_confirmation_task_id: string
+  revision: number
+  source_kind: 'user_self_report'
+  scoring_eligible: false
+  exploration_only: true
+  roles: InferRoleResult
+}
+
+export type ConfirmedResumeRoles = {
+  source_confirmation_task_id: string
+  source_kind: 'confirmed_resume'
+  scoring_eligible: false
+  exploration_only: true
+  roles: InferRoleResult
+}
+
+/** Owner-bound direction exploration from the confirmed resume stored on the server. */
+export async function inferConfirmedResumeRoles(taskId: string, preferredRole?: string): Promise<ConfirmedResumeRoles> {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的简历任务引用')
+  const env = await httpPost<ConfirmedResumeRoles>('/api/profile/student/confirmed-resume/roles', {
+    task_id: taskId, preferred_role: preferredRole,
+  })
+  if (!env.data) throw new Error(env.error || '简历方向结果不可用')
+  return env.data
+}
+
+/** Owner-bound direction exploration from saved self-reported skills, not L2 input. */
+export async function inferSelfReportedSkillRoles(taskId: string, preferredRole?: string): Promise<SkillExplorationRoles> {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的简历任务引用')
+  const env = await httpPost<SkillExplorationRoles>('/api/profile/student/skill-exploration/roles', {
+    task_id: taskId, preferred_role: preferredRole,
+  })
+  if (!env.data) throw new Error(env.error || '技能自述方向结果不可用')
+  return env.data
 }
 
 /** Role Inference seam: extracted skills → ranked career directions (not resume text). */

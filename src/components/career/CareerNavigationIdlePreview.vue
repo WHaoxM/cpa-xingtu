@@ -8,14 +8,13 @@ const props = withDefaults(defineProps<{
   traceOnly?: boolean
   progress?: number
   attempt?: number | null
-  taskId?: string
   trace?: ResumeTraceEvent[]
   historyTrace?: ResumeTraceEvent[]
   traceError?: string
   candidateReady?: boolean
   confirmed?: boolean
   failed?: boolean
-}>(), { live: false, traceOnly: false, progress: 0, attempt: null, taskId: '', trace: () => [], historyTrace: () => [], traceError: '', candidateReady: false, confirmed: false, failed: false })
+}>(), { live: false, traceOnly: false, progress: 0, attempt: null, trace: () => [], historyTrace: () => [], traceError: '', candidateReady: false, confirmed: false, failed: false })
 
 const agents = [
   { name: 'DocumentAgent', label: '文档读取', done: 'source_extracted', running: 'source_extract' },
@@ -25,7 +24,11 @@ const agents = [
 ] as const
 const currentEvent = computed(() => props.trace[props.trace.length - 1])
 const hasTeamTrace = computed(() => props.trace.some(event => event.stage === 'attempt_started' || event.stage === 'handoff_document'))
-const showTeam = computed(() => hasTeamTrace.value || props.progress < 100 || !props.trace.length)
+const savedWithoutTrace = computed(() => props.live && props.attempt !== null
+  && (props.candidateReady || props.confirmed) && !props.trace.length && !props.traceError)
+const showTeam = computed(() => hasTeamTrace.value
+  || (!savedWithoutTrace.value && !props.candidateReady && !props.confirmed
+    && !props.failed && !props.traceError && props.progress < 100))
 const agentStates = computed(() => agents.map(agent => ({ ...agent,
   state: props.trace.some(event => event.stage === agent.done) ? 'done'
     : props.trace.some(event => event.stage === agent.running) ? 'running' : 'waiting',
@@ -33,37 +36,43 @@ const agentStates = computed(() => agents.map(agent => ({ ...agent,
 const currentAgent = computed(() => [...agentStates.value].reverse().find(agent => agent.state === 'running')
   || [...agentStates.value].reverse().find(agent => agent.state === 'done'))
 const stepIndex = computed(() => Math.min(3, Math.floor(Math.max(0, props.progress) / 25)))
-const traceStatus = computed(() => props.traceError ? '读取中断' : props.failed ? '解析未完成' : props.confirmed ? '简历已确认' : props.candidateReady ? '待核对' : '协作中')
+const traceStatus = computed(() => props.traceError ? '读取中断' : props.failed ? '解析未完成' : props.confirmed ? '简历已确认' : props.candidateReady ? '待核对' : '解析中')
+const phaseLabel = computed(() => savedWithoutTrace.value ? '历史轨迹未留存' : currentAgent.value?.label || '等待接收')
+const attemptLabel = computed(() => savedWithoutTrace.value ? '已有结果'
+  : props.attempt === null ? '等待开始' : props.attempt === 0 ? '等待处理'
+    : props.attempt === 1 ? '首次处理' : `第 ${props.attempt} 次尝试`)
+const progressLabel = computed(() => props.traceError ? '暂不可读取'
+  : savedWithoutTrace.value ? '无可回放检查点'
+    : props.attempt === null ? '等待进度更新' : `${Math.round(props.progress)}% · ${Math.floor(props.progress / 25)}/4 步`)
+const milestoneDetails = computed(() => {
+  const facts = (stage: string) => props.trace.find(event => event.stage === stage)?.facts || {}
+  const document = facts('source_extracted')
+  const structure = facts('structure_extracted')
+  const entity = facts('entity_resolved')
+  const evidence = facts('evidence_assembled')
+  return [
+    typeof document.block_count === 'number'
+      ? `${document.block_count} 段文字${typeof document.text_chars === 'number' ? ` · ${document.text_chars} 字` : ''}` : '',
+    typeof structure.field_count === 'number'
+      ? `${structure.field_count} 个字段${typeof structure.project_count === 'number' ? ` · ${structure.project_count} 项项目` : ''}` : '',
+    typeof entity.mention_count === 'number' ? `${entity.mention_count} 条技能提及` : '',
+    typeof evidence.block_count === 'number'
+      ? `${evidence.block_count} 段证据${typeof evidence.missing_page_count === 'number' && evidence.missing_page_count > 0 ? ` · ${evidence.missing_page_count} 页未取得文字` : ''}` : '',
+  ]
+})
 function eventTitle(event: ResumeTraceEvent) {
   const labels: Record<string, string> = {
     file_received: '已接收简历', attempt_started: '开始本轮解析', source_extract: '读取文档内容', source_extracted: '文字与区块已提取',
-    handoff_document: '将文档交给结构 Agent', structure_extract: '识别简历事实',
-    structure_model: '调用结构识别模型', structure_extracted: '结构化结果已生成',
-    handoff_structure: '将事实交给实体 Agent', entity_extract: '核验技能实体',
-    mention_model: '调用技能提取模型', link_model: '调用实体归一模型',
-    entity_resolved: '实体处理完成', handoff_entity: '将候选交给证据 Agent',
+    handoff_document: '开始整理简历事实', structure_extract: '识别简历事实',
+    structure_model: '识别经历与教育信息', structure_extracted: '简历事实已整理',
+    handoff_structure: '开始核对技术词', entity_extract: '核对技术词',
+    mention_model: '识别简历提及的技术词', link_model: '核对技术词名称',
+    entity_resolved: '技术词已核对', handoff_entity: '开始整理原文依据',
     evidence_assemble: '整理原文证据', evidence_assembled: '证据包已形成',
     candidate_saved: '候选档案已保存', failed: '任务未完成',
   }
-  return labels[event.stage] || event.stage
+  return labels[event.stage] || '解析过程有更新'
 }
-function eventDetail(event: ResumeTraceEvent) {
-  const facts = event.facts || {}
-  if (event.stage === 'attempt_started') return facts.recovered ? `第 ${event.attempt} 次 · 故障恢复后重新执行` : `第 ${event.attempt} 次 · 任务已由后端领取`
-  if (event.kind === 'handoff') return `${event.source} → ${event.target}`
-  if (event.stage === 'source_extracted') return `${facts.block_count ?? 0} 段${typeof facts.text_chars === 'number' ? ` · ${facts.text_chars} 字` : ''}`
-  if (event.stage === 'structure_extracted') return `${facts.field_count ?? 0} 字段 · ${facts.project_count ?? 0} 项目`
-  if (event.stage === 'entity_resolved') return `${facts.mention_count ?? 0} 条技能提及 · ${facts.link_status ?? '未归一'}`
-  if (event.stage === 'evidence_assembled') return `${facts.block_count ?? 0} 段证据 · ${facts.missing_page_count ?? 0} 页缺失`
-  if (event.kind === 'model_call') return `${facts.model ?? '模型'} · ${facts.status ?? '已返回'}`
-  if (event.stage === 'candidate_saved') return `状态：${facts.candidate_status ?? '待核对'}`
-  return event.source === event.target ? event.actor : `${event.source} → ${event.target}`
-}
-function eventAttemptLabel(event: ResumeTraceEvent) {
-  if (event.stage === 'file_received') return '输入收据'
-  return event.attempt === null ? '轮次未知' : `第 ${event.attempt} 次`
-}
-
 const stageLabels = ['结构解析', '维度评估', '经历映射', '总结生成']
 const liveStageLabels = ['文档解析', '事实结构化', '实体核验', '证据整理']
 const profileMetaWidths = ['102px', '86px', '56px']
@@ -95,10 +104,10 @@ const suggestionRows = [
   { tagWidth: '54px', lineWidths: ['88%'] },
 ]
 const statusRows = [
-  { label: 'PHASE', width: '78%' },
-  { label: 'STATUS', width: '64%' },
-  { label: 'STEP', width: '52%' },
-  { label: 'PROGRESS', width: '60%' },
+  { label: '当前阶段', width: '78%' },
+  { label: '任务状态', width: '64%' },
+  { label: '处理步骤', width: '52%' },
+  { label: '完成进度', width: '60%' },
 ]
 const logRows = [
   { label: '接收简历', width: '52%' },
@@ -112,7 +121,7 @@ const actionWidths = ['106px', '132px', '92px']
 </script>
 
 <template>
-  <section class="cnip-shell" :class="{ 'cnip-shell--trace-only': traceOnly }" aria-label="分析结果预览">
+  <section class="cnip-shell" :class="{ 'cnip-shell--trace-only': traceOnly }" :aria-label="live ? '简历解析过程' : '分析结果预览'">
     <div v-if="!traceOnly" class="cnip-portrait-side">
     <header class="cnip-header">
       <span class="cnip-eyebrow">{{ live ? '真实解析过程' : '分析结果预览' }}</span>
@@ -126,7 +135,7 @@ const actionWidths = ['106px', '132px', '92px']
             v-for="(label, index) in (live ? liveStageLabels : stageLabels)"
             :key="label"
             class="cnip-phase-step"
-            :class="{ 'cnip-phase-step--active': live ? index === stepIndex : index === 0, 'cnip-phase-step--done': live && index < stepIndex }"
+            :class="{ 'cnip-phase-step--active': live ? progress < 100 && index === stepIndex : index === 0, 'cnip-phase-step--done': live && progress >= (index + 1) * 25 }"
           >
             <span class="cnip-phase-dot">{{ index + 1 }}</span>
             <span class="cnip-phase-label">{{ label }}</span>
@@ -136,14 +145,31 @@ const actionWidths = ['106px', '132px', '92px']
 
         <div v-if="live" class="cnip-live-banner" role="status" aria-live="polite">
           <div class="cnip-live-banner__top">
-            <span><Icon icon="lucide:workflow" :width="15" /> {{ currentAgent?.label || '等待文档 Agent' }}</span>
-            <strong>{{ Math.round(progress) }}%</strong>
+            <span><Icon icon="lucide:workflow" :width="15" /> {{ phaseLabel }}</span>
+            <strong>{{ savedWithoutTrace ? '未留存' : traceError || attempt === null ? '待回读' : `${Math.round(progress)}%` }}</strong>
           </div>
-          <div class="cnip-live-banner__track"><span :style="{ width: `${Math.min(100, Math.max(0, progress))}%` }"></span></div>
-          <p>{{ currentEvent ? eventTitle(currentEvent) : '任务已建立，等待 Agent 接收文件' }} · {{ Math.floor(progress / 25) }} / 4 个后端检查点完成</p>
+          <div class="cnip-live-banner__track"><span :style="{ width: `${traceError || attempt === null ? 0 : Math.min(100, Math.max(0, progress))}%` }"></span></div>
+          <p>{{ savedWithoutTrace ? '此任务没有留下可回放的解析进度。' : traceError ? '进度暂不可读取，请稍后刷新。' : currentEvent ? eventTitle(currentEvent) : '任务已建立，等待开始读取文件' }}<template v-if="!traceError && attempt !== null && !savedWithoutTrace"> · {{ Math.floor(progress / 25) }} / 4 步完成</template></p>
         </div>
 
-        <div class="cnip-canvas">
+        <div v-if="live" class="cnip-live-workspace">
+          <div class="cnip-live-workspace__intro">
+            <strong>{{ failed ? '解析在这里中断' : candidateReady ? '已取得可核对的简历候选' : '正在从原文整理事实' }}</strong>
+            <p>{{ failed ? '已完成的步骤仍可在右侧查看；未完成的步骤不会补画结果。' : candidateReady ? '请到左侧对照原文核对。这里记录解析交接，不代表能力画像或岗位匹配已完成。' : '下方只展示服务端已经写入的检查点；画像分数要等核对后再生成。' }}</p>
+          </div>
+          <ol class="cnip-live-milestones">
+            <li v-for="(agent, index) in agentStates" :key="agent.name" :class="`cnip-live-milestone--${agent.state}`">
+              <span class="cnip-live-milestone__index">{{ String(index + 1).padStart(2, '0') }}</span>
+              <div>
+                <strong>{{ agent.label }}</strong>
+                <p>{{ milestoneDetails[index] || (agent.state === 'running' ? '正在处理，等待后端检查点' : agent.state === 'done' ? '检查点已写入' : failed ? '未执行' : '等待前一步完成') }}</p>
+              </div>
+              <span class="cnip-live-milestone__state">{{ agent.state === 'done' ? '已完成' : agent.state === 'running' ? '进行中' : failed ? '未执行' : '待开始' }}</span>
+            </li>
+          </ol>
+        </div>
+
+        <div v-else class="cnip-canvas">
           <section class="cnip-surface cnip-surface--header">
             <div class="cnip-profile">
               <span class="cnip-skeleton cnip-skeleton--avatar"></span>
@@ -337,11 +363,11 @@ const actionWidths = ['106px', '132px', '92px']
       </article>
     </div>
 
-    <aside class="cnip-dashboard-side" aria-label="多 Agent 协作轨迹">
+    <aside class="cnip-dashboard-side" aria-label="简历解析进度">
         <div class="cnip-console__head">
           <div class="cnip-console__title-wrap">
-            <span class="cnip-console__eyebrow">系统仪表盘</span>
-            <span class="cnip-console__title">{{ live || traceOnly ? '简历解析多 Agent 轨迹 · 服务端实时记录' : '分析启动后，Agent 进度与日志会在这里实时出现。' }}</span>
+            <span class="cnip-console__eyebrow">简历解析</span>
+            <span class="cnip-console__title">{{ live || traceOnly ? '本次简历的解析进度' : '开始后将在这里看到进度' }}</span>
           </div>
           <div class="cnip-console__controls" aria-hidden="true">
             <span class="cnip-console__control"></span>
@@ -351,42 +377,23 @@ const actionWidths = ['106px', '132px', '92px']
 
         <template v-if="live || traceOnly">
           <div class="cnip-live-status">
-            <div><span>PHASE</span><strong>{{ currentAgent?.label || '等待接收' }}</strong></div>
-            <div><span>STATUS</span><strong>{{ traceStatus }}</strong></div>
-            <div><span>ATTEMPT</span><strong>{{ attempt === null ? '待服务端确认' : attempt === 0 ? '等待领取' : `第 ${attempt} 次执行` }}</strong></div>
-            <div><span>PROGRESS</span><strong>{{ traceError ? '暂不可读取' : attempt === null ? '等待后端轨迹' : `${Math.round(progress)}% · ${Math.floor(progress / 25)}/4 检查点` }}</strong></div>
+            <div><span>当前阶段</span><strong>{{ phaseLabel }}</strong></div>
+            <div><span>任务状态</span><strong>{{ traceStatus }}</strong></div>
+            <div><span>处理情况</span><strong>{{ attemptLabel }}</strong></div>
             <div class="cnip-live-status__track"><span :style="{ width: `${traceError || attempt === null ? 0 : Math.min(100, Math.max(0, progress))}%` }"></span></div>
+            <p class="cnip-live-status__note">{{ progressLabel }}；这里仅表示简历解析检查点，不代表画像已完成。</p>
           </div>
           <div v-if="showTeam" class="cnip-team">
-            <div class="cnip-team__heading">AGENT TEAM <span>真实任务分工</span></div>
+            <div class="cnip-team__heading">四步解析进度 <span>根据实际记录更新</span></div>
             <div v-for="(agent, index) in agentStates" :key="agent.name" class="cnip-team__agent" :class="`cnip-team__agent--${agent.state}`">
               <span class="cnip-team__index">0{{ index + 1 }}</span>
-              <div><strong>{{ agent.name }}</strong><small>{{ agent.label }}</small></div>
+              <div><strong>{{ agent.label }}</strong><small v-if="milestoneDetails[index]">{{ milestoneDetails[index] }}</small></div>
               <span class="cnip-team__state">{{ agent.state === 'done' ? '完成' : agent.state === 'running' ? '执行中' : '等待' }}</span>
             </div>
           </div>
-          <p v-else class="cnip-legacy-note">这份任务生成于多 Agent 交接记录上线前；下方只展示当时实际保存的阶段日志，不补造协作步骤。</p>
-          <div class="cnip-trace-head">CURRENT ATTEMPT TRACE <span>{{ trace.length }} 条记录</span></div>
-          <p v-if="traceError" class="cnip-trace-error">轨迹暂不可读取：{{ traceError }}</p>
-          <div class="cnip-trace-list" aria-live="polite">
-            <article v-for="event in trace" :key="event.event_id" class="cnip-trace-event" :class="{ 'cnip-trace-event--handoff': event.kind === 'handoff', 'cnip-trace-event--error': event.kind === 'error' }">
-              <div class="cnip-trace-event__top"><span>{{ event.actor }}</span><time>{{ event.occurred_at.slice(11, 19) }}</time></div>
-              <strong>{{ eventTitle(event) }}</strong>
-              <p>{{ eventDetail(event) }}</p>
-            </article>
-            <p v-if="!trace.length" class="cnip-trace-empty">等待第一条服务端 Agent 记录…</p>
-          </div>
-          <details v-if="historyTrace.length" class="cnip-trace-history">
-            <summary>输入收据与历史尝试 <span>{{ historyTrace.length }} 条 · 不计入当前 Agent 进度</span></summary>
-            <div class="cnip-trace-history__list">
-              <article v-for="event in historyTrace" :key="event.event_id" class="cnip-trace-event" :class="{ 'cnip-trace-event--handoff': event.kind === 'handoff', 'cnip-trace-event--error': event.kind === 'error' }">
-                <div class="cnip-trace-event__top"><span>{{ eventAttemptLabel(event) }} · {{ event.actor }}</span><time>{{ event.occurred_at.slice(11, 19) }}</time></div>
-                <strong>{{ eventTitle(event) }}</strong>
-                <p>{{ eventDetail(event) }}</p>
-              </article>
-            </div>
-          </details>
-          <small v-if="taskId" class="cnip-trace-task">{{ taskId }}</small>
+          <p v-else class="cnip-legacy-note">{{ savedWithoutTrace ? '简历内容已保存，可以继续核对；这份历史记录没有可查看的解析进度。' : '这份历史简历没有完整的分步进度，请以已保存的核对结果为准。' }}</p>
+          <p v-if="traceError" class="cnip-trace-error">解析进度暂不可读取，请稍后刷新；已保存的简历内容不受影响。</p>
+          <p v-if="!showTeam" class="cnip-trace-empty">{{ savedWithoutTrace ? '简历已确认，可以查看当前结果。' : '解析进度以已完成的步骤为准。' }}</p>
         </template>
         <template v-else>
         <div class="cnip-console__status-list">
@@ -398,7 +405,7 @@ const actionWidths = ['106px', '132px', '92px']
 
         <div class="cnip-console__hintline">
           <Icon icon="lucide:bot" :width="12" />
-          <span>分析启动后，当前阶段与关键动作会先出现在这里。</span>
+          <span>开始后，这里会显示简历解析的关键步骤。</span>
         </div>
 
         <div class="cnip-console__logs">
@@ -432,14 +439,26 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-live-banner__track, .cnip-live-status__track { height: 5px; border-radius: 99px; background: #ded9d3; overflow: hidden; margin-top: 10px; }
 .cnip-live-banner__track span, .cnip-live-status__track span { display: block; height: 100%; background: #a43c20; transition: width .45s ease; }
 .cnip-live-banner p { margin: 7px 0 0; color: #795e50; font-size: 11px; }
+.cnip-live-workspace { flex: 1; min-height: 0; overflow-y: auto; padding: clamp(20px, 3vw, 36px); }
+.cnip-live-workspace__intro { max-width: 560px; margin-bottom: 24px; }
+.cnip-live-workspace__intro strong { color: var(--color-text, #111); font-size: clamp(18px, 2vw, 24px); font-weight: 650; }
+.cnip-live-workspace__intro p { max-width: 52ch; margin: 8px 0 0; color: var(--color-text-muted, #666); font-size: 13px; line-height: 1.65; }
+.cnip-live-milestones { display: grid; gap: 0; max-width: 660px; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-border, #cbc8c2); }
+.cnip-live-milestones li { display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: start; gap: 14px; padding: 19px 0; border-bottom: 1px solid var(--color-border, #cbc8c2); }
+.cnip-live-milestone__index { color: #9c8f84; font-size: 11px; font-variant-numeric: tabular-nums; }
+.cnip-live-milestones strong { color: var(--color-text, #111); font-size: 15px; font-weight: 600; }
+.cnip-live-milestones p { margin: 5px 0 0; color: var(--color-text-muted, #666); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.cnip-live-milestone__state { color: #776f68; font-size: 11px; white-space: nowrap; }
+.cnip-live-milestone--done .cnip-live-milestone__state { color: #41755b; }
+.cnip-live-milestone--running .cnip-live-milestone__state { color: #a43c20; }
 .cnip-live-status { padding: 12px 14px; display: grid; gap: 8px; border-bottom: 1px solid #303030; }
 .cnip-live-status > div:not(.cnip-live-status__track) { display: flex; justify-content: space-between; gap: 8px; font: 10px Consolas, monospace; }
 .cnip-live-status span { color: #818181; }
 .cnip-live-status strong { color: #e5dfd8; font-weight: 500; text-align: right; }
 .cnip-live-status__track { background: #363636; margin: 1px 0 0; }
 .cnip-team { padding: 13px 12px; border-bottom: 1px solid #303030; }
-.cnip-team__heading, .cnip-trace-head { color: #c35a3a; font: 700 10px Consolas, monospace; letter-spacing: .08em; }
-.cnip-team__heading span, .cnip-trace-head span { color: #777; font-weight: 400; letter-spacing: 0; float: right; }
+.cnip-team__heading { color: #c35a3a; font: 700 10px Consolas, monospace; letter-spacing: .08em; }
+.cnip-team__heading span { color: #777; font-weight: 400; letter-spacing: 0; float: right; }
 .cnip-team__agent { display: grid; grid-template-columns: 20px 1fr auto; gap: 7px; align-items: center; padding: 9px 0; border-bottom: 1px solid #292929; opacity: .55; }
 .cnip-team__agent:last-child { border-bottom: 0; }
 .cnip-team__agent--running, .cnip-team__agent--done { opacity: 1; }
@@ -450,8 +469,11 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-team__agent--running .cnip-team__state { color: #e8ac5c; }
 .cnip-team__agent--done .cnip-team__state { color: #79bf94; }
 .cnip-legacy-note { margin: 0; padding: 12px 14px; border-bottom: 1px solid #303030; color: #a9a09a; font-size: 11px; line-height: 1.6; }
-.cnip-trace-head { padding: 12px 14px 9px; }
-.cnip-trace-list { overflow-y: auto; flex: 1; min-height: 80px; padding: 0 11px 12px; display: flex; flex-direction: column; gap: 7px; }
+.cnip-trace-details { border-bottom: 1px solid #303030; }
+.cnip-trace-details > summary { display: flex; justify-content: space-between; gap: 8px; padding: 13px 14px; cursor: pointer; list-style: none; color: #e9e2db; font-size: 12px; font-weight: 650; }
+.cnip-trace-details > summary::-webkit-details-marker { display: none; }
+.cnip-trace-details > summary span { color: #9b9b9b; font-weight: 400; }
+.cnip-trace-list { overflow-y: auto; max-height: 50vh; padding: 0 11px 12px; display: flex; flex-direction: column; gap: 7px; }
 .cnip-trace-event { border-left: 2px solid #5d5d5d; background: #232323; padding: 8px 9px; border-radius: 0 6px 6px 0; }
 .cnip-trace-event--handoff { border-color: #cb673f; background: #2d231f; }
 .cnip-trace-event--error { border-color: #d56262; }
@@ -464,7 +486,6 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-trace-history summary { display: flex; justify-content: space-between; gap: 8px; padding: 10px 14px; cursor: pointer; }
 .cnip-trace-history summary span { color: #777; text-align: right; }
 .cnip-trace-history__list { display: grid; gap: 7px; max-height: 190px; overflow-y: auto; padding: 0 11px 11px; }
-.cnip-trace-task { color: #666; font: 9px Consolas, monospace; padding: 6px 14px 10px; }
 
 .cnip-portrait-side {
   flex: 1;
@@ -1387,4 +1408,75 @@ const actionWidths = ['106px', '132px', '92px']
     animation: none;
   }
 }
+
+/* 真实任务的常驻过程栏沿用宣纸、墨色和朱砂，不做整栏黑色调试终端。 */
+.cnip-shell--trace-only .cnip-dashboard-side {
+  width: 100%;
+  height: 100%;
+  background: var(--color-background, #f5f5f3);
+  border-left: 0;
+  color: var(--color-text, #1a1a1a);
+  font-family: var(--font-ui, 'Noto Sans SC', sans-serif);
+}
+.cnip-shell--trace-only .cnip-console__head,
+.cnip-shell--trace-only .cnip-live-status,
+.cnip-shell--trace-only .cnip-team,
+.cnip-shell--trace-only .cnip-legacy-note,
+.cnip-shell--trace-only .cnip-trace-history {
+  background: #fff;
+  border-color: var(--color-border, #cbcbc8);
+}
+.cnip-shell--trace-only .cnip-console__head { padding: 18px 18px 15px; }
+.cnip-shell--trace-only .cnip-console__controls { display: none; }
+.cnip-shell--trace-only .cnip-console__eyebrow { color: var(--color-primary-dark, #8b1a00); }
+.cnip-shell--trace-only .cnip-console__title {
+  color: var(--color-text, #1a1a1a);
+  font-size: 15px;
+  font-weight: 650;
+}
+.cnip-shell--trace-only .cnip-live-status { padding: 14px 18px; gap: 9px; }
+.cnip-shell--trace-only .cnip-live-status > div:not(.cnip-live-status__track) {
+  font: 12px/1.4 var(--font-ui, 'Noto Sans SC', sans-serif);
+}
+.cnip-shell--trace-only .cnip-live-status span { color: var(--color-text-muted, #666); }
+.cnip-shell--trace-only .cnip-live-status strong { color: var(--color-text, #1a1a1a); }
+.cnip-shell--trace-only .cnip-live-status__track { background: var(--parchment-200, #ededea); }
+.cnip-live-status__note { margin: 2px 0 0; color: #5d5954; font: 11px/1.5 var(--font-ui, 'Noto Sans SC', sans-serif); }
+.cnip-shell--trace-only .cnip-team { padding: 0 18px; }
+.cnip-shell--trace-only .cnip-team__heading {
+  padding: 13px 0;
+  color: var(--color-text, #1a1a1a);
+  font: 600 12px/1.4 var(--font-ui, 'Noto Sans SC', sans-serif);
+}
+.cnip-shell--trace-only .cnip-team__heading span { color: var(--color-text-muted, #666); }
+.cnip-shell--trace-only .cnip-team__agent { border-color: var(--color-border, #cbcbc8); opacity: 1; }
+.cnip-shell--trace-only .cnip-team__agent strong,
+.cnip-shell--trace-only .cnip-team__index { color: var(--color-text, #1a1a1a); }
+.cnip-shell--trace-only .cnip-team__agent small,
+.cnip-shell--trace-only .cnip-team__state { color: var(--color-text-muted, #666); }
+.cnip-shell--trace-only .cnip-trace-details { border-color: var(--color-border, #cbcbc8); }
+.cnip-shell--trace-only .cnip-trace-details > summary { color: var(--color-text, #1a1a1a); padding: 14px 18px; font: 650 12px/1.4 var(--font-ui, 'Noto Sans SC', sans-serif); }
+.cnip-shell--trace-only .cnip-trace-details > summary span { color: var(--color-text-muted, #666); }
+.cnip-shell--trace-only .cnip-trace-list { padding: 0 12px 16px; gap: 8px; }
+.cnip-shell--trace-only .cnip-trace-event {
+  padding: 11px 12px;
+  border: 1px solid var(--color-border, #cbcbc8);
+  border-radius: 8px;
+  background: #fff;
+}
+.cnip-shell--trace-only .cnip-trace-event--handoff { border-color: #c7a68f; }
+.cnip-shell--trace-only .cnip-trace-event--error { border-color: #ad604d; }
+.cnip-trace-details > summary:focus-visible,
+.cnip-trace-history summary:focus-visible { outline: 2px solid var(--color-primary, #be2a00); outline-offset: 2px; }
+.cnip-shell--trace-only .cnip-trace-event__top { color: #57534e; font: 11px/1.4 var(--font-ui, 'Noto Sans SC', sans-serif); }
+.cnip-shell--trace-only .cnip-trace-event__top span { min-width: 0; overflow-wrap: anywhere; }
+.cnip-shell--trace-only .cnip-trace-event strong { color: var(--color-text, #1a1a1a); font-size: 14px; line-height: 1.4; }
+.cnip-trace-event__detail { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+.cnip-shell--trace-only .cnip-trace-event__detail { color: #5d5954; font: 12px/1.5 var(--font-ui, 'Noto Sans SC', sans-serif); }
+.cnip-shell--trace-only .cnip-trace-history { font-size: 11px; }
+.cnip-shell--trace-only .cnip-trace-history summary { color: var(--color-text, #1a1a1a); }
+.cnip-shell--trace-only .cnip-trace-history summary span { color: var(--color-text-muted, #666); }
+.cnip-shell--trace-only .cnip-trace-history__list { max-height: 50vh; padding: 0 12px 14px; }
+.cnip-shell--trace-only .cnip-legacy-note,
+.cnip-shell--trace-only .cnip-trace-empty { color: var(--color-text-muted, #666); }
 </style>

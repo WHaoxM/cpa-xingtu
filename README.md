@@ -7,7 +7,7 @@
 </br>
 <em>Frontend of CPA-Agent (cpa-xingtu) — Multi-Agent Career Planning Platform</em>
 
-[![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square&logo=gnu&logoColor=white)](./LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square&logo=gnu&logoColor=white)](https://github.com/WHaoxM/cpa-agent/blob/main/LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/WHaoxM/cpa-xingtu?style=flat-square&color=DAA520)](https://github.com/WHaoxM/cpa-xingtu/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/WHaoxM/cpa-xingtu?style=flat-square)](https://github.com/WHaoxM/cpa-xingtu/network)
 [![Vue](https://img.shields.io/badge/Vue-3.5-42b883?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
@@ -45,29 +45,15 @@
 - 三角色权限体系（学生 / 管理员 / 公共页面）
 - D3.js + Three.js 数据可视化（雷达图、弦图、Treemap、3D 书架、力导向气泡图）
 
-**数据说明**：生产构建与 Pages 部署使用 Mock（`public/fixtures` + `src/mock`），可独立运行，无需后端。  
-本地联调时设置 `VITE_API_MODE=http`，并通过 Vite proxy / `VITE_API_BASE_URL` 连接 CPA-Agent 后端。
+**数据说明**：Pages CI 强制 Mock（`public/fixtures` + `src/mock`），可独立运行，无需后端。`npm run dev` 则读取 `.env.development`，**默认是 HTTP 模式**，不是离线演示；离线请用 `npm run dev:mock`。本机真实联调使用 `npm run dev:backend`，不要把 Mock 登录当成正式后端账号。
 
 ### 🎯 我们的愿景
 
 让每一个"如果"都能看见结果——基于真实简历与岗位数据的个性化诊断，而非泛泛的职业鸡汤。
 
-## 📸 系统截图
+## 📸 界面预览
 
-<div align="center">
-<table>
-<tr>
-<td><img src="./docs/screenshots/career-analysis.png" alt="职业分析" width="100%"/></td>
-<td><img src="./docs/screenshots/career-ability.png" alt="能力图谱" width="100%"/></td>
-</tr>
-<tr>
-<td><img src="./docs/screenshots/career-report.png" alt="职业报告" width="100%"/></td>
-<td><img src="./docs/screenshots/talent-portrait.png" alt="人才画像" width="100%"/></td>
-</tr>
-</table>
-</div>
-
-> 截图以实际在线 Demo 为准。
+本仓未分发上述历史截图文件。运行 `npm run dev:mock` 或访问[在线 Mock 演示](https://whaoxm.github.io/cpa-xingtu/)查看当前页面；静态演示不代表后端业务结果。
 
 ## 🛠️ 技术栈
 
@@ -127,28 +113,29 @@
 ### 本地运行
 
 ```bash
-# 安装依赖
-npm install
+# 在 cpa-xingtu 仓库根目录，Node ^20.19.0 || >=22.12.0
+npm ci
 
-# 启动开发服务器（自动打开浏览器）
-npm run dev
+# 纯前端演示（无需后端）
+npm run dev:mock
 # → http://localhost:5173
 
 # 类型检查
 npm run type-check
 
-# 生产构建
+# 生产构建（Pages CI 强制 VITE_API_MODE=mock；本地须确认没有
+# .env.local 等覆盖文件将模式改回 http）
 npm run build
 
 # 预览构建产物
 npm run preview
 ```
 
-**Node 版本要求**：`^20.19.0 || >=22.12.0`
+常规 `npm run dev` 走 `.env.development` 的 HTTP 配置，会请求本机 `127.0.0.1:5001`；没启动后端时出现接口错误是预期现象。不要复制 `.env.example` 到 `.env.local` 后误以为进入 Mock 模式。
 
 ### 本地联调（可选）
 
-先按主仓库说明启动 Docker MySQL/Neo4j/Redis，以及宿主机 `mkg` 后端。后端须为 `CPA_DEMO_MODE=false`，配置随机、至少 32 字符的 `SECRET_KEY`；仅本机 HTTP 联调时设置 `CPA_AUTH_COOKIE_SECURE=false` 并绑定 `127.0.0.1`。完成账号 MySQL 迁移后，再启动**独立于默认 5173/mock 进程**的联调前端：
+先按主仓库说明启动 Docker MySQL/Neo4j/Redis，以及宿主机 `mkg` 后端。**职途导航的异步简历解析还必须单独启动 `cpa.pipeline` Celery worker**；只开 Flask 和前端会保存任务但不会解析，Beat 也不能代替 worker。后端须为 `CPA_DEMO_MODE=false`，配置随机、至少 32 字符的 `SECRET_KEY`；仅本机 HTTP 联调时设置 `CPA_AUTH_COOKIE_SECURE=false` 并绑定 `127.0.0.1`。完成账号 MySQL 迁移后，再启动**独立于默认 5173/mock 进程**的联调前端：
 
 ```powershell
 Copy-Item .env.backend-dev.example .env.backend-dev
@@ -230,7 +217,7 @@ src/
 
 ## 💾 数据存储
 
-使用 Pinia + pinia-plugin-persistedstate 实现数据持久化：
+演示模式使用 Pinia + pinia-plugin-persistedstate 缓存部分本地状态；这不是服务端持久化证据。HTTP 模式以 owner 范围内的后端记录为准：
 
 - 用户登录状态存储在 localStorage
 - 学习进度自动同步
@@ -251,7 +238,7 @@ src/
 
 - **Flask 后端** - API、服务层、Agent 引擎
 - **L0–L4 管线** - 简历解析 → 图谱构建 → 四维画像 → 人岗匹配 → 报告生成
-- **双引擎 Agent** - LangGraph（主） + ReAct（备）+ 12 工具
+- **多模式 Agent** - Supervisor 为默认运行时；旧 LangGraph/ReAct 默认关闭
 - **混合数据层** - MySQL · Neo4j · Redis · Milvus
 - **知识图谱** - 技能/岗位/职业路径关系网络
 
@@ -259,7 +246,7 @@ src/
 
 ## 📜 开源协议
 
-本项目基于 [GNU Affero General Public License v3.0](./LICENSE) 开源。
+项目协议见主仓库的 [GNU Affero General Public License v3.0](https://github.com/WHaoxM/cpa-agent/blob/main/LICENSE)。当前前端独立仓库尚无本地 `LICENSE` 文件，分发前需确认前端仓库的授权文件与声明一致。
 
 ## 📈 Star History
 

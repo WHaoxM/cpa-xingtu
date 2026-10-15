@@ -1,6 +1,6 @@
 # Demo Fixtures
 
-静态演示数据，供 `VITE_API_MODE=mock` 使用。GitHub Pages 部署默认走此目录，**不会请求后端**。
+静态演示数据，供 `VITE_API_MODE=mock` 使用。GitHub Pages CI 强制 Mock，**不会请求 CPA-Agent 后端**。普通 `npm run dev` 默认 HTTP；离线复现请在本仓库执行 `npm ci`、`npm run dev:mock`。
 
 ## 加载方式
 
@@ -33,7 +33,7 @@ Pages 上即 `/cpa-xingtu/fixtures/...`。
 ## 约定
 
 - 统一 envelope：`{ "success": true, "data": ... }`
-- 写操作（收藏、进度、消息已读）复用 canned ok / 原列表 fixture，**不持久化**
+- 写操作（收藏、进度、消息已读）复用 canned ok / 原列表 fixture，**不写后端**；浏览器本地状态也不能当作服务端持久化证明
 - 缺文件时对应 API 应降级或返回空，避免整页崩溃
 
 ## 本地预览

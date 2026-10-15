@@ -5,11 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CPA Xingtu</title>
   <script>
-    // GitHub Pages SPA redirect - redirects all paths to index.html
-    const path = window.location.pathname.replace(/^\/cpa-xingtu/, '');
-    const hash = window.location.hash;
-    const search = window.location.search;
-    window.location.href = '/cpa-xingtu/' + search + hash;
+    // GitHub Pages serves this file for SPA routes. Carry the route through
+    // the root page so index.html can restore it before Vue Router starts.
+    const base = '/cpa-xingtu/';
+    const route = window.location.pathname.startsWith(base)
+      ? window.location.pathname.slice(base.length) + window.location.search + window.location.hash
+      : '';
+    window.location.replace(base + (route ? '?__spa_redirect=' + encodeURIComponent(route) : ''));
   </script>
 </head>
 <body>

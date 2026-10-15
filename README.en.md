@@ -7,7 +7,7 @@
 </br>
 <em>多智能体职业规划决策平台 · 前端交互层</em>
 
-[![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square&logo=gnu&logoColor=white)](./LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL--3.0-blue?style=flat-square&logo=gnu&logoColor=white)](https://github.com/WHaoxM/cpa-agent/blob/main/LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/WHaoxM/cpa-xingtu?style=flat-square&color=DAA520)](https://github.com/WHaoxM/cpa-xingtu/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/WHaoxM/cpa-xingtu?style=flat-square)](https://github.com/WHaoxM/cpa-xingtu/network)
 [![Vue](https://img.shields.io/badge/Vue-3.5-42b883?style=flat-square&logo=vue.js&logoColor=white)](https://vuejs.org/)
@@ -34,8 +34,7 @@
 | Student | student001 | 123456 |
 | Admin | admin001 | 123456 |
 
-> GitHub Pages / production builds default to **`VITE_API_MODE=mock`** (fixtures only, no backend).  
-> Local mock preview: `npm run dev:mock`. Backend integration: set `VITE_API_MODE=http` in `.env.local`.
+> GitHub Pages CI forces **`VITE_API_MODE=mock`** (fixtures only, no backend). Local mock preview: `npm run dev:mock`. Plain `npm run dev` reads `.env.development` and defaults to **HTTP**, not Mock. Use the isolated `npm run dev:backend` for account-backed integration.
 
 ## ⚡ Overview
 
@@ -45,8 +44,7 @@ This demo repository showcases the **frontend interactive layer** of the CPA-Age
 - Three-role permission system (Student / Admin / Public pages)
 - D3.js + Three.js data visualization (radar charts, chord diagrams, treemaps, 3D bookshelves, force-directed bubble charts)
 
-**Data Note**: All pages use Mock data by default and can run independently without backend dependencies.  
-For local integration, connect to the CPA-Agent backend via `VITE_API_BASE_URL`.
+**Data note**: The Pages build uses Mock data; some pages can use backend APIs in HTTP mode while other pages still use fixtures or local demo data. Mock login is not a backend account.
 
 ### 🎯 Our Vision
 
@@ -110,17 +108,17 @@ Visit the [Live Demo](https://whaoxm.github.io/cpa-xingtu/) directly and log in 
 ### Local Run
 
 ```bash
-# Install dependencies
-npm install
+# From the cpa-xingtu repository root
+npm ci
 
-# Start dev server (auto-opens browser)
-npm run dev
+# Offline frontend demo
+npm run dev:mock
 # → http://localhost:5173
 
 # Type check
 npm run type-check
 
-# Production build
+# Production build (CI forces Mock; check local .env.local overrides)
 npm run build
 
 # Preview build output
@@ -131,30 +129,25 @@ npm run preview
 
 ### Local Integration (Optional)
 
-To connect to the CPA-Agent backend for real integration:
+First follow the main repository's [deployment steps](https://github.com/WHaoxM/cpa-agent/blob/main/DEPLOY.md): start MySQL/Neo4j/Redis, migrate to Alembic head, configure strict mode (`CPA_DEMO_MODE=false`) and a random `SECRET_KEY` of at least 32 characters, then start Flask. Resume/portrait/matching tasks additionally require a `cpa.pipeline` Celery worker; Beat scans for recoverable tasks. Use `CPA_AUTH_COOKIE_SECURE=false` only on local loopback HTTP. In a separate terminal:
 
-```bash
-# Copy environment variable template
-cp .env.example .env.local
-# Windows PowerShell:
-# Copy-Item .env.example .env.local
+```powershell
+Copy-Item .env.backend-dev.example .env.backend-dev
+npm run dev:backend
+# http://127.0.0.1:5174
 ```
 
-`.env.local` configuration:
-
-```env
-VITE_API_BASE_URL=http://127.0.0.1:5001
-```
+`.env.backend-dev` uses `VITE_API_MODE=http` and proxies same-origin `/api` to `127.0.0.1:5001`. Register a new student account or log in with an existing **backend** account; Mock credentials do not work here. New `acct_*` accounts do not inherit historical `student_001` data. The proxy does not inject a development identity, and HTTP authentication failures do not fall back to Mock.
 
 Backend integration points already connected:
 
 - `student/career-analysis`: `GET /api/career/landscape`
-- `student/ai-assistant`: `POST /api/agent/chat` (`mode=demo`)
-- `student/career-navigation`: `POST /api/pipeline/ext/parse/resume`, `POST /api/pipeline/trigger`, `GET /api/pipeline/status/{task_id}`
+- `student/ai-assistant`: `POST /api/agent/chat` with the authenticated Principal
+- `student/career-navigation`: owner-scoped `/api/profile/student/upload|confirm|pipeline` and `/api/pipeline/events/{task_id}`; async parsing needs the worker
 - `student/career-report`: `POST /api/report/generate`
 - `student/my-reports`: `GET /api/report/list`, `GET /api/report/{report_id}`
 
-Pages not connected to the backend retain Mock data as fallback.
+Pages not connected to the backend retain Mock data for display. HTTP mode does not silently fall back to Mock for authentication or authoritative task results. Check `GET /health` through port 5174, then register/login and verify `/api/auth/me`; a protected student resource should return 401 before login.
 
 ## 📁 Project Structure
 
@@ -234,7 +227,7 @@ This demo repository is the frontend presentation layer of CPA-Agent (Career Sta
 
 - **Flask Backend** - API, service layer, Agent engine
 - **L0–L4 Pipeline** - Resume parsing → Graph building → Four-dimensional portrait → Job matching → Report generation
-- **Dual-Engine Agent** - LangGraph (primary) + ReAct (fallback) + 12 tools
+- **Multi-mode Agent** - Supervisor is the default runtime; legacy LangGraph/ReAct engines are off by default
 - **Hybrid Data Layer** - MySQL · Neo4j · Redis · Milvus
 - **Knowledge Graph** - Skill/job/career path relationship network
 
@@ -242,7 +235,7 @@ Main project repository and docs: [CPA-Agent Main Repository](https://github.com
 
 ## 📜 License
 
-This project is open-sourced under the [GNU Affero General Public License v3.0](./LICENSE).
+The license declaration points to the main repository's [GNU Affero General Public License v3.0](https://github.com/WHaoxM/cpa-agent/blob/main/LICENSE). This standalone frontend repository currently has no local `LICENSE` file; confirm its distributed license file before release.
 
 ## 📈 Star History
 

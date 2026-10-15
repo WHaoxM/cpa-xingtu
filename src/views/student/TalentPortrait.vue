@@ -30,7 +30,6 @@ function dimBarStyle(idx: number, score: number): Record<string, string> {
 
 type RealPortraitData = {
   status: 'partial' | 'completed'
-  taskId: string
   name: string
   school: string
   major: string
@@ -41,9 +40,8 @@ type RealPortraitData = {
   skills: string[]
   projects: Array<{ name: string; role: string; isTeam: boolean | null; description: string }>
   competitions: Array<{ name: string; level: string; award: string }>
-  dimensions: Array<{ key: string; label: string; score: number | null; evidence: string[] }>
+  dimensions: Array<{ key: string; label: string; score: number | null; evidence: string[]; selfReported: boolean }>
   missingFacts: string[]
-  totalScore: number | null
 }
 
 const props = withDefaults(defineProps<{
@@ -65,6 +63,42 @@ const realFlowerData = computed(() => (props.realPortrait?.dimensions || []).map
 })))
 const realScoreCount = computed(() => props.realPortrait?.dimensions.filter(dimension => dimension.score !== null).length ?? 0)
 const realVisualKey = computed(() => props.realPortrait?.dimensions.map(dimension => dimension.score ?? 'pending').join('-') || '')
+const realSkillTerms = computed(() => {
+  const terms: Array<{ label: string; mentions: number }> = []
+  const byLabel = new Map<string, (typeof terms)[number]>()
+  for (const raw of props.realPortrait?.skills || []) {
+    const label = raw.trim()
+    if (!label) continue
+    const existing = byLabel.get(label)
+    if (existing) existing.mentions += 1
+    else {
+      const term = { label, mentions: 1 }
+      byLabel.set(label, term)
+      terms.push(term)
+    }
+  }
+  return terms
+})
+const realCompetitionGroups = computed(() => {
+  const groups: Array<{ name: string; levels: string[]; awards: string[]; mentions: number }> = []
+  const byName = new Map<string, (typeof groups)[number]>()
+  for (const competition of props.realPortrait?.competitions || []) {
+    const name = competition.name.trim()
+    if (!name) continue
+    let group = byName.get(name)
+    if (!group) {
+      group = { name, levels: [], awards: [], mentions: 0 }
+      byName.set(name, group)
+      groups.push(group)
+    }
+    group.mentions += 1
+    const level = competition.level && competition.level !== '其他' ? competition.level.trim() : ''
+    const award = competition.award && competition.award !== '其他' ? competition.award.trim() : ''
+    if (level && !group.levels.includes(level)) group.levels.push(level)
+    if (award && award !== level && !group.awards.includes(award)) group.awards.push(award)
+  }
+  return groups
+})
 
 const router = useRouter()
 const route = useRoute()
@@ -522,10 +556,10 @@ onBeforeUnmount(() => {
       <div class="tp-artifact__intro tp-real__intro">
         <span class="tp-portrait__section-lbl">职途导航 · 简历证据画像</span>
         <div class="tp-real__title-row">
-          <h1>{{ props.realPortrait.status === 'partial' ? '你的能力轮廓，正在形成' : '你的个人能力画像' }}</h1>
-          <span class="tp-real__state">{{ props.realPortrait.status === 'partial' ? '候选画像 · 未发布' : '已保存画像' }}</span>
+          <h1>{{ props.realPortrait.status === 'partial' ? '当前可了解的能力信息' : '你的个人能力画像' }}</h1>
+          <span class="tp-real__state">{{ props.realPortrait.status === 'partial' ? '当前结果 · 有待核对项' : '已保存画像' }}</span>
         </div>
-        <p>{{ props.realPortrait.status === 'partial' ? '真实简历已经进入画像链路；待核对维度保留空缺，不以零分或演示数据代替。' : '以下内容来自已保存的服务端画像及其对应简历，不使用本地演示分数。' }}</p>
+        <p>{{ props.realPortrait.status === 'partial' ? '这份结果来自已确认的简历。没有足够依据的维度留空，但已知经历和能力线索现在就可以阅读。' : '以下内容来自已保存的服务端画像及其对应简历，不使用本地演示分数。' }}</p>
         <button v-if="getApiMode() === 'http'" type="button" class="tp-real__agent-link" @click="discussCurrentPortrait">
           与 AI 助手讨论当前画像 <Icon icon="lucide:arrow-up-right" :width="15" />
         </button>
@@ -549,20 +583,11 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div class="tp-portrait__score-banner">
-          <div class="tp-portrait__score-card tp-portrait__score-card--completeness">
-            <span class="tp-portrait__score-val">{{ props.realPortrait.pagesObserved }}<em v-if="props.realPortrait.pageCount !== null"> / {{ props.realPortrait.pageCount }}</em></span>
-            <span class="tp-portrait__score-lbl">有文字证据页</span>
-          </div>
-          <div class="tp-portrait__score-card tp-portrait__score-card--honors">
-            <span class="tp-portrait__score-val">{{ realScoreCount }}<em> / {{ props.realPortrait.dimensions.length }}</em></span>
-            <span class="tp-portrait__score-lbl">有分数维度</span>
-          </div>
-          <div class="tp-portrait__score-card tp-portrait__score-card--competitiveness" :class="{ 'tp-real__score-pending': props.realPortrait.totalScore === null }">
-            <span class="tp-portrait__score-val">{{ props.realPortrait.totalScore === null ? '待核对' : props.realPortrait.totalScore }}<em v-if="props.realPortrait.totalScore !== null">分</em></span>
-            <span class="tp-portrait__score-lbl">综合竞争力</span>
-          </div>
-        </div>
+        <dl class="tp-real__result-summary">
+          <div><dt>现在已知</dt><dd>简历提及 {{ realSkillTerms.length }} 个不同技术词、{{ props.realPortrait.projects.length }} 项项目；{{ realScoreCount }} 个维度有可查看的依据分数。{{ props.realPortrait.pageCount !== null ? `已取得 ${props.realPortrait.pagesObserved} / ${props.realPortrait.pageCount} 页文字证据。` : '' }}</dd></div>
+          <div><dt>仍不确定</dt><dd>{{ props.realPortrait.missingFacts.length ? props.realPortrait.missingFacts.slice(0, 3).join('、') + (props.realPortrait.missingFacts.length > 3 ? '等依据' : '的依据') : '本次画像没有缺证维度；这不代表已经完成岗位匹配。' }}</dd></div>
+           <div><dt>可以先做</dt><dd>查看简历经历与诊断报告，再向下探索职业方向。若原简历有遗漏，可补充后重新上传核对；未知维度不会按零分计。</dd></div>
+        </dl>
       </div>
 
       <div class="tp-portrait__viz-row">
@@ -573,7 +598,7 @@ onBeforeUnmount(() => {
           <div v-for="(dimension, index) in props.realPortrait.dimensions" :key="dimension.key" class="tp-portrait__dim-item">
             <div class="tp-portrait__dim-top">
               <span class="tp-portrait__dim-label">{{ dimension.label }}</span>
-              <span class="tp-real__dim-status">{{ dimension.score === null ? '待核对' : props.realPortrait.status === 'partial' ? '候选分' : '已保存' }}</span>
+              <span class="tp-real__dim-status">{{ dimension.score === null ? '待核对' : dimension.selfReported ? '含用户自述' : props.realPortrait.status === 'partial' ? '候选分' : '已保存' }}</span>
             </div>
             <div class="tp-portrait__dim-bar-wrap">
               <div class="tp-portrait__dim-track" :class="{ 'tp-real__track-pending': dimension.score === null }">
@@ -582,7 +607,7 @@ onBeforeUnmount(() => {
               <span class="tp-portrait__dim-score">{{ dimension.score === null ? '—' : dimension.score }}</span>
             </div>
             <details v-if="dimension.evidence.length" class="tp-real__evidence">
-              <summary>查看 {{ dimension.evidence.length }} 条依据</summary>
+              <summary>查看 {{ dimension.evidence.length }} 条{{ dimension.selfReported ? '自述' : '依据' }}</summary>
               <ul><li v-for="(evidence, evidenceIndex) in dimension.evidence" :key="evidenceIndex">{{ evidence }}</li></ul>
             </details>
           </div>
@@ -591,14 +616,14 @@ onBeforeUnmount(() => {
       <p class="tp-real__legend">彩色花瓣与进度条表示服务端分数；灰色轮廓和虚线表示尚无可确认分数，而不是零分。</p>
 
       <div v-if="props.realPortrait.skills.length || props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-portrait__highlights tp-real__highlights">
-        <div class="tp-real__section-heading">
-          <div><span class="tp-portrait__section-lbl">简历中的实践</span><h2>做过的事，取得的成果</h2></div>
-          <span class="tp-real__source-label">依简历原有顺序 · 非能力排名</span>
+        <div v-if="props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-real__section-heading">
+          <div><span class="tp-portrait__section-lbl">简历中的实践</span><h2>项目与竞赛经历</h2></div>
+          <span class="tp-real__source-label">简历提取内容 · 可对照原件核对</span>
         </div>
-        <div class="tp-real__story-grid">
+        <div v-if="props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-real__story-grid">
           <section v-if="props.realPortrait.projects.length" class="tp-real__story-column" aria-label="项目经历">
             <div class="tp-real__column-heading"><Icon icon="lucide:layers-3" :width="17" /><h3>项目经历</h3><span>{{ props.realPortrait.projects.length }} 项</span></div>
-            <div v-for="(project, index) in props.realPortrait.projects.slice(0, 2)" :key="index" class="tp-portrait__project-card tp-real__project-card">
+            <div v-for="(project, index) in props.realPortrait.projects" :key="index" class="tp-portrait__project-card tp-real__project-card">
               <div class="tp-portrait__project-accent"></div>
               <div class="tp-portrait__project-body">
                 <div class="tp-real__project-title"><span class="tp-real__ordinal">{{ String(index + 1).padStart(2, '0') }}</span><h4>{{ project.name || '未命名项目' }}</h4></div>
@@ -606,51 +631,34 @@ onBeforeUnmount(() => {
                 <p v-if="project.description" class="tp-portrait__project-desc">{{ project.description }}</p>
               </div>
             </div>
-            <details v-if="props.realPortrait.projects.length > 2" class="tp-real__more">
-              <summary>查看其余 {{ props.realPortrait.projects.length - 2 }} 项项目 <Icon icon="lucide:chevron-down" :width="15" /></summary>
-              <div v-for="(project, index) in props.realPortrait.projects.slice(2)" :key="index" class="tp-portrait__project-card tp-real__project-card">
-                <div class="tp-portrait__project-accent"></div>
-                <div class="tp-portrait__project-body">
-                  <div class="tp-real__project-title"><span class="tp-real__ordinal">{{ String(index + 3).padStart(2, '0') }}</span><h4>{{ project.name || '未命名项目' }}</h4></div>
-                  <div v-if="project.role || project.isTeam !== null" class="tp-real__project-meta"><span v-if="project.role">{{ project.role }}</span><span v-if="project.isTeam !== null">{{ project.isTeam ? '团队项目' : '独立项目' }}</span></div>
-                  <p v-if="project.description" class="tp-portrait__project-desc">{{ project.description }}</p>
-                </div>
-              </div>
-            </details>
           </section>
-          <section v-if="props.realPortrait.competitions.length" class="tp-real__story-column tp-real__awards" aria-label="竞赛与荣誉">
-            <div class="tp-real__column-heading"><Icon icon="lucide:award" :width="17" /><h3>竞赛与荣誉</h3><span>{{ props.realPortrait.competitions.length }} 项</span></div>
-            <div v-for="(competition, index) in props.realPortrait.competitions.slice(0, 4)" :key="index" class="tp-real__award-row">
-              <span class="tp-real__award-mark"><Icon icon="lucide:trophy" :width="15" /></span>
-              <span class="tp-real__award-name">{{ competition.name }}</span>
-              <span v-if="competition.award && competition.award !== '其他'" class="tp-real__award-level">{{ competition.award }}</span>
-              <span v-else-if="competition.level && competition.level !== '其他'" class="tp-real__award-level">{{ competition.level }}</span>
+          <section v-if="props.realPortrait.competitions.length" class="tp-real__story-column tp-real__awards" aria-label="竞赛记录">
+            <div class="tp-real__column-heading"><Icon icon="lucide:award" :width="17" /><h3>竞赛记录</h3><span>{{ realCompetitionGroups.length }} 个名称</span></div>
+            <div v-for="competition in realCompetitionGroups" :key="competition.name" class="tp-real__award-row">
+              <span class="tp-real__award-content">
+                <strong class="tp-real__award-name">{{ competition.name }}</strong>
+                <small v-if="competition.mentions > 1" class="tp-real__award-detail">简历中同名记录 {{ competition.mentions }} 条，请核对是否为不同届次或奖项。</small>
+                <small v-if="competition.levels.length || competition.awards.length" class="tp-real__award-detail">
+                  <template v-if="competition.levels.length">提取到的级别：{{ competition.levels.join('、') }}</template>
+                  <template v-if="competition.levels.length && competition.awards.length">；</template>
+                  <template v-if="competition.awards.length">提取到的奖项：{{ competition.awards.join('、') }}</template>
+                </small>
+              </span>
             </div>
-            <details v-if="props.realPortrait.competitions.length > 4" class="tp-real__more">
-              <summary>查看其余 {{ props.realPortrait.competitions.length - 4 }} 项竞赛 <Icon icon="lucide:chevron-down" :width="15" /></summary>
-              <div v-for="(competition, index) in props.realPortrait.competitions.slice(4)" :key="index" class="tp-real__award-row">
-                <span class="tp-real__award-mark"><Icon icon="lucide:trophy" :width="15" /></span>
-                <span class="tp-real__award-name">{{ competition.name }}</span>
-                <span v-if="competition.award && competition.award !== '其他'" class="tp-real__award-level">{{ competition.award }}</span>
-                <span v-else-if="competition.level && competition.level !== '其他'" class="tp-real__award-level">{{ competition.level }}</span>
-              </div>
-            </details>
           </section>
         </div>
-        <div v-if="props.realPortrait.skills.length" class="tp-real__skill-area">
-          <div class="tp-real__column-heading"><Icon icon="lucide:sparkles" :width="16" /><h3>简历提及的技能</h3><span>{{ props.realPortrait.skills.length }} 项</span></div>
-          <div class="tp-portrait__tags tp-real__skills"><span v-for="(skill, index) in props.realPortrait.skills.slice(0, 10)" :key="skill + index" class="tp-portrait__tag tp-portrait__tag--gen">{{ skill }}</span></div>
-          <details v-if="props.realPortrait.skills.length > 10" class="tp-real__more tp-real__more--skills"><summary>查看其余 {{ props.realPortrait.skills.length - 10 }} 项技能 <Icon icon="lucide:chevron-down" :width="15" /></summary><div class="tp-portrait__tags tp-real__skills"><span v-for="(skill, index) in props.realPortrait.skills.slice(10)" :key="skill + index" class="tp-portrait__tag tp-portrait__tag--gen">{{ skill }}</span></div></details>
-          <p class="tp-real__hint">这些是简历中的原始技能词，不等同于已核定的能力分数。</p>
-        </div>
+        <details v-if="realSkillTerms.length" class="tp-real__skill-area">
+          <summary><Icon icon="lucide:list-checks" :width="16" /><span>核对简历中的技术词</span><small>{{ realSkillTerms.length }} 个不同词</small><Icon icon="lucide:chevron-down" :width="15" class="tp-real__skill-chevron" /></summary>
+          <p class="tp-real__hint">这里是原文提及的工具、技术和方法，可能包含重复；提及不等于掌握，也不能单独证明能力。</p>
+          <ul class="tp-real__skill-list"><li v-for="term in realSkillTerms" :key="term.label"><span>{{ term.label }}</span><small v-if="term.mentions > 1">提及 {{ term.mentions }} 次</small></li></ul>
+        </details>
       </div>
 
       <div v-if="props.realPortrait.missingFacts.length" class="tp-portrait__summary tp-real__followup">
         <span class="tp-portrait__section-lbl">下一步 · 补足可核对依据</span>
-        <p>{{ props.realPortrait.missingFacts.length }} 项事实仍需核对；未发布画像不能继续生成正式匹配与报告。这不代表你没有相关能力。</p>
+        <p>{{ props.realPortrait.missingFacts.length }} 项事实仍需核对；简历诊断独立整理，完成后可查看。正式岗位匹配仍要满足证据条件，这不代表你没有相关能力。</p>
         <div class="tp-real__fact-list"><span v-for="fact in props.realPortrait.missingFacts" :key="fact">{{ fact }}</span></div>
       </div>
-      <details class="tp-real__source"><summary>查看任务来源</summary><span>{{ props.realPortrait.taskId }}</span></details>
     </div>
 
     <!-- 初始加载中（Phase 1 到达前） -->
@@ -1746,6 +1754,11 @@ onBeforeUnmount(() => {
 .tp-real__agent-link:hover { filter: brightness(.92); }
 .tp-real__agent-link:focus-visible { outline: 2px solid var(--tp-red); outline-offset: 3px; }
 .tp-real__handoff-note { margin: 8px 0 0 !important; font-size: 11px; }
+.tp-real__result-summary { display: grid; gap: 0; margin: 0; padding: 6px 18px; border: 1px solid var(--tp-embedded-border); border-radius: 8px; background: color-mix(in srgb, var(--tp-panel) 8%, white); }
+.tp-real__result-summary > div { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 12px; padding: 11px 0; }
+.tp-real__result-summary > div + div { border-top: 1px solid var(--tp-embedded-border); }
+.tp-real__result-summary dt { color: var(--tp-red); font-size: 11px; font-weight: 700; white-space: nowrap; }
+.tp-real__result-summary dd { margin: 0; color: var(--tp-embedded-sub); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .tp-real__state {
   padding: 5px 11px;
   border: 1px solid color-mix(in srgb, var(--tp-red) 28%, var(--tp-embedded-border) 72%);
@@ -1785,23 +1798,23 @@ onBeforeUnmount(() => {
 .tp-real__project-meta { display: flex; flex-wrap: wrap; gap: 7px; padding-left: 33px; }
 .tp-real__project-meta span { color: var(--tp-embedded-sub); background: color-mix(in srgb, var(--tp-gold) 8%, white); border: 1px solid color-mix(in srgb, var(--tp-gold) 14%, var(--tp-embedded-border) 86%); border-radius: 999px; padding: 3px 9px; font-size: 11px; line-height: 1.3; }
 .tp-real__project-card .tp-portrait__project-desc { display: block; margin: 0; padding-left: 33px; color: var(--tp-embedded-sub); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; -webkit-line-clamp: unset; line-clamp: unset; }
-.tp-real__award-row { display: flex; align-items: center; gap: 11px; min-height: 55px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--tp-gold) 16%, var(--tp-embedded-border) 84%); border-radius: 8px; background: rgba(255,255,255,.8); }
-.tp-real__award-mark { width: 29px; height: 29px; border-radius: 8px; flex: none; display: grid; place-items: center; color: var(--tp-gold); background: color-mix(in srgb, var(--tp-gold) 10%, white); }
-.tp-real__award-name { flex: 1; min-width: 0; color: var(--tp-embedded-text); font-size: 12px; font-weight: 560; line-height: 1.5; overflow-wrap: anywhere; }
-.tp-real__award-level { flex: none; max-width: 80px; color: var(--tp-red); background: color-mix(in srgb, var(--tp-red) 7%, white); border-radius: 999px; padding: 4px 7px; font-size: 10px; line-height: 1.3; text-align: center; }
-.tp-real__more { display: flex; flex-direction: column; gap: 10px; }
-.tp-real__more summary { display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; min-height: 37px; padding: 6px 12px; border: 1px dashed color-mix(in srgb, var(--tp-red) 22%, var(--tp-embedded-border) 78%); border-radius: 8px; color: var(--tp-red); background: color-mix(in srgb, var(--tp-red) 3%, white); font-size: 11px; font-weight: 600; list-style: none; }
-.tp-real__more summary::-webkit-details-marker { display: none; }
-.tp-real__more summary:focus-visible { outline: 2px solid var(--tp-red); outline-offset: 2px; }
-.tp-real__more[open] summary svg { transform: rotate(180deg); }
-.tp-real__skill-area { border-top: 1px solid var(--tp-embedded-border); padding-top: 18px; display: flex; flex-direction: column; gap: 10px; }
-.tp-real__skills { margin: 2px 0; }
-.tp-page--embedded .tp-real__skills .tp-portrait__tag--gen {
-  background: color-mix(in srgb, var(--tp-gold) 8%, white);
-  color: var(--tp-embedded-sub);
-  border-color: color-mix(in srgb, var(--tp-gold) 20%, var(--tp-embedded-border) 80%);
-}
-.tp-real__hint { margin: 0; color: var(--tp-embedded-muted); font-size: 10px; }
+.tp-real__award-row { min-height: 55px; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--tp-gold) 16%, var(--tp-embedded-border) 84%); border-radius: 8px; background: rgba(255,255,255,.8); }
+.tp-real__award-content { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.tp-real__award-name { color: var(--tp-embedded-text); font-size: 12px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.tp-real__award-detail { color: var(--tp-embedded-sub); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.tp-real__skill-area { border-top: 1px solid var(--tp-embedded-border); padding-top: 14px; }
+.tp-real__skill-area > summary { display: flex; align-items: center; gap: 8px; min-height: 40px; color: var(--tp-embedded-text); cursor: pointer; list-style: none; font-size: 13px; font-weight: 650; }
+.tp-real__skill-area > summary::-webkit-details-marker { display: none; }
+.tp-real__skill-area > summary > svg:first-child { color: var(--tp-red); flex: none; }
+.tp-real__skill-area > summary small { margin-left: auto; color: var(--tp-embedded-muted); font-size: 11px; font-weight: 400; }
+.tp-real__skill-chevron { color: var(--tp-red); flex: none; transition: transform .2s ease; }
+.tp-real__skill-area[open] .tp-real__skill-chevron { transform: rotate(180deg); }
+.tp-real__skill-area > summary:focus-visible { outline: 2px solid var(--tp-red); outline-offset: 3px; border-radius: 4px; }
+.tp-real__hint { margin: 8px 0 5px; color: var(--tp-embedded-sub); font-size: 11px; line-height: 1.6; }
+.tp-real__skill-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 0 20px; margin: 0; padding: 0; list-style: none; }
+.tp-real__skill-list li { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; min-width: 0; padding: 8px 0; border-bottom: 1px solid var(--tp-embedded-border); color: var(--tp-embedded-text); font-size: 12px; line-height: 1.4; }
+.tp-real__skill-list li span { min-width: 0; overflow-wrap: anywhere; }
+.tp-real__skill-list li small { flex: none; color: var(--tp-embedded-muted); font-size: 10px; }
 .tp-real__followup { padding: 18px 20px; }
 .tp-real__followup p { margin: 0 0 12px; color: var(--tp-embedded-sub); font-size: 12px; line-height: 1.6; }
 .tp-real__fact-list { display: flex; flex-wrap: wrap; gap: 7px; }
@@ -1813,9 +1826,6 @@ onBeforeUnmount(() => {
   color: var(--tp-embedded-sub);
   font-size: 11px;
 }
-.tp-real__source { color: var(--tp-embedded-muted); font-size: 10px; }
-.tp-real__source summary { cursor: pointer; }
-.tp-real__source span { overflow-wrap: anywhere; }
 
 /* ══════════════════════════════════════════
    打印 / 导出报告样式

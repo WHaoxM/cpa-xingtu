@@ -31,6 +31,9 @@ export type ResumeCandidate = {
   }
   next_action?: string
   profile_ready?: boolean
+  portrait_needs_refresh?: boolean
+  user_self_report?: UserSelfReport | null
+  skill_exploration?: SkillExploration | null
   portrait_task?: {
     task_id: string
     status: string
@@ -43,6 +46,88 @@ export type ResumeCandidate = {
     action_available?: boolean
     resume_state?: string
   } | null
+}
+
+export type StudentWorkbenchState = {
+  run: { state: 'not_started' | 'queued' | 'running' | 'waiting_for_user' | 'settled' | 'failed'; task_id: string | null; l0_status?: string }
+  source_confirmation_task_id: string | null
+  based_on_previous_upload: boolean
+  analysis_run: { state: 'not_started' | 'running' | 'settled'; portrait_task_id: string | null; diagnostic_task_id: string | null; has_failures: boolean }
+  resume_diagnostic: { state: 'not_started' | 'processing' | 'ready' | 'partial' | 'failed' | 'stale'; report_id: string | null; task_id?: string; missing_sections?: string[]; next_action?: string }
+  portrait: {
+    state: 'not_started' | 'processing' | 'failed' | 'stale' | 'ready_with_unknowns' | 'ready_scored'
+    task_id: string | null
+    portrait_id?: string | number | null
+    snapshot_id?: string | null
+    dimensions: Record<'D1' | 'D2' | 'D3' | 'D4', number | null>
+    missing_fields: string[]
+    scoring_eligible: boolean
+    next_action?: string | null
+  }
+}
+
+export async function getStudentWorkbenchState() {
+  return httpGet<StudentWorkbenchState>('/api/profile/student/workbench')
+}
+
+export type PortraitSnapshot = {
+  snapshot_id: string
+  source_task_id: string
+  source_confirmation_task_id: string
+  source_self_report_revision: number
+  target_job_id: string | null
+  state: 'ready_with_unknowns' | 'ready_scored'
+  scoring_eligible: boolean
+  is_current: boolean
+  dimensions: Record<'D1' | 'D2' | 'D3' | 'D4', number | null>
+  missing_fields: string[]
+  created_at: string
+  portrait?: Record<string, unknown>
+}
+
+export async function getStudentPortraitSnapshots() {
+  return httpGet<{ current_snapshot_id: string | null; items: PortraitSnapshot[] }>(
+    '/api/profile/student/portrait-snapshots', { limit: 20 })
+}
+
+export async function getStudentPortraitSnapshot(snapshotId: string) {
+  if (!/^ps_[0-9a-f]{32}$/.test(snapshotId)) throw new Error('无效的画像版本')
+  return httpGet<PortraitSnapshot>(`/api/profile/student/portrait-snapshots/${snapshotId}`)
+}
+
+export type SelfReportItem = { level: '强' | '中' | '弱'; example: string } | null
+export type UserSelfReport = {
+  source_confirmation_task_id: string
+  revision: number
+  source_kind: 'user_self_report'
+  updated_at: string
+  items: Record<string, SelfReportItem>
+  portrait_analysis?: { task_id: string; delivery: string }
+}
+
+export type SkillExploration = {
+  source_confirmation_task_id: string
+  revision: number
+  source_kind: 'user_self_report'
+  scoring_eligible: false
+  updated_at: string
+  skills: string[]
+}
+
+export async function saveStudentSkillExploration(taskId: string, expectedRevision: number,
+  skills: string[]) {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的简历任务引用')
+  return httpPost<SkillExploration>('/api/profile/student/skill-exploration', {
+    task_id: taskId, expected_revision: expectedRevision, skills,
+  })
+}
+
+export async function saveStudentSelfReport(taskId: string, expectedRevision: number,
+  items: Record<string, SelfReportItem>) {
+  if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('无效的简历任务引用')
+  return httpPost<UserSelfReport>('/api/profile/student/self-report', {
+    task_id: taskId, expected_revision: expectedRevision, items,
+  })
 }
 
 export type ConfirmedPipelineResult = {
