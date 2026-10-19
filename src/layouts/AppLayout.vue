@@ -44,6 +44,23 @@ const activeTabKey = computed({
 
 const isImmersiveRoute = computed(() => Boolean(route.meta.immersive))
 
+const studentMobileTabs = [
+  { path: '/app/dashboard', label: '首页', icon: ICONS.home },
+  { path: '/app/student/career-analysis', label: '探索', icon: ICONS.compass },
+  { path: '/app/student/learning', label: '学习', icon: ICONS.bookOpen },
+  { path: '/app/student/my-reports', label: '报告', icon: ICONS.fileText },
+  { path: '/app/profile', label: '我的', icon: ICONS.user },
+]
+const studentMobileTabPaths = new Set(studentMobileTabs.map(tab => tab.path))
+const isStudentMobilePrimaryRoute = computed(() => isStudent.value && studentMobileTabPaths.has(route.path))
+const studentPrimaryRoutesWithOwnHeader = new Set(['/app/student/career-analysis'])
+const hasStudentPrimaryOwnHeader = computed(() =>
+  isStudentMobilePrimaryRoute.value && studentPrimaryRoutesWithOwnHeader.has(route.path),
+)
+const showStudentMobileAppHeader = computed(() =>
+  isStudentMobilePrimaryRoute.value && !hasStudentPrimaryOwnHeader.value,
+)
+
 const hiddenBookHeaderRoutes = new Set([
   '/app/dashboard',
   '/app/exams',
@@ -168,8 +185,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="shellRef" class="book-shell" :class="{ 'book-shell--immersive': isImmersiveRoute }">
-    <div v-if="!isImmersiveRoute || route.meta.keepTopNav" class="top-row">
+  <div ref="shellRef" class="book-shell" :class="{ 'book-shell--immersive': isImmersiveRoute, 'book-shell--dashboard': isStudent && route.path === '/app/dashboard', 'book-shell--student-main': isStudentMobilePrimaryRoute, 'book-shell--student-own-header': hasStudentPrimaryOwnHeader }">
+    <div
+      v-if="!isImmersiveRoute || route.meta.keepTopNav || showStudentMobileAppHeader"
+      class="top-row"
+      :class="{ 'top-row--mobile-only': isImmersiveRoute && showStudentMobileAppHeader && !route.meta.keepTopNav }"
+    >
       <div
         class="top-row__brand"
         role="button"
@@ -223,6 +244,20 @@ onBeforeUnmount(() => {
         </router-view>
       </main>
     </div>
+
+    <nav v-if="isStudentMobilePrimaryRoute" class="student-mobile-tabbar" aria-label="学生主导航">
+      <RouterLink
+        v-for="tab in studentMobileTabs"
+        :key="tab.path"
+        :to="tab.path"
+        class="student-mobile-tab"
+        :class="{ 'is-active': route.path === tab.path }"
+        :aria-current="route.path === tab.path ? 'page' : undefined"
+      >
+        <Icon :icon="tab.icon" :width="20" aria-hidden="true" />
+        <span>{{ tab.label }}</span>
+      </RouterLink>
+    </nav>
 
     <!-- ===== 移动端抽屉 ===== -->
     <el-drawer v-if="!isImmersiveRoute" v-model="drawerOpen" direction="ltr" size="82%" :with-header="false" class="mobile-drawer">
@@ -383,6 +418,56 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
+/* Student home only: warm editorial header, isolated from all other routes. */
+.book-shell--dashboard .top-row {
+  min-height: 60px;
+  padding: 8px 4.1%;
+  gap: 14px;
+  background: rgba(255, 253, 250, .96);
+  border-bottom-color: rgba(76, 60, 44, .08);
+  box-shadow: none;
+  backdrop-filter: blur(10px);
+}
+.book-shell--dashboard .top-row__brand { gap: 10px; padding-right: 20px; }
+.book-shell--dashboard .top-row__brand:focus-visible {
+  outline: 2px solid #bd3714;
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+.book-shell--dashboard :deep(.uib__msg-btn:focus-visible),
+.book-shell--dashboard :deep(.uib__card:focus-visible) {
+  outline: 2px solid #bd3714;
+  outline-offset: 2px;
+}
+.book-shell--dashboard .top-row__name { font-size: 17px; letter-spacing: .03em; }
+.book-shell--dashboard .book-content { overflow: hidden; background: #f5f1ec; }
+.book-shell--dashboard .book-content :deep(.book-page),
+.book-shell--dashboard .book-content :deep(.book-page__body) { background: transparent; }
+.book-shell--dashboard .book-content :deep(.book-page__body) { scrollbar-color: #d9cfc4 transparent; }
+.book-shell--dashboard :deep(.cloud-nav) {
+  gap: 2px;
+  min-height: 42px;
+  padding: 3px;
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.book-shell--dashboard :deep(.cloud-tab) { height: 38px; padding: 0 15px; border-radius: 22px; }
+.book-shell--dashboard :deep(.cloud-tab.is-active) {
+  color: #bd3714;
+  border-color: transparent;
+  background: #fbede7;
+  box-shadow: none;
+}
+.book-shell--dashboard :deep(.cloud-tab.is-active .cloud-label) { color: #bd3714; }
+.book-shell--dashboard :deep(.cloud-tab:focus-visible) { outline-color: #bd3714; }
+.book-shell--dashboard :deep(.cloud-sep) { height: 18px; margin: 0 7px; background: rgba(95, 77, 60, .1); }
+.book-shell--dashboard :deep(.uib__msg-btn) { background: transparent; }
+.book-shell--dashboard :deep(.uib__msg-btn):hover { color: #bd3714; background: #fbede7; }
+
+.student-mobile-tabbar { display: none; }
+.top-row--mobile-only { display: none; }
+
 /* 路由切换过渡 */
 .page-fade-enter-active {
   transition: opacity 0.22s ease, transform 0.22s ease;
@@ -512,11 +597,21 @@ onBeforeUnmount(() => {
 /* ═══ 响应式 ═══ */
 
 @media (max-width: 767px) {
+  .book-shell--student-main {
+    height: 100vh;
+    height: 100dvh;
+  }
+
   .top-row {
     min-height: 0;
     padding: 10px 12px;
     gap: 10px;
     flex-wrap: wrap;
+  }
+
+  .top-row--mobile-only {
+    display: flex;
+    flex-wrap: nowrap;
   }
 
   .top-row__nav {
@@ -526,10 +621,85 @@ onBeforeUnmount(() => {
     margin-right: 0;
   }
 
+  .book-shell--student-main .top-row {
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 12px 10px;
+    flex-wrap: nowrap;
+  }
+
+  .book-shell--student-main .top-row__brand {
+    gap: 7px;
+    padding-right: 0;
+    border-right: 0;
+  }
+
+  .book-shell--student-main .top-row__name { font-size: 14px; }
+
+  .book-shell--student-main .top-row__nav {
+    display: none;
+  }
+
+  .book-shell--student-main :deep(.uib__msg-btn) {
+    width: 44px;
+    height: 44px;
+  }
+
+  .book-shell--student-main :deep(.uib__card) {
+    min-height: 44px;
+  }
+
+  .book-shell--student-main .book-main-area {
+    padding-bottom: calc(62px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .book-shell--student-own-header .book-main-area {
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  .student-mobile-tabbar {
+    position: fixed;
+    z-index: 30;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    min-height: 62px;
+    padding: 5px 6px calc(5px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid rgba(76, 60, 44, .1);
+    background: rgba(255, 253, 250, .97);
+    box-shadow: 0 -5px 20px rgba(66, 48, 31, .06);
+    backdrop-filter: blur(14px);
+  }
+
+  .student-mobile-tab {
+    display: flex;
+    min-width: 0;
+    min-height: 44px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    border-radius: 10px;
+    color: #8b8984;
+    font-size: 10px;
+    line-height: 1.1;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .student-mobile-tab.is-active { color: #bd3714; font-weight: 650; }
+  .student-mobile-tab:active { background: #fbede7; }
+  .student-mobile-tab:focus-visible { outline: 2px solid #bd3714; outline-offset: -2px; }
+
   .book-header {
     padding: 0 12px;
     height: 36px;
   }
+  .book-shell--dashboard .top-row { padding-bottom: 8px; }
+}
+
+@media (min-width: 768px) {
+  .top-row--mobile-only { display: none; }
 }
 
 /* ═══ 打印覆盖：解除父容器高度/溢出裁剪，让子页面完整输出 ═══ */

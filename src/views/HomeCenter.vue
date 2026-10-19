@@ -12,6 +12,7 @@ import { getApiMode } from '@/api/config'
 import { getStudent4d, getStudentProfile } from '@/api/profile'
 import { getCompletedReportCount } from '@/api/report'
 import { ApiError } from '@/api/types'
+import StudentDashboardHome from '@/views/student/StudentDashboardHome.vue'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -250,7 +251,8 @@ const todayDisplay = computed(() => {
 </script>
 
 <template>
-  <div class="hc">
+  <StudentDashboardHome v-if="isStudent" />
+  <div v-else class="hc">
     <!-- 装饰性 SVG 标注圆（spec annotation style） -->
     <svg class="hc-deco-circle" width="56" height="56" viewBox="0 0 56 56" fill="none" aria-hidden="true">
       <circle cx="28" cy="28" r="26" stroke="currentColor" stroke-width="0.5"/>
