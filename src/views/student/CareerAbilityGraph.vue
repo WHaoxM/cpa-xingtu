@@ -4,7 +4,7 @@ import { inject, ref } from 'vue'
 import { Icon } from '@iconify/vue'
 import {
   GROUP_COLORS, GROUP_LABELS, RELATION_STYLES,
-  type AbilityGroup,
+  type AbilityGroup, type EdgeRelationType,
 } from '@/composables/useAbilityGraph'
 
 defineOptions({ name: 'CareerAbilityGraph' })
@@ -12,12 +12,9 @@ defineOptions({ name: 'CareerAbilityGraph' })
 const sg = inject<any>('shared-graph')
 const showEdgeLabels = sg.showEdgeLabels
 const refreshLayout = sg.refreshLayout
-const layoutMode = sg.layoutMode
-const toggleLayout = sg.toggleLayout
-const toggleAllBoards = sg.toggleAllBoards
-const collapsedBoards = sg.collapsedBoards
 const openInspector = sg.openInspector
 const legendOpen = ref(false)
+const relationKinds: EdgeRelationType[] = ['prerequisite', 'synergy', 'dependency']
 </script>
 
 <template>
@@ -28,17 +25,11 @@ const legendOpen = ref(false)
         <input type="checkbox" v-model="showEdgeLabels" />
         <span>显示连线标签</span>
       </label>
-      <button class="ag-toolbar__text-btn" @click="toggleAllBoards" :title="collapsedBoards.size ? '展开全部技能' : '收起全部技能'">
-        {{ collapsedBoards.size ? '展开全部' : '收起全部' }}
-      </button>
       <button class="ag-toolbar__btn" @click="openInspector" title="查找节点" aria-label="查找节点">
         <Icon icon="lucide:search" :width="15" />
       </button>
       <button class="ag-toolbar__btn" @click="refreshLayout" title="重置视图" aria-label="重置图谱视图">
         <Icon icon="lucide:refresh-cw" :width="15" />
-      </button>
-      <button class="ag-toolbar__btn" @click="toggleLayout" :title="layoutMode === 'single' ? '双栏模式' : '图谱模式'">
-        <Icon :icon="layoutMode === 'single' ? 'lucide:columns' : 'lucide:maximize'" :width="15" />
       </button>
     </div>
     <!-- 图例按需展开，避免压住左下角的板块与技能节点 -->
@@ -57,12 +48,12 @@ const legendOpen = ref(false)
       </div>
       <div class="ag-legend__section">
         <div class="ag-legend__subtitle">关系线</div>
-        <div v-for="(style, key) in RELATION_STYLES" :key="key" class="ag-legend__item">
-          <span class="ag-legend__line" :style="{ borderTopColor: style.color, borderTopStyle: style.dash.length > 0 ? 'dashed' : 'solid' }"></span>
-          <span>{{ style.label }}</span>
+        <div v-for="key in relationKinds" :key="key" class="ag-legend__item">
+          <span class="ag-legend__line" :style="{ borderTopColor: RELATION_STYLES[key].color, borderTopStyle: RELATION_STYLES[key].dash.length > 0 ? 'dashed' : 'solid' }"></span>
+          <span>{{ RELATION_STYLES[key].label }}</span>
         </div>
       </div>
-      <div class="ag-legend__hint">点击板块展开子技能；在节点详情中可收起</div>
+      <div class="ag-legend__hint">颜色区分能力类别；连线只表示实际技能关系</div>
     </div>
     </div>
   </div>
@@ -102,11 +93,6 @@ const legendOpen = ref(false)
   border-radius: var(--radius-sm, 2px); transition: all 0.15s;
 }
 .ag-toolbar__btn:hover { border-color: var(--primary-100); color: var(--primary-100); background: rgba(139,37,0,0.06); }
-.ag-toolbar__text-btn {
-  padding: 5px 7px; border: 0; background: transparent;
-  color: var(--primary-100); font: inherit; font-size: 12px; cursor: pointer;
-}
-.ag-toolbar__text-btn:hover { text-decoration: underline; }
 
 /* ═══ 图例（左下） ═══ */
 .ag-legend-wrap {

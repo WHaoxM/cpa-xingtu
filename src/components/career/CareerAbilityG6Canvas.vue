@@ -34,6 +34,11 @@ let resizeFrame = 0
 const positions = new Map<string, [number, number]>()
 let renderedNodeIds = new Set<string>()
 
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
 const groupOrder: Record<AbilityGroup, number> = {
   job: 0, professional: 1, position: 2, cognitive: 3, general: 4,
 }
@@ -43,74 +48,145 @@ function groupOf(datum: NodeData): AbilityGroup {
   return typeof group === 'string' && group in GROUP_COLORS ? group as AbilityGroup : 'general'
 }
 
-function edgeKey(edge: AbilityEdge, index: number): string {
-  return `${edge.source}:${edge.relation}:${edge.target}:${index}`
+function skillNodes(): AbilityNode[] {
+  return props.nodes.filter(node => node.level > 1)
 }
 
-/** 只取业务字段的原始值，绝不把 Vue proxy 交给 G6。 */
+function skillEdges(): AbilityEdge[] {
+  const ids = new Set(skillNodes().map(node => node.id))
+  return props.edges.filter(edge => edge.relation !== 'belong' && ids.has(edge.source) && ids.has(edge.target))
+}
+
+function edgeKey(edge: AbilityEdge, index: number): string {
+  return edge.source + ':' + edge.relation + ':' + edge.target + ':' + index
+}
+
+function networkLabelLines(name: string): string[] {
+  const normalized = name.trim()
+  if (normalized.includes('/')) {
+    const [left = '', right = ''] = normalized.split(/\s*\/\s*/, 2)
+    return [left.trim() + ' /', right.trim()].filter(Boolean)
+  }
+  if (/\s/.test(normalized)) return normalized.split(/\s+/).filter(Boolean).slice(0, 3)
+  if (/^[A-Za-z][A-Za-z0-9.+#]*$/.test(normalized) && normalized.length > 9) {
+    const parts = normalized.match(/[A-Z]?[a-z]+|[A-Z]+(?=[A-Z]|$)|[0-9]+/g)
+    if (parts && parts.join('') === normalized) return parts.slice(0, 3)
+  }
+  if (/[\u3400-\u9fff]/.test(normalized) && Array.from(normalized).length > 4) {
+    const chars = Array.from(normalized)
+    return [chars.slice(0, 4).join(''), chars.slice(4).join('')].filter(Boolean)
+  }
+  return [normalized]
+}
+
+function networkLabelFontSize(name: string, compact: boolean, diameter: number): number {
+  const lines = networkLabelLines(name)
+  const maxUnits = Math.max(...lines.map(line => Array.from(line).reduce((sum, char) =>
+    sum + (/[A-Za-z0-9.+#]/.test(char) ? 0.58 : /\s/.test(char) ? 0.34 : 1), 0)))
+  const available = diameter * 0.72
+  const preferred = compact ? 9.5 : 11.5
+  return Math.max(compact ? 8 : 9, Math.min(preferred, available / Math.max(1, maxUnits)))
+}
+
+function initialPosition(node: AbilityNode, index: number, count: number, compact: boolean, nodeSize: [number, number]): [number, number] {
+  const width = Math.max(1, host.value?.clientWidth ?? 1)
+  const height = Math.max(1, host.value?.clientHeight ?? 1)
+  const slots: Record<string, [number, number]> = {
+    professional: [0.20, 0.23],
+    position: [0.80, 0.23],
+    cognitive: [0.20, 0.77],
+    general: [0.80, 0.77],
+  }
+  const mobileSlots: Record<string, [number, number]> = {
+    professional: [0.22, 0.21],
+    position: [0.78, 0.21],
+    cognitive: [0.22, 0.79],
+    general: [0.78, 0.79],
+  }
+  const [cx, cy] = (compact ? mobileSlots[node.group] : slots[node.group]) ?? [0.5, 0.5]
+  if (compact) {
+    const columns = 3
+    const row = Math.floor(index / columns)
+    const rowCount = Math.ceil(count / columns)
+    const x = (index % columns - (columns - 1) / 2) * (nodeSize[0] + 7)
+    const y = (row - (rowCount - 1) / 2) * (nodeSize[1] + 6)
+    return [width * cx + x, height * cy + y]
+  }
+  const angle = index * 2.399963229728653
+  const distance = Math.sqrt((index + 0.45) / Math.max(1, count)) * Math.min(width, height) * 0.15
+  return [width * cx + Math.cos(angle) * distance, height * cy + Math.sin(angle) * distance]
+}
+
 function toGraphData(): GraphData {
-  const ids = new Set(props.nodes.map(node => node.id))
+  const skills = skillNodes()
+  const grouped = new Map<AbilityGroup, AbilityNode[]>()
+  skills.forEach(node => {
+    const group = grouped.get(node.group) ?? []
+    group.push(node)
+    grouped.set(node.group, group)
+  })
+  const compact = (host.value?.clientWidth ?? 1000) < 600
+  const nodeSize: [number, number] = compact ? [46, 46] : [78, 78]
+  const layoutSize: [number, number] = compact ? [51, 51] : [110, 110]
   const fontFamily = host.value ? getComputedStyle(host.value).fontFamily : 'sans-serif'
-  const nodes: NodeData[] = props.nodes.map(node => {
-    const isJob = node.level === 0
-    const isBoard = node.level === 1
+
+  const nodes: NodeData[] = skills.map(node => {
+    const groupNodes = grouped.get(node.group) ?? []
+    const groupIndex = groupNodes.findIndex(item => item.id === node.id)
+    const position = positions.get(node.id) ?? initialPosition(node, groupIndex, groupNodes.length, compact, nodeSize)
     const color = GROUP_COLORS[node.group]
-    const size: [number, number] = isJob ? [124, 124] : isBoard ? [88, 88] : [92, 30]
-    const position = positions.get(node.id)
     return {
       id: node.id,
-      type: isJob || isBoard ? 'circle' : 'rect',
+      type: 'circle',
       data: {
         name: node.name,
         group: node.group,
+        groupLabel: node.group,
         level: node.level,
         parentId: node.parentId ?? null,
-        heat: node.heat ?? null,
         order: groupOrder[node.group],
+        size: nodeSize,
+        layoutSize,
       },
       style: {
-        ...(position ? { x: position[0], y: position[1] } : {}),
-        size,
-        radius: isJob || isBoard ? undefined : 15,
-        fill: isJob || isBoard ? color : '#FFFCF8',
+        x: position[0],
+        y: position[1],
+        size: nodeSize,
+        fill: color + '18',
         stroke: color,
-        lineWidth: isJob ? 1.6 : isBoard ? 1.4 : 1.05,
-        halo: isJob || isBoard,
-        haloStroke: color,
-        haloLineWidth: isJob ? 12 : 9,
-        haloStrokeOpacity: isJob ? 0.14 : 0.10,
-        shadowColor: isJob ? 'rgba(139,37,0,.20)' : 'rgba(38,34,28,.09)',
-        shadowBlur: isJob ? 19 : isBoard ? 12 : 4,
-        shadowOffsetY: isJob ? 6 : isBoard ? 4 : 2,
-        labelText: node.name,
+        lineWidth: 1.4,
+        shadowColor: color + '2B',
+        shadowBlur: 9,
+        shadowOffsetY: 3,
+        labelText: networkLabelLines(node.name).join('\n'),
         labelPlacement: 'center',
-        labelFill: isJob || isBoard ? '#FFFFFF' : '#2C2925',
+        labelFill: '#302B25',
         labelFontFamily: fontFamily,
-        labelFontSize: isJob ? 16 : isBoard ? 13 : 12,
-        labelFontWeight: isJob || isBoard ? 700 : 500,
-        labelMaxWidth: isJob ? 110 : isBoard ? 76 : 84,
+        labelFontSize: networkLabelFontSize(node.name, compact, nodeSize[0]),
+        labelFontWeight: 600,
+        labelMaxWidth: nodeSize[0] - 9,
+        labelMaxLines: 3,
+        labelWordWrap: true,
         labelTextOverflow: 'ellipsis',
         cursor: 'grab',
       },
     }
   })
 
-  const edges: EdgeData[] = props.edges.flatMap((edge, index) => {
-    if (!ids.has(edge.source) || !ids.has(edge.target)) return []
+  const edges: EdgeData[] = skillEdges().flatMap((edge, index) => {
     const relation = RELATION_STYLES[edge.relation]
-    const isBelong = edge.relation === 'belong'
     return [{
       id: edgeKey(edge, index),
       source: edge.source,
       target: edge.target,
-      type: isBelong ? 'line' : 'cubic',
+      type: 'cubic',
       data: { relation: edge.relation, label: edge.label ?? '' },
       style: {
-        stroke: isBelong ? '#B8B2A9' : relation.color,
-        opacity: isBelong ? 0.42 : 0.32,
-        lineWidth: isBelong ? 1.2 : 1.2,
+        stroke: relation.color,
+        opacity: 0.34,
+        lineWidth: 1.3,
         lineDash: relation.dash.length ? [...relation.dash] : undefined,
-        labelText: props.showEdgeLabels && !isBelong ? edge.label || relation.label : '',
+        labelText: props.showEdgeLabels ? edge.label || relation.label : '',
         labelFill: relation.color,
         labelFontSize: 10,
         labelBackground: true,
@@ -124,7 +200,7 @@ function toGraphData(): GraphData {
 
 function rememberPositions() {
   if (!graph) return
-  for (const node of props.nodes) {
+  for (const node of skillNodes()) {
     try {
       const point = graph.getElementPosition(node.id)
       if (Number.isFinite(point[0]) && Number.isFinite(point[1])) {
@@ -136,6 +212,20 @@ function rememberPositions() {
   }
 }
 
+// Keep the mobile force-layout result legible as four compact cluster tiles;
+// G6 still owns edges, selection and dragging while these collision-safe seeds avoid node pileups.
+async function placeCompactSeeds(data: GraphData) {
+  if (!graph || (host.value?.clientWidth ?? 1000) >= 600) return
+  const missing: Record<string, [number, number]> = {}
+  for (const node of data.nodes ?? []) {
+    if (positions.has(node.id)) continue
+    const x = Number(node.style?.x)
+    const y = Number(node.style?.y)
+    if (Number.isFinite(x) && Number.isFinite(y)) missing[node.id] = [x, y]
+  }
+  if (Object.keys(missing).length) await graph.translateElementTo(missing, false)
+}
+
 function createGraph(data: GraphData) {
   if (!host.value) return null
   let instance: Graph
@@ -143,52 +233,53 @@ function createGraph(data: GraphData) {
     container: host.value,
     data,
     autoFit: 'center',
-    zoom: 1.15,
-    zoomRange: [0.4, 2.8],
-    padding: [72, 72, 72, 72],
-    animation: { duration: 420, easing: 'ease-out' },
+    zoom: 1,
+    zoomRange: [0.28, 2.6],
+    padding: [52, 52, 52, 52],
+    animation: { duration: prefersReducedMotion() ? 0 : 360, easing: 'ease-out' },
     layout: {
-      type: 'concentric',
-      // G6 官方同心圆布局：岗位、板块、技能严格分环，不受关系边牵引。
-      sortBy: (datum: NodeData) => 100 - Number(datum.data?.level ?? 2) * 40
-        - Number(datum.data?.order ?? 4) * 0.01,
-      maxLevelDiff: 30,
-      startAngle: -Math.PI / 2,
-      clockwise: true,
+      type: 'force',
+      maxIteration: 560,
+      minMovement: 0.2,
+      nodeStrength: -220,
+      edgeStrength: 5,
+      linkDistance: (edge: EdgeData) => (host.value?.clientWidth ?? 1000) < 600 ? 52 : 96,
+      gravity: (host.value?.clientWidth ?? 1000) < 600 ? 0.02 : 0.2,
+      clustering: true,
+      nodeClusterBy: (node: NodeData) => String(node.data?.group ?? 'general'),
+      clusterNodeStrength: (host.value?.clientWidth ?? 1000) < 600 ? 12 : 30,
       preventOverlap: true,
-      nodeSize: (datum: NodeData) => {
-        const level = Number(datum.data?.level ?? 2)
-        return level === 0 ? [124, 124] : level === 1 ? [88, 88] : [92, 30]
-      },
-      nodeSpacing: 28,
+      nodeSize: (datum: NodeData) => (datum.data?.layoutSize as [number, number]) ?? [96, 96],
+      nodeSpacing: (host.value?.clientWidth ?? 1000) < 600 ? 6 : 8,
+      collideStrength: 1,
     },
     node: {
       state: {
         selected: datum => ({
           halo: true,
           haloStroke: GROUP_COLORS[groupOf(datum)],
-          haloLineWidth: 10,
-          haloStrokeOpacity: 0.32,
-          lineWidth: 3,
-          shadowBlur: 24,
+          haloLineWidth: 9,
+          haloStrokeOpacity: 0.28,
+          lineWidth: 2.8,
+          shadowBlur: 18,
           shadowColor: GROUP_COLORS[groupOf(datum)],
         }),
         neighborActive: datum => ({
           halo: true,
           haloStroke: GROUP_COLORS[groupOf(datum)],
           haloLineWidth: 5,
-          haloStrokeOpacity: 0.18,
+          haloStrokeOpacity: 0.16,
           lineWidth: 2,
           opacity: 1,
         }),
-        inactive: { opacity: 0.18, labelOpacity: 0.2 },
+        inactive: { opacity: 0.42, labelOpacity: 0.66 },
       },
     },
     edge: {
       state: {
-        selected: { opacity: 1, lineWidth: 2.6 },
-        neighborActive: { opacity: 0.98, lineWidth: 2.4 },
-        inactive: { opacity: 0.07, labelOpacity: 0 },
+        selected: { opacity: 1, lineWidth: 2.8 },
+        neighborActive: { opacity: 0.98, lineWidth: 2.6 },
+        inactive: { opacity: 0.09, labelOpacity: 0 },
       },
     },
     behaviors: [
@@ -203,7 +294,7 @@ function createGraph(data: GraphData) {
           for (const id of ids) {
             const point = instance.getElementPosition(id)
             if (Number.isFinite(point[0]) && Number.isFinite(point[1])) {
-              positions.set(id, [point[0], point[1]])
+              positions.set(String(id), [point[0], point[1]])
             }
           }
         },
@@ -218,9 +309,7 @@ function createGraph(data: GraphData) {
         onClick: (event: IPointerEvent) => {
           if (event.targetType === 'node') {
             const id = 'id' in event.target ? String(event.target.id) : ''
-            if (!id) return
-            if (instance.getElementState(id).includes('selected')) emit('node-click', id)
-            else emit('canvas-click')
+            if (id) emit('node-click', id)
           } else if (event.targetType === 'canvas') {
             emit('canvas-click')
           }
@@ -260,13 +349,15 @@ async function applySelection() {
   if (Object.keys(states).length) await graph.setElementState(states, false)
 }
 
-/** 折叠后的主图放大，单簇展开时保证所有技能进入首屏。 */
 async function fitOverview() {
   if (!graph) return
   await graph.fitView({ when: 'always' }, { duration: 0 })
-  const maxZoom = props.nodes.length <= 5 ? 1.68 : props.nodes.length <= 20 ? 1.25 : 0.82
-  if (graph.getZoom() > maxZoom) {
-    await graph.zoomTo(maxZoom, { duration: 0 }, graph.getCanvasCenter())
+  const minimumZoom = (host.value?.clientWidth ?? 1000) < 600 ? 0.52 : 0.76
+  if (graph.getZoom() < minimumZoom) {
+    await graph.zoomTo(minimumZoom, { duration: 0 }, graph.getCanvasCenter())
+  }
+  if (graph.getZoom() > 1.18) {
+    await graph.zoomTo(1.18, { duration: 0 }, graph.getCanvasCenter())
   }
 }
 
@@ -279,7 +370,8 @@ async function syncGraph() {
     renderedNodeIds.clear()
     activeRole = props.roleName
   }
-  if (props.nodes.length === 0) {
+  const nodes = skillNodes()
+  if (nodes.length === 0) {
     graph?.destroy()
     graph = null
     positions.clear()
@@ -287,39 +379,33 @@ async function syncGraph() {
     return
   }
 
-  const currentNodeIds = new Set(props.nodes.map(node => node.id))
+  const currentNodeIds = new Set(nodes.map(node => node.id))
   const needsLayout = currentNodeIds.size !== renderedNodeIds.size
     || [...currentNodeIds].some(id => !renderedNodeIds.has(id))
-  if (needsLayout) positions.clear()
   const data = toGraphData()
-  // 跨板块关系是解释层，不参与空间排布；否则 radial 会把四个能力簇拉成乱网。
-  const hierarchyData: GraphData = {
-    nodes: data.nodes,
-    edges: data.edges?.filter(edge => edge.data?.relation === 'belong'),
-  }
   if (!graph) {
-    graph = createGraph(hierarchyData)
+    graph = createGraph(data)
     if (!graph) return
     await graph.render()
-    rememberPositions()
     renderedNodeIds = currentNodeIds
     graph.setData(toGraphData())
     await graph.draw()
+    await placeCompactSeeds(data)
+    rememberPositions()
+    await fitOverview()
+  } else if (needsLayout) {
+    // Preserve already positioned skills; force layout only settles newly arrived nodes.
+    graph.setData(data)
+    await graph.draw()
+    await placeCompactSeeds(data)
+    rememberPositions()
+    renderedNodeIds = currentNodeIds
     await fitOverview()
   } else {
-    if (needsLayout) {
-      graph.setData(hierarchyData)
-      await graph.render()
-      rememberPositions()
-      renderedNodeIds = currentNodeIds
-      graph.setData(toGraphData())
-      await graph.draw()
-      await fitOverview()
-    } else {
-      // Collapsing, relation reveals and label switches must not reset a dragged node.
-      graph.setData(data)
-      await graph.draw()
-    }
+    // Relation label changes keep both the user's camera and dragged node positions.
+    graph.setData(data)
+    await graph.draw()
+    rememberPositions()
   }
   if (!disposed) await applySelection()
 }
@@ -334,22 +420,31 @@ function enqueue(task: () => Promise<void>) {
 
 async function focusNode(id: string) {
   await operation
-  if (!graph || !props.nodes.some(node => node.id === id)) return
-  // 保留一阶邻域的空间上下文：只把目标移到中央，放得太大会裁掉所属板块。
+  if (!graph || !skillNodes().some(node => node.id === id)) return
   const overviewZoom = Math.min(graph.getZoom(), 0.94)
-  await graph.zoomTo(overviewZoom, { duration: 260, easing: 'ease-in-out' }, graph.getCanvasCenter())
-  await graph.focusElement(id, { duration: 420, easing: 'ease-in-out' })
+  const duration = prefersReducedMotion() ? 0 : 220
+  await graph.zoomTo(overviewZoom, { duration, easing: 'ease-in-out' }, graph.getCanvasCenter())
+  await graph.focusElement(id, { duration: prefersReducedMotion() ? 0 : 320, easing: 'ease-in-out' })
 }
 
 async function resetView() {
   await operation
   if (!graph) return
-  await fitOverview()
+  positions.clear()
+  renderedNodeIds.clear()
+  graph.destroy()
+  graph = null
+  await syncGraph()
 }
 
 function resize() {
-  graph?.resize()
-  if (!graph && props.nodes.length) enqueue(syncGraph)
+  if (graph) {
+    graph.resize()
+    // Keep node coordinates intact, but reframe the same arrangement for the new viewport.
+    void fitOverview()
+  } else if (skillNodes().length) {
+    enqueue(syncGraph)
+  }
 }
 
 defineExpose({ focusNode, resetView, resize })
@@ -379,7 +474,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="host" class="career-ability-g6" :aria-label="`${roleName}职业能力复合图谱`"></div>
+  <div ref="host" class="career-ability-g6" :aria-label="roleName + '职业能力关系网络'"></div>
 </template>
 
 <style scoped>
@@ -388,5 +483,6 @@ onBeforeUnmount(() => {
   height: 100%;
   min-height: 0;
   background: transparent;
+  touch-action: none;
 }
 </style>

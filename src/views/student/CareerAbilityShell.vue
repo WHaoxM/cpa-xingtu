@@ -50,6 +50,7 @@ const allEdges = shallowRef<AbilityEdge[]>([])
 const collapsedBoards = ref<Set<string>>(new Set())
 const showEdgeLabels = ref(false)
 const graphCanvasRef = ref<InstanceType<typeof CareerAbilityG6Canvas> | null>(null)
+const bubbleMapRef = ref<InstanceType<typeof CareerAbilityBubbleMap> | null>(null)
 const graphLoading = ref(true)
 const graphEmpty = computed(() => !graphLoading.value && allNodes.value.length === 0)
 const inspectorOpen = ref(false)
@@ -58,12 +59,21 @@ const selectedNodeId = ref<string | null>(null)
 const selectedNode = computed(() => allNodes.value.find(n => n.id === selectedNodeId.value) ?? null)
 const searchResults = computed(() => {
   const query = nodeSearch.value.trim().toLocaleLowerCase()
-  return allNodes.value.filter(n => query ? n.name.toLocaleLowerCase().includes(query) : n.level === 1).slice(0, 8)
+  return allNodes.value
+    .filter(node => node.level > 1 && (!query || node.name.toLocaleLowerCase().includes(query)))
+    .slice(0, 8)
 })
+const relationNodes = computed(() => allNodes.value.filter(node => node.level > 1))
+const relationNodeIds = computed(() => new Set(relationNodes.value.map(node => node.id)))
+const relationEdges = computed(() => allEdges.value.filter(edge =>
+  edge.relation !== 'belong'
+  && relationNodeIds.value.has(edge.source)
+  && relationNodeIds.value.has(edge.target),
+))
 const selectedRelations = computed(() => {
   if (!selectedNodeId.value) return []
   return allEdges.value.flatMap(edge => {
-    if (edge.source !== selectedNodeId.value && edge.target !== selectedNodeId.value) return []
+    if (edge.relation === 'belong' || (edge.source !== selectedNodeId.value && edge.target !== selectedNodeId.value)) return []
     const otherId = edge.source === selectedNodeId.value ? edge.target : edge.source
     const other = allNodes.value.find(n => n.id === otherId)
     return other ? [{ edge, other, outgoing: edge.source === selectedNodeId.value }] : []
@@ -113,26 +123,20 @@ const visibleEdges = computed(() => {
 
 /* ═══ G6 图谱事件：画布交互由开源组件处理，业务查询留在页面 ═══ */
 function onGraphNodeClick(id: string) {
-  const node = allNodes.value.find(n => n.id === id)
-  if (!node) return
-  selectedNodeId.value = id
-  inspectorOpen.value = true
-  if (node.level === 1) {
-    collapsedBoards.value = new Set(allNodes.value.filter(item => item.level === 1 && item.id !== id).map(item => item.id))
-  }
+  selectNodeById(id, false)
 }
-function selectNodeById(id: string) {
+function selectNodeById(id: string, focus = true) {
   const node = allNodes.value.find(n => n.id === id)
-  if (!node) return
+  if (!node || node.level < 2) return
   selectedNodeId.value = id
   inspectorOpen.value = true
   nodeSearch.value = ''
-  if (node.level === 1) {
-    collapsedBoards.value = new Set(allNodes.value.filter(item => item.level === 1 && item.id !== id).map(item => item.id))
-  } else if (node.parentId && node.level > 1) {
-    collapsedBoards.value = new Set(allNodes.value.filter(item => item.level === 1 && item.id !== node.parentId).map(item => item.id))
+  if (focus) {
+    nextTick(() => {
+      if (graphDisplay.value === 'relations') graphCanvasRef.value?.focusNode(id)
+      else bubbleMapRef.value?.focusNode(id)
+    })
   }
-  nextTick(() => graphCanvasRef.value?.focusNode(id))
 }
 function closeInspector() {
   inspectorOpen.value = false
@@ -142,19 +146,12 @@ function openInspector() {
   inspectorOpen.value = true
 }
 function refreshLayout() {
-  graphCanvasRef.value?.resetView()
+  if (graphDisplay.value === 'relations') graphCanvasRef.value?.resetView()
+  else bubbleMapRef.value?.resetView()
 }
 function toggleAllBoards() {
   const boardIds = allNodes.value.filter(n => n.level === 1).map(n => n.id)
   collapsedBoards.value = collapsedBoards.value.size ? new Set() : new Set(boardIds)
-}
-function toggleSelectedBoard() {
-  const node = selectedNode.value
-  if (!node || node.level !== 1) return
-  const next = new Set(collapsedBoards.value)
-  if (next.has(node.id)) next.delete(node.id)
-  else next.add(node.id)
-  collapsedBoards.value = next
 }
 /* ═══ Provide 共享状态给嵌入的子组件 ═══ */
 provide('shared-graph', {
@@ -251,18 +248,18 @@ watch(roleName, () => loadData())
             <span>关系网络</span>
           </button>
         </div>
-        <button
-          v-if="!graphLoading && !graphEmpty && graphDisplay === 'bubbles'"
-          type="button"
-          class="shell-bubble-search"
-          title="查找技能"
-          aria-label="查找技能"
-          @click="openInspector"
-        >
-          <Icon icon="lucide:search" :width="15" />
-        </button>
+        <div v-if="!graphLoading && !graphEmpty && graphDisplay === 'bubbles'" class="shell-bubble-actions">
+          <button type="button" title="查找技能" aria-label="查找技能" @click="openInspector">
+            <Icon icon="lucide:search" :width="15" />
+          </button>
+          <button type="button" title="重置气泡位置与视图" aria-label="重置气泡位置与视图" @click="bubbleMapRef?.resetView()">
+            <Icon icon="lucide:refresh-cw" :width="15" />
+          </button>
+        </div>
         <CareerAbilityBubbleMap
-          v-if="!graphLoading && !graphEmpty && graphDisplay === 'bubbles'"
+          v-if="!graphLoading && !graphEmpty"
+          v-show="graphDisplay === 'bubbles'"
+          ref="bubbleMapRef"
           class="shell-chart"
           :nodes="allNodes"
           :edges="allEdges"
@@ -272,11 +269,12 @@ watch(roleName, () => loadData())
           @canvas-click="closeInspector"
         />
         <CareerAbilityG6Canvas
-          v-else-if="!graphLoading && !graphEmpty && graphDisplay === 'relations'"
+          v-if="!graphLoading && !graphEmpty"
+          v-show="graphDisplay === 'relations'"
           ref="graphCanvasRef"
           class="shell-chart"
-          :nodes="visibleNodes"
-          :edges="visibleEdges"
+          :nodes="relationNodes"
+          :edges="relationEdges"
           :selected-node-id="selectedNodeId"
           :show-edge-labels="showEdgeLabels"
           :role-name="roleName"
@@ -284,7 +282,7 @@ watch(roleName, () => loadData())
           @canvas-click="closeInspector"
         />
         <!-- 图谱叠加层：工具栏 + 图例 -->
-        <CareerAbilityGraph v-if="!graphEmpty && !graphLoading && graphDisplay === 'relations'" />
+        <CareerAbilityGraph v-if="!graphEmpty && !graphLoading" v-show="graphDisplay === 'relations'" />
         <div v-if="graphLoading" class="shell-graph-state" role="status">正在读取能力图谱…</div>
         <div v-else-if="graphEmpty" class="shell-graph-state shell-graph-state--empty" role="status">
           <div class="shell-graph-state__eyebrow">职业能力复合图谱</div>
@@ -298,7 +296,7 @@ watch(roleName, () => loadData())
           <span>聚焦 <strong>{{ selectedNode.name }}</strong><small> · {{ selectedRelations.length }} 条直接关系</small></span>
           <button @click="closeInspector" aria-label="清除图谱聚焦" title="清除聚焦"><Icon icon="lucide:x" :width="14" /></button>
         </div>
-        <div v-else-if="graphDisplay === 'relations'" class="shell-graph-guide">点击板块展开技能 · 拖动节点探索 · 滚轮缩放</div>
+        <div v-else-if="graphDisplay === 'relations'" class="shell-graph-guide">显示全部技能与真实关系 · 拖动节点或画布探索 · 滚轮缩放</div>
       </div>
       <!-- 右侧面板（始终挂载，CSS 控制宽度与可见性） -->
       <div class="shell-panel">
@@ -324,7 +322,7 @@ watch(roleName, () => loadData())
             <input v-model="nodeSearch" placeholder="搜索当前图谱中的技能" aria-label="搜索图谱节点" />
           </label>
           <div v-if="nodeSearch || !selectedNode" class="node-inspector__results">
-            <div class="node-inspector__section-title">{{ nodeSearch ? '匹配节点' : '技能板块' }}</div>
+            <div class="node-inspector__section-title">{{ nodeSearch ? '匹配技能' : '技能节点' }}</div>
             <button v-for="item in searchResults" :key="item.id" @click="selectNodeById(item.id)">
               <span class="node-inspector__dot" :style="{ background: GROUP_COLORS[item.group] }"></span>
               <span>{{ item.name }}</span>
@@ -337,10 +335,6 @@ watch(roleName, () => loadData())
               <span class="node-inspector__tag" :style="{ color: GROUP_COLORS[selectedNode.group] }">{{ GROUP_LABELS[selectedNode.group] }}</span>
               <span>所属岗位：{{ roleName }}</span>
             </div>
-            <button v-if="selectedNode.level === 1" class="node-inspector__board-toggle" @click="toggleSelectedBoard">
-              <Icon :icon="collapsedBoards.has(selectedNode.id) ? 'lucide:chevrons-down' : 'lucide:chevrons-up'" :width="15" />
-              {{ collapsedBoards.has(selectedNode.id) ? '展开该板块技能' : '收起该板块技能' }}
-            </button>
             <div v-if="selectedNode.heat != null" class="node-inspector__heat">
               <div><span>节点热度</span><strong>{{ selectedNode.heat }}</strong></div>
               <div class="node-inspector__heat-track"><span :style="{ width: `${Math.max(0, Math.min(100, selectedNode.heat))}%`, background: GROUP_COLORS[selectedNode.group] }"></span></div>
@@ -489,11 +483,15 @@ watch(roleName, () => loadData())
   box-shadow: 0 1px 5px rgba(61, 48, 29, .12);
 }
 .shell-map-mode .shell-map-mode__button--active svg { filter: drop-shadow(0 0 4px rgba(190, 42, 0, .32)); }
-.shell-bubble-search {
+.shell-bubble-actions {
   position: absolute;
   top: 13px;
   right: 18px;
   z-index: 12;
+  display: flex;
+  gap: 6px;
+}
+.shell-bubble-actions button {
   display: grid;
   place-items: center;
   width: 38px;
@@ -506,8 +504,8 @@ watch(roleName, () => loadData())
   cursor: pointer;
   transition: color .18s ease, border-color .18s ease, transform .18s ease;
 }
-.shell-bubble-search:hover { color: #9b3b20; border-color: rgba(155, 59, 32, .44); transform: translateY(-1px); }
-.shell-bubble-search:focus-visible { outline: 2px solid #9b3b20; outline-offset: 2px; }
+.shell-bubble-actions button:hover { color: #9b3b20; border-color: rgba(155, 59, 32, .44); transform: translateY(-1px); }
+.shell-bubble-actions button:focus-visible { outline: 2px solid #9b3b20; outline-offset: 2px; }
 .shell-graph-state {
   position: absolute; inset: 0; z-index: 6;
   display: flex; align-items: center; justify-content: center;
@@ -709,7 +707,8 @@ watch(roleName, () => loadData())
   .node-inspector { width: 100%; min-width: 0; }
   .shell-map-mode { top: 8px; left: 10px; }
   .shell-map-mode button { min-height: 28px; padding: 0 8px; font-size: 10px; }
-  .shell-bubble-search { top: 7px; right: 10px; width: 31px; height: 31px; }
+  .shell-bubble-actions { top: 7px; right: 10px; gap: 4px; }
+  .shell-bubble-actions button { width: 31px; height: 31px; }
   .shell-focus { left: 10px; top: 48px; }
 }
 @media (prefers-reduced-motion: reduce) {
