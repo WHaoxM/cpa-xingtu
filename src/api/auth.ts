@@ -3,7 +3,7 @@ import { mockGet } from './adapters/mockAdapter'
 import type { User } from '@/types'
 import { UserRole } from '@/types'
 import { getApiBaseUrl } from './config'
-import { ApiError } from './types'
+import { ApiError, toFriendlyApiError } from './types'
 
 type AuthUserRow = {
   id: string
@@ -41,19 +41,35 @@ let csrfToken = ''
 async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const base = getApiBaseUrl()
   const url = `${base}/api/auth${path}`
-  const response = await fetch(url, { ...init, credentials: 'include', headers: {
-    Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}),
-    ...(init.method && init.method !== 'GET' ? { 'X-CSRFToken': csrfToken } : {}),
-    ...init.headers,
-  } })
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, credentials: 'include', headers: {
+      Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init.method && init.method !== 'GET' ? { 'X-CSRFToken': csrfToken } : {}),
+      ...init.headers,
+    } })
+  } catch (error) {
+    throw toFriendlyApiError(error)
+  }
   const body = await response.json().catch(() => ({})) as Record<string, unknown>
-  if (!response.ok) throw new ApiError(String(body.error ?? `HTTP ${response.status}`), response.status, body, 'http')
+  if (!response.ok) {
+    const message = String(body.error ?? `HTTP ${response.status}`)
+    const isHtmlCsrfFailure = response.status === 400
+      && init.method !== 'GET'
+      && !response.headers.get('content-type')?.includes('application/json')
+    throw new ApiError(
+      isHtmlCsrfFailure ? 'CSRF 校验未通过，请刷新页面后重试。' : message,
+      response.status,
+      body,
+      'http',
+    )
+  }
   return body as T
 }
 
 async function ensureCsrf(): Promise<void> {
   const result = await accountRequest<{ csrfToken?: string }>('/csrf')
-  if (!result.csrfToken) throw new Error('认证服务未返回 CSRF token')
+  if (!result.csrfToken) throw new ApiError('认证服务暂不可用，请刷新页面后重试。')
   csrfToken = result.csrfToken
 }
 
