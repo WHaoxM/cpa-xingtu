@@ -257,8 +257,8 @@ onMounted(() => { void loadDashboard() })
                 <strong v-if="portrait?.completeness != null">{{ portrait.completeness }}%</strong>
                 <strong v-else class="metric-empty">—</strong>
                 <small>{{ portrait?.completeness != null ? '来自当前有效画像' : '当前没有可核验画像' }}</small>
+                <span v-if="portrait?.completeness != null" class="metric-progress" aria-hidden="true"><i :style="{ width: `${portrait.completeness}%` }" /></span>
               </div>
-              <span v-if="portrait?.completeness != null" class="metric-progress" aria-hidden="true"><i :style="{ width: `${portrait.completeness}%` }" /></span>
             </article>
             </div>
             <div v-if="portrait?.completeness != null" class="portrait-completion">
@@ -442,25 +442,25 @@ onMounted(() => { void loadDashboard() })
 .hero p { margin: 13px 0 0; color: #6e6861; font-family: var(--font-title, "Noto Serif SC", serif); font-size: 15px; letter-spacing: 0.02em; }
 .hero-rule { display: block; width: 54px; height: 1px; margin-top: 21px; background: var(--dash-accent); }
 .hero-cta { display: none; }
-.journey-labels { position: absolute; z-index: 1; right: 3%; bottom: 24%; display: flex; flex-direction: column; gap: 16px; color: rgba(79, 69, 58, 0.7); font-family: var(--font-title, serif); font-size: 12px; }
+.journey-labels { position: absolute; z-index: 1; right: 6%; bottom: 24%; display: flex; flex-direction: column; gap: 16px; color: rgba(66, 57, 49, 0.8); font-family: var(--font-title, serif); font-size: 12px; }
 
 .progress-panel { padding: 0; border: 0; background: transparent; box-shadow: none; }
 .panel-heading.progress-heading, .portrait-completion { display: none; }
 .metrics-grid { position: relative; z-index: 2; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: -7px; }
-.metric-card { min-width: 0; min-height: 104px; padding: 15px 14px; display: flex; align-items: flex-start; gap: 12px; position: relative; overflow: hidden; border: 1px solid rgba(255,255,255,.7); border-radius: 13px; background: rgba(255,255,255,.92); box-shadow: 0 6px 22px rgba(79, 56, 37, .035); }
-.metric-icon { flex: 0 0 39px; width: 39px; height: 39px; border-radius: 50%; display: grid; place-items: center; background: #fff5ef; color: var(--dash-accent); }
+.metric-card { min-width: 0; min-height: 112px; padding: 15px 16px; display: flex; align-items: center; gap: 13px; position: relative; overflow: hidden; border: 1px solid rgba(255,255,255,.7); border-radius: 13px; background: rgba(255,255,255,.92); box-shadow: 0 6px 22px rgba(79, 56, 37, .035); }
+.metric-icon { flex: 0 0 42px; width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: #fff5ef; color: var(--dash-accent); }
 .metric-icon--coral { color: #d66b4d; background: #fff4ef; }
 .metric-icon--gold { color: #c68645; background: #fbf2e7; }
-.metric-copy { display: flex; flex-direction: column; min-width: 0; }
-.metric-label { color: #8c8882; font-size: 11px; white-space: nowrap; }
-.metric-copy strong { margin-top: 4px; font-family: var(--font-title, Georgia, serif); font-size: 27px; line-height: 1.1; font-weight: 650; letter-spacing: -.03em; }
+.metric-copy { display: flex; flex: 1; flex-direction: column; min-width: 0; }
+.metric-label { color: #716b64; font-size: 12px; white-space: nowrap; }
+.metric-copy strong { margin-top: 4px; font-family: var(--font-title, Georgia, serif); font-size: 29px; line-height: 1.1; font-weight: 650; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
 .metric-copy strong.metric-empty { color: #b6b1aa; }
-.metric-copy small { margin-top: 4px; color: #aaa59d; font-size: 10px; white-space: nowrap; }
+.metric-copy small { margin-top: 4px; color: #77736d; font-size: 10px; line-height: 1.35; white-space: nowrap; }
 .metric-bars { position: absolute; right: 13px; bottom: 16px; height: 33px; display: flex; align-items: flex-end; gap: 4px; opacity: .42; }
 .metric-bars i { width: 6px; border-radius: 8px; background: #e79378; height: 9px; }
 .metric-bars i:nth-child(2) { height: 16px; }.metric-bars i:nth-child(3) { height: 24px; }.metric-bars i:nth-child(4) { height: 32px; }
 .metric-bars--soft i { background: #bbb8b2; }
-.metric-progress { position: absolute; bottom: 17px; left: 66px; right: 14px; height: 4px; border-radius: 9px; background: #f2e9e3; overflow: hidden; }
+.metric-progress { display: block; width: 100%; height: 4px; margin-top: 8px; border-radius: 9px; background: #f2e9e3; overflow: hidden; }
 .metric-progress i { display: block; height: 100%; background: #c74522; border-radius: inherit; }
 
 .panel { min-width: 0; padding: 20px 22px; border: 1px solid rgba(255, 255, 255, .86); border-radius: 15px; background: var(--dash-surface); box-shadow: 0 8px 26px rgba(82, 64, 45, .035); }
