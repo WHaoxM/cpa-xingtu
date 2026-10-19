@@ -45,16 +45,14 @@ export async function fetchAbilityGraph(role: string): Promise<AbilityGraphData 
 export async function fetchRoleIntro(role: string): Promise<RoleIntro | null> {
   const key = roleKey(role)
   if (getApiMode() === 'mock') {
+    // roleKey's default is "frontend" for graph fixtures. An unrelated role
+    // must not inherit the frontend introduction when no role fixture exists.
+    if (key === 'frontend' && !/前端|Vue|React/.test(role)) return null
     try {
       const env = await mockGet<RoleIntro>(`ability/role-intro.${key}.json`)
       return env.data ?? null
     } catch {
-      try {
-        const env = await mockGet<RoleIntro>('ability/role-intro.frontend.json')
-        return env.data ?? null
-      } catch {
-        return null
-      }
+      return null
     }
   }
 

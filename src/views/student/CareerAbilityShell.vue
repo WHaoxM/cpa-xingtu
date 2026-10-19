@@ -13,6 +13,7 @@ import {
 import { useGraphGeneration, edgeId } from '@/composables/useGraphGeneration'
 import type { LayoutMode } from '@/types'
 import CareerAbilityG6Canvas from '@/components/career/CareerAbilityG6Canvas.vue'
+import CareerAbilityBubbleMap from '@/components/career/CareerAbilityBubbleMap.vue'
 import CareerAbilityGraph from './CareerAbilityGraph.vue'
 import CareerAbilityDual from './CareerAbilityDual.vue'
 import CareerAbilityWorkspace from './CareerAbilityWorkspace.vue'
@@ -35,6 +36,7 @@ function goToCareerAnalysis() { router.push({ name: 'student-career-analysis' })
 
 /* ═══ 布局模式：同一路由内切换，不依赖子路由 ═══ */
 const layoutMode = ref<LayoutMode>('split')
+const graphDisplay = ref<'bubbles' | 'relations'>('bubbles')
 const isSplit = computed(() => layoutMode.value === 'split')
 const isWorkspace = computed(() => layoutMode.value === 'workspace')
 
@@ -136,6 +138,9 @@ function closeInspector() {
   inspectorOpen.value = false
   selectedNodeId.value = null
 }
+function openInspector() {
+  inspectorOpen.value = true
+}
 function refreshLayout() {
   graphCanvasRef.value?.resetView()
 }
@@ -155,7 +160,7 @@ function toggleSelectedBoard() {
 provide('shared-graph', {
   allNodes, allEdges, visibleNodes, visibleEdges, roleName,
   showEdgeLabels, collapsedBoards,
-  refreshLayout, toggleAllBoards, openInspector: () => { inspectorOpen.value = true }, layoutMode, toggleLayout,
+  refreshLayout, toggleAllBoards, openInspector, layoutMode, toggleLayout,
   masteredSkillNames,
   graphLoading, graphEmpty,
   gen,
@@ -226,8 +231,48 @@ watch(roleName, () => loadData())
     <div class="shell-body" :class="'shell-body--' + layoutMode">
       <!-- 图区域始终挂载，布局切换时由 ResizeObserver 同步画布尺寸 -->
       <div class="shell-graph">
+        <div v-if="!graphLoading && !graphEmpty" class="shell-map-mode" role="group" aria-label="图谱呈现方式">
+          <button
+            type="button"
+            :class="{ 'shell-map-mode__button--active': graphDisplay === 'bubbles' }"
+            :aria-pressed="graphDisplay === 'bubbles'"
+            @click="graphDisplay = 'bubbles'"
+          >
+            <Icon icon="lucide:circle-dot" :width="14" />
+            <span>气泡总览</span>
+          </button>
+          <button
+            type="button"
+            :class="{ 'shell-map-mode__button--active': graphDisplay === 'relations' }"
+            :aria-pressed="graphDisplay === 'relations'"
+            @click="graphDisplay = 'relations'"
+          >
+            <Icon icon="lucide:git-branch" :width="14" />
+            <span>关系网络</span>
+          </button>
+        </div>
+        <button
+          v-if="!graphLoading && !graphEmpty && graphDisplay === 'bubbles'"
+          type="button"
+          class="shell-bubble-search"
+          title="查找技能"
+          aria-label="查找技能"
+          @click="openInspector"
+        >
+          <Icon icon="lucide:search" :width="15" />
+        </button>
+        <CareerAbilityBubbleMap
+          v-if="!graphLoading && !graphEmpty && graphDisplay === 'bubbles'"
+          class="shell-chart"
+          :nodes="allNodes"
+          :edges="allEdges"
+          :selected-node-id="selectedNodeId"
+          :role-name="roleName"
+          @node-click="selectNodeById"
+          @canvas-click="closeInspector"
+        />
         <CareerAbilityG6Canvas
-          v-if="!graphLoading && !graphEmpty"
+          v-else-if="!graphLoading && !graphEmpty && graphDisplay === 'relations'"
           ref="graphCanvasRef"
           class="shell-chart"
           :nodes="visibleNodes"
@@ -239,7 +284,7 @@ watch(roleName, () => loadData())
           @canvas-click="closeInspector"
         />
         <!-- 图谱叠加层：工具栏 + 图例 -->
-        <CareerAbilityGraph v-if="!graphEmpty && !graphLoading" />
+        <CareerAbilityGraph v-if="!graphEmpty && !graphLoading && graphDisplay === 'relations'" />
         <div v-if="graphLoading" class="shell-graph-state" role="status">正在读取能力图谱…</div>
         <div v-else-if="graphEmpty" class="shell-graph-state shell-graph-state--empty" role="status">
           <div class="shell-graph-state__eyebrow">职业能力复合图谱</div>
@@ -253,7 +298,7 @@ watch(roleName, () => loadData())
           <span>聚焦 <strong>{{ selectedNode.name }}</strong><small> · {{ selectedRelations.length }} 条直接关系</small></span>
           <button @click="closeInspector" aria-label="清除图谱聚焦" title="清除聚焦"><Icon icon="lucide:x" :width="14" /></button>
         </div>
-        <div v-else class="shell-graph-guide">点击板块展开技能 · 拖动节点探索 · 滚轮缩放</div>
+        <div v-else-if="graphDisplay === 'relations'" class="shell-graph-guide">点击板块展开技能 · 拖动节点探索 · 滚轮缩放</div>
       </div>
       <!-- 右侧面板（始终挂载，CSS 控制宽度与可见性） -->
       <div class="shell-panel">
@@ -407,6 +452,62 @@ watch(roleName, () => loadData())
   background: radial-gradient(circle at 50% 50%, #fff 0%, var(--bg-100, #F5F5F3) 80%);
 }
 .shell-chart { width: 100%; height: 100%; }
+.shell-map-mode {
+  position: absolute;
+  top: 13px;
+  left: 18px;
+  z-index: 12;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px;
+  border: 1px solid rgba(118, 105, 86, .22);
+  background: rgba(250, 248, 243, .86);
+  box-shadow: 0 5px 18px rgba(71, 58, 39, .08);
+  backdrop-filter: blur(10px);
+}
+.shell-map-mode button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 11px;
+  border: 0;
+  background: transparent;
+  color: #70685d;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: .04em;
+  cursor: pointer;
+  transition: color .18s ease, background .18s ease, box-shadow .18s ease;
+}
+.shell-map-mode button:hover { color: #9b3b20; }
+.shell-map-mode button:focus-visible { outline: 2px solid #9b3b20; outline-offset: 2px; }
+.shell-map-mode .shell-map-mode__button--active {
+  background: rgba(255, 255, 255, .82);
+  color: #9b3b20;
+  box-shadow: 0 1px 5px rgba(61, 48, 29, .12);
+}
+.shell-map-mode .shell-map-mode__button--active svg { filter: drop-shadow(0 0 4px rgba(190, 42, 0, .32)); }
+.shell-bubble-search {
+  position: absolute;
+  top: 13px;
+  right: 18px;
+  z-index: 12;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(118, 105, 86, .22);
+  background: rgba(250, 248, 243, .86);
+  color: #766b5d;
+  box-shadow: 0 5px 18px rgba(71, 58, 39, .08);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  transition: color .18s ease, border-color .18s ease, transform .18s ease;
+}
+.shell-bubble-search:hover { color: #9b3b20; border-color: rgba(155, 59, 32, .44); transform: translateY(-1px); }
+.shell-bubble-search:focus-visible { outline: 2px solid #9b3b20; outline-offset: 2px; }
 .shell-graph-state {
   position: absolute; inset: 0; z-index: 6;
   display: flex; align-items: center; justify-content: center;
@@ -434,7 +535,7 @@ watch(roleName, () => loadData())
   color: var(--text-300); font-size: 11px; pointer-events: none;
 }
 .shell-focus {
-  position: absolute; left: 20px; top: 18px; z-index: 6;
+  position: absolute; left: 20px; top: 60px; z-index: 6;
   display: flex; align-items: center; gap: 9px; max-width: calc(100% - 40px);
   padding: 9px 10px 9px 12px; border: 1px solid var(--color-border);
   background: var(--color-surface); box-shadow: 0 7px 20px rgba(26,26,26,.1);
@@ -578,8 +679,38 @@ watch(roleName, () => loadData())
 }
 @media (max-width: 767px) {
   .shell-brand__title { display: none; }
-  .shell-scroll-label { font-size: 13px; }
+  .shell-scroll-label { display: none; }
+  .shell-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 7px;
+    padding: 7px 9px;
+  }
+  .shell-header__left { gap: 0; }
+  .shell-back { padding: 5px 7px; font-size: 11px; }
+  .shell-header__right { gap: 5px; }
+  .shell-layout-toggle { flex: 1; min-width: 0; }
+  .shell-toggle-btn { flex: 1; justify-content: center; gap: 3px; padding: 7px 5px; font-size: 10px; letter-spacing: 0; white-space: nowrap; }
+  .shell-body { flex-direction: column; }
+  .shell-body--split .shell-graph { width: 100%; height: 68%; min-height: 0; }
+  .shell-body--split .shell-panel {
+    width: 100%;
+    height: 32%;
+    flex: 0 0 32%;
+    opacity: 1;
+    border-left: 0;
+    border-top: 1px solid var(--bg-300, #CBCBC8);
+  }
+  .shell-body--single .shell-graph { width: 100%; height: 100%; }
+  .shell-body--single .shell-panel { width: 0; height: 0; }
+  .shell-body--workspace .shell-graph,
+  .shell-body--workspace .shell-panel { width: 0; height: 0; }
+  .shell-body--workspace .shell-workspace { height: 100%; }
   .node-inspector { width: 100%; min-width: 0; }
+  .shell-map-mode { top: 8px; left: 10px; }
+  .shell-map-mode button { min-height: 28px; padding: 0 8px; font-size: 10px; }
+  .shell-bubble-search { top: 7px; right: 10px; width: 31px; height: 31px; }
+  .shell-focus { left: 10px; top: 48px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .node-inspector { animation: none; }

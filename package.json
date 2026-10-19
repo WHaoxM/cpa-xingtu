@@ -14,6 +14,7 @@
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
     "test:resume-trace": "node tools/test-resume-trace-attempt.mjs",
+    "test:role-intro-mock": "node --test tools/test-role-intro-mock.mjs",
     "check:ability-intro": "node tools/check-ability-intro.mjs"
   },
   "dependencies": {
