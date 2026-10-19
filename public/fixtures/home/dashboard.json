@@ -1,46 +1,53 @@
 {
   "success": true,
   "data": {
-    "student_id": "student_001",
-    "student_name": "钟同学",
-    "headline": "前端进阶 · 演示档案",
-    "stats": {
-      "saved_jobs": 3,
-      "target_roles": 2,
-      "reports": 2,
-      "course_progress_avg": 0.72
+    "metrics": {
+      "completed_courses": 2,
+      "weekly_completed_chapters": 3,
+      "week_start": "2026-10-19"
     },
-    "quick_links": [
-      { "title": "职途导航", "route": "student-career-navigation" },
-      { "title": "职业分析", "route": "student-career-analysis" },
-      { "title": "个人画像", "route": "student-career-portrait" },
-      { "title": "心仪岗位", "route": "student-favorites" },
-      { "title": "AI 助手", "route": "student-ai-assistant" },
-      { "title": "我的报告", "route": "student-my-reports" }
-    ],
-    "recent_activity": [
+    "portrait": {
+      "state": "ready_scored",
+      "completeness": 100,
+      "dimensions": { "D1": 72, "D2": 84, "D3": 68, "D4": 77 },
+      "scoring_eligible": true
+    },
+    "source_confirmation_task_id": "task_demo_confirmed001",
+    "evidence": { "has_verified_completed_report": true },
+    "recent_activities": [
       {
-        "id": "act_001",
-        "title": "生成职业生涯发展报告",
-        "at": "2026-07-14T11:33:58Z",
-        "route": "student-my-reports"
+        "id": "course:course_demo_data",
+        "type": "course_completed",
+        "title": "数据分析基础",
+        "occurred_at": "2026-10-18T16:20:00+08:00",
+        "route": "/app/student/learning"
       },
       {
-        "id": "act_002",
-        "title": "收藏岗位：前端开发工程师 @ 字节跳动",
-        "at": "2024-02-10T00:00:00Z",
-        "route": "student-favorites"
+        "id": "report:report_demo_career",
+        "type": "career_report",
+        "title": "职业规划阶段报告",
+        "occurred_at": "2026-10-16T14:00:00+08:00",
+        "route": "/app/student/my-reports"
       },
       {
-        "id": "act_003",
-        "title": "完成课程：Vue 3 入门",
-        "at": "2026-07-17T14:12:00Z",
-        "route": "student-learning"
+        "id": "course:course_demo_product",
+        "type": "course_completed",
+        "title": "产品思维入门",
+        "occurred_at": "2026-10-13T10:30:00+08:00",
+        "route": "/app/student/learning"
       }
     ],
-    "tips": [
-      "当前为 Mock 演示：所有数据来自 public/fixtures，不请求后端。",
-      "本地联调请设置 VITE_API_MODE=http 并启动 CPA-Agent 后端。"
-    ]
+    "demo": {
+      "career_directions": [
+        { "role_name": "数据分析师", "description": "通过数据发现问题，辅助业务决策", "matched_skills": ["SQL", "数据可视化"], "score": 0.82 },
+        { "role_name": "产品经理", "description": "连接用户需求与技术实现，推动产品落地", "matched_skills": ["需求分析", "沟通协作"], "score": 0.76 },
+        { "role_name": "前端开发工程师", "description": "用技术创造更清晰、易用的产品体验", "matched_skills": ["Vue", "TypeScript"], "score": 0.71 }
+      ],
+      "ai_suggestions": [
+        "结合已记录的学习进度，继续巩固数据分析基础课程。",
+        "完善职业兴趣测评后，可进一步比较相邻职业方向。",
+        "查看当前能力画像，选择一项需要加强的技能开始学习。"
+      ]
+    }
   }
 }
