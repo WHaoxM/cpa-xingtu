@@ -9,6 +9,7 @@ import CloudTabNav from '@/components/book/CloudTabNav.vue'
 import BookPage from '@/components/book/BookPage.vue'
 import UserInfoBar from '@/components/UserInfoBar.vue'
 import AgentMark from '@/components/agent/AgentMark.vue'
+import StarMark from '@/components/brand/StarMark.vue'
 import { gsap } from '@/plugins/gsap'
 
 const route = useRoute()
@@ -199,7 +200,7 @@ onBeforeUnmount(() => {
         @click="router.push('/app/dashboard')"
         @keydown.enter="router.push('/app/dashboard')"
       >
-        <span class="top-row__seal">职</span>
+        <StarMark :size="30" class="top-row__mark" />
         <span class="top-row__name">职导星图</span>
       </div>
 
@@ -263,7 +264,7 @@ onBeforeUnmount(() => {
     <el-drawer v-if="!isImmersiveRoute" v-model="drawerOpen" direction="ltr" size="82%" :with-header="false" class="mobile-drawer">
       <div class="drawer">
         <div class="drawer__brand" @click="router.push('/app/dashboard')" role="button" tabindex="0">
-          <img class="drawer__logo" src="/AstroLogo.png" alt="AstroGraph">
+          <StarMark :size="40" class="drawer__logo" />
           <div>
             <div class="drawer__name">职导星图</div>
             <div class="drawer__desc">让每个「如果」看见结果</div>
@@ -319,18 +320,13 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(12px);
 }
 
-/* 品牌锚点：朱砂印 + 衬线品名 */
+/* 品牌锚点：星形字标 + 衬线品名 */
 .top-row__brand {
   display: flex; align-items: center; gap: 8px;
   padding-right: 14px; flex-shrink: 0; cursor: pointer;
   border-right: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent 30%);
 }
-.top-row__seal {
-  width: 26px; height: 26px; display: grid; place-items: center;
-  background: var(--color-primary); color: #fff;
-  font-family: var(--font-title); font-size: 14px; font-weight: 600;
-  border-radius: 6px;
-}
+.top-row__mark { color: var(--color-primary, #be2a00); }
 .top-row__name {
   font-family: var(--font-title); font-size: 15px; font-weight: 600;
   color: var(--color-text); letter-spacing: 0.02em;
@@ -517,13 +513,8 @@ onBeforeUnmount(() => {
 .drawer__logo {
   width: 40px;
   height: 40px;
-  display: grid;
-  place-items: center;
-  font-weight: 600;
-  font-family: var(--font-title);
-  color: var(--primary-100);
-  border: 2px solid var(--primary-100);
-  font-size: 16px;
+  flex: none;
+  color: var(--color-primary, #be2a00);
 }
 
 .drawer__name {
