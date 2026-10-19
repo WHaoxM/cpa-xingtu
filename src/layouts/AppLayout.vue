@@ -237,7 +237,12 @@ onBeforeUnmount(() => {
         </BookPage>
       </main>
 
-      <main v-else class="immersive-stage">
+      <main
+        v-else
+        class="immersive-stage"
+        :tabindex="isStudent && route.path === '/app/dashboard' ? 0 : undefined"
+        :aria-label="isStudent && route.path === '/app/dashboard' ? '学生首页内容' : undefined"
+      >
         <router-view :key="route.fullPath" v-slot="{ Component }">
           <Transition :css="false" @enter="onImmersiveEnter" @leave="onImmersiveLeave">
             <component :is="Component" />
@@ -492,6 +497,19 @@ onBeforeUnmount(() => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+/* The dashboard is a long-form home surface; keep its scroll local to this route. */
+.book-shell--dashboard .immersive-stage {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-color: #d9cfc4 transparent;
+  scrollbar-width: thin;
+}
+.book-shell--dashboard .immersive-stage:focus-visible {
+  outline: 2px solid rgba(189, 55, 20, .55);
+  outline-offset: -3px;
 }
 
 

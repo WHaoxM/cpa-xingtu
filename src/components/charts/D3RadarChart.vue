@@ -30,12 +30,14 @@ const props = withDefaults(defineProps<{
   ghostData?: RadarDatum[]
   width?: number
   height?: number
+  margin?: number
   levels?: number
   showLegend?: boolean
   segmentColors?: string[]
 }>(), {
   width: 340,
   height: 300,
+  margin: 68,
   levels: 5,
   showLegend: true,
 })
@@ -93,8 +95,7 @@ function draw() {
 
   const W = el.clientWidth || props.width
   const H = el.clientHeight || props.height
-  const margin = 68
-  const radius = Math.max(24, Math.min(W, H) / 2 - margin)
+  const radius = Math.max(24, Math.min(W, H) / 2 - props.margin)
 
   d3.select(el).selectAll('*').remove()
 
@@ -191,7 +192,7 @@ function draw() {
         .attr('x', 4)
         .attr('y', -r + 3)
         .attr('font-size', 8)
-        .attr('fill', 'rgba(180,160,130,0.4)')
+        .attr('fill', '#75685e')
         .text(String(score))
     }
   }
@@ -315,7 +316,7 @@ function draw() {
         .attr('dominant-baseline', 'middle')
         .attr('font-size', 9)
         .attr('font-weight', '700')
-        .attr('fill', 'rgba(230,210,185,0.85)')
+        .attr('fill', '#8d563f')
         .text(String(val))
     }
   })
@@ -377,8 +378,8 @@ function draw() {
       })
   })
 
-  /* ── 图例（始终渲染在雷达图下方居中） ── */
-  {
+  /* ── 图例（按调用方配置显示） ── */
+  if (props.showLegend) {
     const legendY = radius + 28
     const totalW = hasRefData ? 190 : 80
     const legend = root.append('g').attr('transform', `translate(${-totalW / 2},${legendY})`)
@@ -452,7 +453,7 @@ onUnmounted(() => {
   hideTip()
 })
 
-watch(() => [props.data, props.ghostData, props.levels, props.segmentColors], () => {
+watch(() => [props.data, props.ghostData, props.levels, props.segmentColors, props.margin, props.showLegend], () => {
   draw()
 }, { deep: true })
 </script>
