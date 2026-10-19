@@ -379,7 +379,7 @@ onMounted(() => { void loadDashboard() })
           </header>
           <p class="panel-subtitle">仅呈现当前有效画像中的 D1–D4 四维数据</p>
           <div v-if="hasFullRadar" class="radar-wrap">
-            <D3RadarChart :data="radarData" :show-legend="false" :width="340" :height="245" :segment-colors="['#c54420', '#c54420', '#c54420', '#c54420']" />
+            <D3RadarChart :data="radarData" :show-legend="false" :width="420" :height="230" :margin="48" :segment-colors="['#c54420', '#c54420', '#c54420', '#c54420']" />
           </div>
           <div v-else class="panel-empty radar-empty" role="status">
             <span class="radar-empty__icon"><Icon icon="lucide:radar" :width="25" /></span>
@@ -515,9 +515,9 @@ onMounted(() => { void loadDashboard() })
 .shortcut--gold { color: #c27b35; background: #fbf6ef; }.shortcut--gold > span { background: #f8eddd; }
 
 .bottom-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 14px; margin-top: 16px; align-items: stretch; }
-.bottom-grid > .panel { min-height: 282px; padding: 19px 20px 16px; }
+.bottom-grid > .panel { display: flex; min-height: 282px; flex-direction: column; padding: 19px 20px 16px; }
 .career-panel .panel-subtitle, .activity-panel .panel-subtitle, .ability-panel .panel-subtitle { margin-bottom: 10px; }
-.career-list { display: grid; gap: 8px; }
+.career-list { display: grid; flex: 1; align-content: space-between; gap: 8px; }
 .career-item { min-width: 0; min-height: 58px; display: grid; grid-template-columns: 85px minmax(0, 1fr) 16px; align-items: center; gap: 11px; padding: 5px 8px 5px 5px; border: 1px solid transparent; border-radius: 10px; background: #fbf9f7; text-align: left; cursor: pointer; }
 .career-item:active { background: #fff4ee; }
 .career-item img { display: block; width: 85px; height: 47px; border-radius: 7px; object-fit: cover; }
@@ -528,7 +528,7 @@ onMounted(() => { void loadDashboard() })
 .career-arrow { color: #9b9892; }
 .career-empty { min-height: 165px; }
 
-.activity-list { position: relative; display: grid; gap: 0; padding: 0; margin: 7px 0 0; list-style: none; }
+.activity-list { position: relative; display: grid; flex: 1; align-content: space-between; gap: 0; padding: 0; margin: 7px 0 0; list-style: none; }
 .activity-list::before { content: ""; position: absolute; top: 18px; bottom: 18px; left: 79px; width: 1px; background: #ece7e2; }
 .activity-list li { position: relative; display: grid; grid-template-columns: 62px 34px minmax(0, 1fr); align-items: center; gap: 8px; min-height: 51px; }
 .activity-list time { color: #a19c95; font-size: 10px; white-space: nowrap; }
@@ -539,7 +539,7 @@ onMounted(() => { void loadDashboard() })
 .activity-copy small { color: #a09b94; font-size: 9px; }
 .activity-empty { min-height: 170px; }
 
-.radar-wrap { height: 215px; max-width: 350px; margin: 0 auto; }
+.radar-wrap { height: 230px; max-width: 420px; margin: 0 auto; }
 .radar-wrap :deep(svg) { overflow: visible; }
 .radar-empty { min-height: 175px; }
 .radar-empty__icon { width: 43px; height: 43px; display: grid; place-items: center; border-radius: 50%; color: #bd6041; background: #fbf0e9; }
@@ -572,11 +572,9 @@ onMounted(() => { void loadDashboard() })
 }
 @media (max-width: 767px) {
   .student-dashboard {
-    height: 100%;
-    min-height: 0;
-    overflow-x: hidden;
-    overflow-y: auto;
-    overscroll-behavior-y: contain;
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
     padding: 12px 12px 22px;
     scrollbar-width: thin;
   }
