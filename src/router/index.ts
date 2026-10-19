@@ -5,6 +5,16 @@ import { useUserStore } from '@/stores'
 import { ElMessage } from 'element-plus'
 import { UserRole } from '@/types'
 
+const APP_NAME = '职导星图'
+const LANDING_PAGE_TITLE = '职导星图｜职业发展平台'
+
+function getDocumentTitle(routeTitle: unknown): string | undefined {
+  if (typeof routeTitle !== 'string' || !routeTitle.trim()) return undefined
+  const title = routeTitle.trim()
+  if (title === APP_NAME) return LANDING_PAGE_TITLE
+  return `${title}｜${APP_NAME}`
+}
+
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
@@ -15,10 +25,9 @@ router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore(pinia)
   await userStore.refreshCookieSession()
 
-  // 更新页面标题
-  if (to.meta.title) {
-    document.title = `${to.meta.title} - 职导星图`
-  }
+  // 更新页面标题；首页使用完整品牌名，避免“职导星图 - 职导星图”重复。
+  const pageTitle = getDocumentTitle(to.meta.title)
+  if (pageTitle) document.title = pageTitle
 
   // 检查是否是公开路由
   if (to.meta.public) {
