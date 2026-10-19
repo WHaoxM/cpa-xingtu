@@ -1,7 +1,7 @@
-﻿<!-- 页面：登录；路由：/login（login） -->
+<!-- 登录与学生注册；路由：/login -->
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
@@ -9,527 +9,400 @@ import { ICONS } from '@/constants/icons'
 import { useUserStore } from '@/stores'
 import { UserRole } from '@/types'
 import { isMockMode } from '@/api/config'
+import { ApiError } from '@/api/types'
 import { gsap } from '@/plugins/gsap'
+import showcaseImage from '../../design/login-left-showcase-v1.png'
 
 const router = useRouter()
 const userStore = useUserStore()
 const mockMode = isMockMode()
+const compactViewport = ref(window.matchMedia('(max-width: 540px)').matches)
 
 const username = ref('')
 const password = ref('')
 const displayName = ref('')
-const registering = ref(false)
+const registering = ref(!mockMode && compactViewport.value)
 const selectedRole = ref<UserRole>(UserRole.STUDENT)
 const loading = ref(false)
 const showPassword = ref(false)
+const submitLabel = computed(() => registering.value ? '创建学生账号' : '登录')
 
 const roleTabs = [
-  { role: UserRole.STUDENT, icon: ICONS.graduationCap, label: '学生', color: '#10B981' },
-  { role: UserRole.ADMIN, icon: ICONS.settings, label: '管理员', color: '#8B5CF6' },
+  { role: UserRole.STUDENT, icon: ICONS.graduationCap, label: '学生' },
+  { role: UserRole.ADMIN, icon: ICONS.settings, label: '管理员' },
 ]
 
 const quickLogins = [
-  { role: UserRole.STUDENT, account: 'student001', name: '学生体验' },
-  { role: UserRole.ADMIN, account: 'admin001', name: '管理员' },
+  { role: UserRole.STUDENT, account: 'student001' },
+  { role: UserRole.ADMIN, account: 'admin001' },
 ].filter(() => mockMode)
 
-const features = [
-  { name: '能力图谱', desc: '量化 6 维度职业能力，定位真实短板' },
-  { name: '岗位匹配', desc: '解析简历，精准推荐目标岗位' },
-  { name: '路径规划', desc: '课程→实践→求职的时间线' },
-  { name: '简历诊断', desc: '对标岗位，给出差距建议' },
-]
+const backendUsernamePattern = /^[A-Za-z0-9_.-]{3,50}$/
 
-async function handleLogin() {
-  if (!username.value.trim() || !password.value.trim()) {
-    ElMessage.warning('填个账号密码呗')
+function setRegistering(next: boolean): void {
+  if (mockMode || loading.value) return
+  registering.value = next
+  password.value = ''
+  displayName.value = ''
+  showPassword.value = false
+}
+
+function submitErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) {
+    return error instanceof Error ? error.message : '账号服务暂不可用，请稍后重试。'
+  }
+  if (error.kind === 'network') return error.message
+  if (error.status === 401) return '账号或密码不正确，请检查后重试。'
+  if (error.status === 409) {
+    return registering.value
+      ? '这个用户名已被使用，请换一个用户名。'
+      : '当前账号会话状态已变化，请刷新页面后重试。'
+  }
+  if (error.status === 429) return '操作太频繁了，请稍后再试。'
+  if (error.status === 503) return '账号服务暂不可用，请稍后重试。'
+  if (error.status === 400 && /csrf/i.test(error.message)) {
+    return '安全校验已过期，请刷新页面后重试。'
+  }
+  if (error.status === 400) return '登录信息未通过校验，请检查账号资料后重试。'
+  return error.message || '账号服务暂不可用，请稍后重试。'
+}
+
+async function handleSubmit(): Promise<void> {
+  if (loading.value) return
+
+  const cleanUsername = username.value.trim()
+  if (!cleanUsername || password.value.length === 0) {
+    ElMessage.warning('请输入账号和密码。')
     return
   }
-  if (registering.value && password.value.length < 12) {
-    ElMessage.warning('密码长度须为 12–128 位')
+  if (!mockMode && !backendUsernamePattern.test(cleanUsername)) {
+    ElMessage.warning('账号须为 3–50 位英文字母、数字、点、下划线或连字符。')
+    return
+  }
+  if (!mockMode && (password.value.length < 12 || password.value.length > 128)) {
+    ElMessage.warning('密码长度须为 12–128 位。')
+    return
+  }
+  if (registering.value && displayName.value.trim().length > 100) {
+    ElMessage.warning('姓名最多 100 个字符。')
     return
   }
 
   loading.value = true
-  await new Promise(resolve => setTimeout(resolve, 600))
-
-  let success = false
   try {
-    if (registering.value) {
-      success = await userStore.registerAsync(username.value.trim(), password.value, displayName.value.trim())
-    } else {
-      success = await userStore.loginAsync(username.value, password.value, selectedRole.value)
+    const success = registering.value
+      ? await userStore.registerAsync(cleanUsername, password.value, displayName.value.trim())
+      : await userStore.loginAsync(cleanUsername, password.value, mockMode ? selectedRole.value : undefined)
+
+    if (!success) {
+      ElMessage.error(mockMode ? '账号或密码不正确（演示密码：123456）。' : '登录未成功，请检查账号信息后重试。')
+      return
     }
+
+    ElMessage.success(registering.value ? '学生账号已创建并登录。' : '登录成功。')
+    await router.push('/app/dashboard')
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '账号服务暂不可用')
+    ElMessage.error(submitErrorMessage(error))
+  } finally {
     loading.value = false
-    return
   }
-
-  if (success) {
-    ElMessage.success(registering.value ? '账号已创建并登录' : '进来了！')
-    router.push('/app/dashboard')
-  } else {
-    ElMessage.error(!mockMode ? '登录失败，请检查账号、密码或后端账号服务' : '账号或密码不对（默认：123456）')
-  }
-
-  loading.value = false
 }
 
-function quickLogin(role: UserRole, account: string) {
+function quickLogin(role: UserRole, account: string): void {
+  if (!mockMode || loading.value) return
   username.value = account
   password.value = '123456'
   selectedRole.value = role
-  handleLogin()
+  void handleSubmit()
 }
 
-/* ===== 入场动画（与 HomeCenter reveal 同类） ===== */
+/* 入场动效只作渐进增强；减少动态效果时保持静态呈现。 */
 const pageRef = ref<HTMLElement | null>(null)
 let ctx: ReturnType<typeof gsap.context> | null = null
 
 onMounted(() => {
-  if (!pageRef.value) return
-
-  const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-  if (prefersReduced) return
+  if (!pageRef.value || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
 
   ctx = gsap.context(() => {
-    const tl = gsap.timeline({ delay: 0.1 })
-
-    tl.from('.stg', {
-      opacity: 0, y: 18,
-      stagger: 0.06, duration: 0.5, ease: 'power2.out',
-    })
-
-    tl.fromTo('.login-card', {
-      opacity: 0, y: 18,
-    }, {
-      opacity: 1, y: 0,
-      duration: 0.5, ease: 'power2.out',
-    }, '-=0.3')
-
-    tl.from('.f-stg', {
-      opacity: 0, y: 10,
-      stagger: 0.05, duration: 0.35, ease: 'power2.out',
-    }, '-=0.2')
-
-    tl.from('.feat-row', {
-      opacity: 0, y: 8,
-      duration: 0.4, ease: 'power2.out',
-    }, '-=0.15')
+    gsap.timeline({ delay: 0.08 })
+      .from('.hero-stagger', { opacity: 0, y: 14, stagger: 0.07, duration: 0.45, ease: 'power2.out' })
+      .from('.showcase-frame', { opacity: 0, y: 12, duration: 0.5, ease: 'power2.out' }, '-=0.3')
+      .from('.auth-panel', { opacity: 0, y: 12, duration: 0.45, ease: 'power2.out' }, '-=0.34')
   }, pageRef.value)
 })
 
-onBeforeUnmount(() => {
-  ctx?.revert()
-})
+onBeforeUnmount(() => ctx?.revert())
 </script>
 
-
-
-
-
 <template>
-  <div ref="pageRef" class="login-page">
-    <div class="login-center">
-      <!-- 品牌标记 -->
-      <div class="stg brand-mark">
-        <Icon icon="lucide:compass" :width="16" class="brand-mark__icon" />
-        <span class="brand-mark__text">识途 · 职业规划平台</span>
-      </div>
-
-      <div v-if="mockMode" class="stg mock-pill" title="VITE_API_MODE=mock：只读 fixtures，不请求后端">
-        <Icon icon="lucide:database" :width="14" />
-        <span>演示数据 · 无需后端</span>
-      </div>
-      <div v-else class="stg mock-pill" title="使用平台账号后端进行登录，身份由服务端会话确定">
-        <Icon icon="lucide:plug-zap" :width="14" />
-        <span>后端账号 · Cookie 会话</span>
-      </div>
-
-      <!-- 标题 -->
-      <h1 class="stg login-headline">找到你的职业方向</h1>
-      <p class="stg login-sub">从能力评估到路径落地</p>
-
-      <!-- 表单卡片 -->
-      <div class="login-card">
-        <div v-if="!mockMode" class="auth-mode-switch">
-          <button type="button" :class="{ active: !registering }" @click="registering = false">登录</button>
-          <button type="button" :class="{ active: registering }" @click="registering = true">注册学生账号</button>
-        </div>
-        <!-- 角色切换 -->
-        <div v-if="mockMode && !registering" class="f-stg role-tabs">
-          <button
-            v-for="tab in roleTabs"
-            :key="tab.role"
-            class="role-tab"
-            :class="{ active: selectedRole === tab.role }"
-            @click="selectedRole = tab.role"
-          >
-            <Icon :icon="tab.icon" class="tab-icon" />
-            <span>{{ tab.label }}</span>
-          </button>
+  <main ref="pageRef" class="login-page">
+    <div class="login-layout">
+      <section class="hero-panel" aria-labelledby="hero-title">
+        <img class="hero-background" :src="showcaseImage" alt="" aria-hidden="true" />
+        <div class="brand-lockup hero-stagger">
+          <span class="brand-symbol" aria-hidden="true"><Icon icon="lucide:compass" :width="20" /></span>
+          <span class="brand-name">职导星图</span>
+          <span class="brand-divider" aria-hidden="true"></span>
+          <span class="brand-caption">职业发展平台</span>
         </div>
 
-        <!-- 输入框 -->
-        <div class="f-stg input-group">
-          <div v-if="registering" class="input-wrap">
-            <input v-model="displayName" type="text" placeholder="姓名（可选）" class="custom-input" />
+        <div class="hero-copy">
+          <p class="eyebrow hero-stagger"><span class="eyebrow-dot"></span> CAREER DEVELOPMENT PLATFORM</p>
+          <h1 id="hero-title" class="hero-title hero-stagger">让<span class="hero-title__accent">职业成长</span>，每一步都有方向</h1>
+          <p class="hero-description hero-stagger">从了解自己，到找到适合的职业路径</p>
+          <span class="hero-rule hero-stagger" aria-hidden="true"></span>
+        </div>
+
+      </section>
+
+      <section class="auth-panel" aria-labelledby="auth-title">
+        <div class="auth-card">
+          <div class="auth-brand" aria-label="职导星图">
+            <span class="brand-symbol" aria-hidden="true"><Icon icon="lucide:compass" :width="19" /></span>
+            <span>职导星图</span>
           </div>
-          <div class="input-wrap">
-            <Icon :icon="ICONS.user" class="input-icon" />
-            <input v-model="username" type="text" placeholder="账号" class="custom-input" @keydown.enter="handleLogin" />
+          <div class="auth-heading">
+            <div v-if="mockMode" class="mode-pill mode-pill--mock">
+              <Icon icon="lucide:database" :width="14" />
+              <span>演示模式 · 无需后端</span>
+            </div>
+            <h2 id="auth-title">{{ registering ? '开启你的成长旅程' : '欢迎回来' }}</h2>
+            <p>{{ registering ? '创建学生账号，开始规划职业方向。' : '登录后继续探索适合你的职业方向。' }}</p>
           </div>
-          <div class="input-wrap">
-            <Icon :icon="ICONS.lock" class="input-icon" />
-            <input v-model="password" :type="showPassword ? 'text' : 'password'" placeholder="密码" class="custom-input" @keydown.enter="handleLogin" />
-            <button class="password-toggle" @click="showPassword = !showPassword">
-              <Icon :icon="showPassword ? ICONS.eye : ICONS.eyeOff" />
+
+          <div v-if="!mockMode" class="auth-mode-switch" role="tablist" aria-label="账号操作">
+            <button type="button" role="tab" :aria-selected="!registering" :class="{ active: !registering }" @click="setRegistering(false)">登录</button>
+            <button type="button" role="tab" :aria-selected="registering" :class="{ active: registering }" @click="setRegistering(true)">注册学生账号</button>
+          </div>
+
+          <div v-if="mockMode && !registering" class="role-tabs" aria-label="演示角色">
+            <button
+              v-for="tab in roleTabs"
+              :key="tab.role"
+              type="button"
+              class="role-tab"
+              :class="{ active: selectedRole === tab.role }"
+              :aria-pressed="selectedRole === tab.role"
+              @click="selectedRole = tab.role"
+            >
+              <Icon :icon="tab.icon" class="tab-icon" />
+              <span>{{ tab.label }}</span>
             </button>
           </div>
-        </div>
 
-        <!-- 登录按钮 -->
-        <button class="f-stg login-btn" :class="{ loading }" :disabled="loading" @click="handleLogin">
-          <span v-if="!loading">登录</span>
-          <span v-else>登录中...</span>
-        </button>
+          <form class="auth-form" @submit.prevent="handleSubmit">
+            <label v-if="registering && !compactViewport" class="field-wrap" for="display-name">
+              <Icon icon="lucide:user-round" class="field-icon" aria-hidden="true" />
+              <input
+                id="display-name"
+                v-model="displayName"
+                type="text"
+                name="name"
+                autocomplete="name"
+                maxlength="100"
+                placeholder="姓名（选填）"
+                class="custom-input"
+                :disabled="loading"
+              />
+            </label>
+            <label class="field-wrap" for="account-username">
+              <Icon :icon="ICONS.user" class="field-icon" aria-hidden="true" />
+              <input
+                id="account-username"
+                v-model="username"
+                type="text"
+                name="username"
+                autocomplete="username"
+                maxlength="50"
+                autocapitalize="none"
+                spellcheck="false"
+                placeholder="用户名"
+                class="custom-input"
+                required
+                :disabled="loading"
+              />
+            </label>
+            <label class="field-wrap" for="account-password">
+              <Icon :icon="ICONS.lock" class="field-icon" aria-hidden="true" />
+              <input
+                id="account-password"
+                v-model="password"
+                :type="showPassword ? 'text' : 'password'"
+                name="password"
+                :autocomplete="registering ? 'new-password' : 'current-password'"
+                maxlength="128"
+                placeholder="密码"
+                class="custom-input custom-input--password"
+                required
+                :disabled="loading"
+              />
+              <button
+                type="button"
+                class="password-toggle"
+                :aria-label="showPassword ? '隐藏密码' : '显示密码'"
+                :aria-pressed="showPassword"
+                @click="showPassword = !showPassword"
+              >
+                <Icon :icon="showPassword ? ICONS.eye : ICONS.eyeOff" />
+              </button>
+            </label>
 
-        <!-- 快速体验 -->
-        <div v-if="quickLogins.length" class="f-stg quick-section">
-          <div class="quick-divider"><span>或快速体验</span></div>
-          <div class="quick-buttons">
-            <button v-for="item in quickLogins" :key="item.role" class="quick-btn" @click="quickLogin(item.role, item.account)">
-              演示账号一键登录
+            <p v-if="registering" class="form-note">用户名 3–50 位，仅限英文字母、数字、点、下划线和连字符；密码 12–128 位。</p>
+            <button class="submit-btn" :class="{ loading }" :disabled="loading" type="submit">
+              <span>{{ loading ? (registering ? '正在创建…' : '正在登录…') : submitLabel }}</span>
+              <Icon v-if="!loading" icon="lucide:arrow-right" :width="17" aria-hidden="true" />
             </button>
+          </form>
+
+          <div v-if="quickLogins.length" class="quick-section">
+            <div class="quick-divider"><span>或快速体验</span></div>
+            <div class="quick-buttons">
+              <button v-for="item in quickLogins" :key="item.role" type="button" class="quick-btn" :disabled="loading" @click="quickLogin(item.role, item.account)">
+                <Icon :icon="item.role === UserRole.ADMIN ? ICONS.settings : ICONS.graduationCap" :width="15" />
+                <span>{{ item.role === UserRole.ADMIN ? '体验管理端' : '体验学生端' }}</span>
+              </button>
+            </div>
+            <p class="demo-hint">演示账号密码：<strong>123456</strong></p>
           </div>
+
+          <p v-if="!mockMode && registering" class="account-note">管理员账号由平台管理员开通，不支持自助注册。</p>
+          <p v-else-if="!mockMode" class="account-note">使用已开通的平台账号登录。</p>
+          <p v-if="!mockMode" class="mobile-auth-switch">
+            {{ registering ? '已有账号？' : '还没有账号？' }}
+            <button type="button" @click="setRegistering(!registering)">{{ registering ? '返回登录' : '立即注册' }}</button>
+          </p>
         </div>
 
-        <!-- 提示 -->
-        <div class="f-stg login-hint">
-          <span v-if="!mockMode">{{ registering ? '注册仅开放学生账号，密码 12–128 位；管理员账号由平台管理员开通' : '使用已开通的平台账号登录' }}</span>
-          <span v-else>演示账号 <strong>student001</strong> / <strong>123456</strong></span>
-        </div>
-      </div>
-
-      <!-- 功能亮点 -->
-      <div class="feat-row">
-        <span v-for="(feat, i) in features" :key="feat.name" class="feat-pill" :title="feat.desc">
-          <template v-if="i > 0"><span class="feat-sep">·</span></template>{{ feat.name }}
-        </span>
-      </div>
+        <p class="auth-legal">继续即表示你同意平台的服务条款与隐私说明。</p>
+        <p class="auth-footer">© {{ new Date().getFullYear() }} 职导星图 · 陪伴每一段成长</p>
+      </section>
     </div>
-  </div>
+  </main>
 </template>
 
 <style scoped>
-/* ═══ 登录页（复用 HomeCenter 设计体系） ═══ */
-
 .login-page {
   min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 32px;
-  background: linear-gradient(168deg,
-    color-mix(in srgb, var(--vermilion-100) 12%, var(--parchment-100) 88%) 0%,
-    var(--parchment-100) 40%,
-    color-mix(in srgb, var(--indigo-100) 8%, var(--parchment-100) 92%) 100%);
-}
-
-.login-center {
-  width: 100%;
-  max-width: 380px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-/* --- 品牌标记（同 hc-section-label 规格） --- */
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 12px;
-}
-
-.brand-mark__icon {
-  color: var(--vermilion-500);
-}
-
-.brand-mark__text {
-  font-size: 11px;
-  font-weight: 600;
-  font-family: var(--font-ui);
-  color: var(--ink-500);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.mock-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 16px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-family: var(--font-ui);
-  color: var(--indigo-700, #3730a3);
-  background: color-mix(in srgb, var(--indigo-100, #e0e7ff) 75%, #fff);
-  border: 1px solid color-mix(in srgb, var(--indigo-300, #a5b4fc) 50%, transparent);
-}
-
-/* --- 标题（同 hc-hero__greeting 规格） --- */
-.login-headline {
-  font-size: 20px;
-  font-weight: 500;
-  font-family: var(--font-title);
+  min-height: 100svh;
   color: var(--ink-900);
-  text-align: center;
-  line-height: 1.3;
-  margin: 0 0 6px;
+  background: #fff;
 }
 
-.login-sub {
-  font-size: 13px;
-  font-family: var(--font-ui);
-  color: var(--ink-500);
-  text-align: center;
-  margin: 0 0 24px;
-  line-height: 1.6;
-}
-
-/* --- 表单卡片（同 hc-overview 规格） --- */
-.login-card {
+.login-layout {
   width: 100%;
-  padding: 28px;
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  border: 1px solid var(--parchment-300);
-  box-shadow: var(--shadow-sm);
+  min-height: 100vh;
+  min-height: 100svh;
+  display: grid;
+  grid-template-columns: minmax(0, 2.05fr) minmax(400px, .95fr);
+  align-items: stretch;
+  gap: 0;
 }
 
-.auth-mode-switch { display: flex; gap: 8px; margin-bottom: 18px; }
-.auth-mode-switch button { flex: 1; padding: 8px; border: 1px solid var(--parchment-300); border-radius: var(--radius-sm); background: var(--parchment-200); color: var(--ink-500); cursor: pointer; }
-.auth-mode-switch button.active { color: var(--vermilion-500); border-color: var(--vermilion-300); background: color-mix(in srgb, var(--vermilion-500) 6%, var(--color-surface) 94%); }
+.hero-panel { position: relative; isolation: isolate; min-width: 0; min-height: 100vh; min-height: 100svh; display: flex; flex-direction: column; overflow: hidden; padding: clamp(31px, 4vw, 62px) clamp(32px, 5.1vw, 86px); background: var(--parchment-100); }
+.hero-panel::after { position: absolute; z-index: -1; inset: 0; content: ''; background: linear-gradient(180deg, rgba(250, 248, 244, .94) 0%, rgba(250, 248, 244, .78) 22%, rgba(250, 248, 244, .16) 52%, rgba(250, 248, 244, .1) 100%), linear-gradient(90deg, rgba(250, 248, 244, .15), transparent 62%); }
+.hero-background { position: absolute; z-index: -2; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 54%; }
+.brand-lockup { position: relative; display: flex; align-items: center; gap: 10px; margin-bottom: clamp(27px, 4.5vh, 52px); }
+.hero-copy, .brand-lockup { z-index: 0; }
+.brand-symbol { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 11px; color: var(--vermilion-600, var(--vermilion-500)); background: color-mix(in srgb, var(--vermilion-100) 72%, white); }
+.brand-name { font-family: var(--font-title); font-size: 16px; font-weight: 700; letter-spacing: .08em; }
+.brand-divider { width: 1px; height: 16px; margin: 0 2px; background: var(--parchment-400); }
+.brand-caption { color: var(--ink-500); font-size: 12px; letter-spacing: .08em; }
 
-/* --- 角色标签 --- */
-.role-tabs {
-  display: flex;
-  gap: 8px;
-  margin-bottom: 20px;
+.hero-copy { max-width: 900px; }
+.eyebrow { display: flex; align-items: center; gap: 9px; margin: 0 0 17px; color: var(--vermilion-600, var(--vermilion-500)); font: 700 10px/1.4 var(--font-ui); letter-spacing: .2em; }
+.eyebrow-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 12%, transparent); }
+.hero-title { margin: 0; font: 600 clamp(36px, 3.8vw, 61px)/1.22 var(--font-title); letter-spacing: .015em; color: var(--ink-900); white-space: nowrap; }
+.hero-title__accent { color: var(--vermilion-600, var(--vermilion-500)); }
+.hero-description { margin: 12px 0 0; color: var(--ink-500); font: 15px/1.8 var(--font-ui); letter-spacing: .035em; }
+.hero-rule { display: block; width: 54px; height: 2px; margin-top: 17px; background: var(--vermilion-500); }
+
+.auth-panel { width: 100%; min-height: 100vh; min-height: 100svh; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: clamp(25px, 4.3vw, 70px); background: #fff; }
+.auth-card { width: min(100%, 492px); padding: clamp(28px, 3vw, 40px); border: 1px solid color-mix(in srgb, var(--parchment-400) 60%, white); border-radius: 17px; background: #fff; box-shadow: 0 15px 44px rgba(73, 50, 31, .065); }
+.auth-brand { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 22px; font: 700 15px/1.3 var(--font-title); letter-spacing: .07em; }
+.auth-brand .brand-symbol { width: 30px; height: 30px; border-radius: 50%; }
+.auth-heading { text-align: center; margin-bottom: 23px; }
+.mode-pill { width: fit-content; display: flex; align-items: center; gap: 6px; margin: 0 auto 15px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--vermilion-300) 38%, white); border-radius: 999px; color: var(--vermilion-700, var(--vermilion-500)); background: color-mix(in srgb, var(--vermilion-100) 44%, white); font: 600 11px/1 var(--font-ui); }
+.mode-pill--mock { color: var(--indigo-700, #3730a3); border-color: color-mix(in srgb, var(--indigo-300, #a5b4fc) 40%, white); background: color-mix(in srgb, var(--indigo-100, #e0e7ff) 55%, white); }
+.auth-heading h2 { margin: 0; font: 600 24px/1.4 var(--font-title); letter-spacing: .025em; }
+.auth-heading p { margin: 6px 0 0; color: var(--ink-500); font: 13px/1.65 var(--font-ui); }
+
+.auth-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-bottom: 20px; padding: 4px; border-radius: 10px; background: var(--parchment-200); }
+.auth-mode-switch button { min-height: 38px; border: 0; border-radius: 7px; color: var(--ink-500); background: transparent; font: 600 13px/1.2 var(--font-ui); cursor: pointer; transition: color .18s, background .18s, box-shadow .18s; }
+.auth-mode-switch button.active { color: var(--vermilion-700, var(--vermilion-500)); background: white; box-shadow: 0 2px 8px rgba(55, 44, 34, .09); }
+.role-tabs { display: flex; gap: 9px; margin-bottom: 19px; }
+.role-tab { flex: 1; min-height: 57px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--parchment-300); border-radius: 10px; color: var(--ink-500); background: var(--parchment-100); font: 600 12px/1.2 var(--font-ui); cursor: pointer; transition: border-color .18s, color .18s, background .18s; }
+.role-tab:hover { border-color: var(--vermilion-300); }
+.role-tab.active { border-color: color-mix(in srgb, var(--vermilion-500) 43%, white); color: var(--vermilion-700, var(--vermilion-500)); background: color-mix(in srgb, var(--vermilion-100) 37%, white); }
+.tab-icon { font-size: 19px; }
+
+.auth-form { display: flex; flex-direction: column; gap: 13px; }
+.field-wrap { position: relative; display: flex; align-items: center; min-width: 0; }
+.field-icon { position: absolute; left: 14px; z-index: 1; color: var(--ink-300); font-size: 17px; pointer-events: none; }
+.custom-input { width: 100%; min-height: 49px; padding: 12px 14px 12px 43px; border: 1px solid var(--parchment-300); border-radius: 9px; outline: none; color: var(--ink-900); background: color-mix(in srgb, var(--parchment-100) 68%, white); font: 14px/1.4 var(--font-ui); transition: border-color .18s, box-shadow .18s, background .18s; }
+.custom-input--password { padding-right: 48px; }
+.custom-input::placeholder { color: var(--ink-300); }
+.custom-input:hover:not(:disabled) { border-color: var(--parchment-400); }
+.custom-input:focus { border-color: var(--vermilion-500); background: white; box-shadow: 0 0 0 3px color-mix(in srgb, var(--vermilion-500) 15%, transparent); }
+.custom-input:disabled { opacity: .65; }
+.password-toggle { position: absolute; right: 6px; display: grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 7px; color: var(--ink-500); background: transparent; font-size: 17px; cursor: pointer; }
+.password-toggle:hover { color: var(--vermilion-600, var(--vermilion-500)); background: var(--parchment-200); }
+.form-note { margin: -3px 0 1px; color: var(--ink-500); font: 11px/1.6 var(--font-ui); }
+.submit-btn { width: 100%; min-height: 50px; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 5px; border: 0; border-radius: 9px; color: #fff; background: linear-gradient(110deg, var(--vermilion-500), var(--vermilion-700)); box-shadow: 0 8px 18px rgba(190, 42, 0, .2); font: 600 14px/1.2 var(--font-title); letter-spacing: .06em; cursor: pointer; transition: transform .18s, box-shadow .18s, filter .18s; }
+.submit-btn:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 10px 24px rgba(190, 42, 0, .27); filter: saturate(1.06); }
+.submit-btn:active:not(:disabled) { transform: translateY(0); }
+.submit-btn:disabled { opacity: .67; cursor: wait; }
+
+.quick-section { margin-top: 21px; }
+.quick-divider { display: flex; align-items: center; gap: 11px; margin-bottom: 12px; color: var(--ink-300); font: 11px/1.2 var(--font-ui); }
+.quick-divider::before, .quick-divider::after { content: ''; height: 1px; flex: 1; background: var(--parchment-300); }
+.quick-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.quick-btn { min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--parchment-300); border-radius: 8px; color: var(--ink-500); background: white; font: 600 11px/1.2 var(--font-ui); cursor: pointer; transition: border-color .18s, color .18s, background .18s; }
+.quick-btn:hover:not(:disabled) { border-color: var(--vermilion-300); color: var(--vermilion-600, var(--vermilion-500)); background: color-mix(in srgb, var(--vermilion-100) 25%, white); }
+.quick-btn:disabled { opacity: .55; cursor: wait; }
+.demo-hint { margin: 11px 0 0; text-align: center; color: var(--ink-300); font: 11px/1.4 var(--font-ui); }
+.demo-hint strong { color: var(--ink-500); font-weight: 600; }
+.account-note { margin: 17px 0 0; text-align: center; color: var(--ink-500); font: 11px/1.6 var(--font-ui); }
+.auth-legal { margin: 17px 0 0; text-align: center; color: var(--ink-300); font: 10px/1.6 var(--font-ui); }
+.auth-footer { margin: 23px 0 0; text-align: center; color: var(--ink-300); font: 10px/1.5 var(--font-ui); letter-spacing: .035em; }
+.mobile-auth-switch { display: none; }
+
+button:focus-visible { outline: 3px solid color-mix(in srgb, var(--vermilion-500) 48%, white); outline-offset: 2px; }
+
+@media (max-width: 980px) {
+  .login-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .hero-panel { min-height: 590px; padding: 30px clamp(22px, 7vw, 70px) 25px; }
+  .hero-panel::after { background: linear-gradient(180deg, rgba(250, 248, 244, .96) 0%, rgba(250, 248, 244, .78) 32%, rgba(250, 248, 244, .12) 72%, rgba(250, 248, 244, .25) 100%); }
+  .hero-background { object-position: center 58%; }
+  .brand-lockup { margin-bottom: 24px; }
+  .hero-copy { text-align: center; margin: 0 auto; }
+  .eyebrow { justify-content: center; }
+  .hero-description { margin-left: auto; margin-right: auto; }
+  .hero-title { white-space: normal; }
+  .hero-rule { margin-left: auto; margin-right: auto; }
+  .auth-panel { min-height: auto; padding: 36px clamp(22px, 7vw, 70px) 28px; }
+  .auth-footer { margin-top: 16px; }
 }
 
-.role-tab {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  padding: 10px 6px;
-  background: var(--parchment-200);
-  border: 1px solid var(--parchment-300);
-  border-radius: var(--radius-sm);
-  border-bottom: 2px solid transparent;
-  cursor: pointer;
-  transition: background 0.2s, border-color 0.2s, color 0.2s;
-  font-size: 12px;
-  font-family: var(--font-ui);
-  color: var(--ink-500);
+@media (max-width: 540px) {
+  .login-layout { min-height: 100svh; display: block; }
+  .hero-panel { display: none; }
+  .auth-panel { min-height: 100svh; justify-content: flex-start; padding: 0 22px 28px; background: var(--parchment-100); }
+  .auth-card { width: 100%; max-width: 460px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  .auth-brand { width: calc(100% + 44px); min-height: 68px; margin: 0 -22px; padding: 14px 18px; border-bottom: 1px solid var(--parchment-300); background: #fff; font-size: 16px; }
+  .auth-heading { margin: clamp(90px, 20vh, 164px) 0 25px; }
+  .auth-heading h2 { font-size: 23px; }
+  .auth-heading p { font-size: 12px; }
+  .mode-pill { display: none; }
+  .auth-mode-switch, .role-tabs, .quick-section, .account-note, .auth-legal, .auth-footer { display: none; }
+  .form-note { display: none; }
+  .auth-form { gap: 14px; }
+  .custom-input { min-height: 52px; border-radius: 7px; }
+  .submit-btn { min-height: 54px; margin-top: 7px; border-radius: 7px; font-size: 15px; }
+  .mobile-auth-switch { display: block; margin: 43px 0 0; text-align: center; color: var(--ink-500); font: 14px/1.5 var(--font-ui); }
+  .mobile-auth-switch button { padding: 4px 1px; border: 0; color: var(--vermilion-500); background: transparent; font: 600 14px/1.5 var(--font-ui); cursor: pointer; }
 }
 
-.role-tab:hover {
-  background: var(--parchment-300);
-}
-
-.role-tab.active {
-  background: color-mix(in srgb, var(--vermilion-500) 6%, var(--color-surface) 94%);
-  border-color: color-mix(in srgb, var(--vermilion-300) 25%, var(--parchment-300) 75%);
-  border-bottom-color: var(--vermilion-500);
-  color: var(--vermilion-500);
-  font-weight: 600;
-}
-
-.tab-icon { font-size: 20px; }
-
-/* --- 输入框 --- */
-.input-group {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  margin-bottom: 20px;
-}
-
-.input-wrap {
-  position: relative;
-  display: flex;
-  align-items: center;
-}
-
-.input-icon {
-  position: absolute;
-  left: 14px;
-  font-size: 17px;
-  color: var(--ink-300);
-  pointer-events: none;
-}
-
-.custom-input {
-  width: 100%;
-  padding: 12px 14px 12px 44px;
-  background: var(--parchment-100);
-  border: 1px solid var(--parchment-300);
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-family: var(--font-ui);
-  color: var(--ink-900);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.custom-input:focus {
-  outline: none;
-  border-color: var(--ink-300);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ink-300) 10%, transparent 90%);
-}
-
-.custom-input::placeholder { color: var(--parchment-500); }
-
-.password-toggle {
-  position: absolute;
-  right: 14px;
-  background: none;
-  border: none;
-  font-size: 16px;
-  color: var(--ink-300);
-  cursor: pointer;
-  transition: color 0.2s;
-}
-.password-toggle:hover { color: var(--ink-700); }
-
-/* --- 登录按钮（同 hc-guide__cta 规格） --- */
-.login-btn {
-  width: 100%;
-  height: 42px;
-  background: linear-gradient(135deg, var(--vermilion-500), var(--vermilion-700));
-  color: #fff;
-  border: none;
-  border-radius: var(--radius-sm);
-  font-size: 14px;
-  font-weight: 600;
-  font-family: var(--font-title);
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 14px rgba(190, 42, 0, 0.22);
-}
-
-.login-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--vermilion-700), var(--vermilion-900));
-  box-shadow: 0 6px 20px rgba(190, 42, 0, 0.30);
-  transform: translateY(-1px);
-}
-
-.login-btn:active:not(:disabled) {
-  transform: translateY(0) scale(0.98);
-}
-
-.login-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-/* --- 快速体验 --- */
-.quick-section { margin-top: 20px; }
-
-.quick-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: var(--ink-300);
-}
-
-.quick-divider::before,
-.quick-divider::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--parchment-300);
-}
-
-.quick-buttons { display: flex; gap: 8px; }
-
-.quick-btn {
-  flex: 1;
-  padding: 10px 8px;
-  background: var(--parchment-200);
-  border: 1px solid var(--parchment-300);
-  border-radius: var(--radius-sm);
-  font-size: 12px;
-  font-family: var(--font-ui);
-  color: var(--ink-500);
-  cursor: pointer;
-  text-align: center;
-  transition: border-color 0.2s, color 0.2s, background 0.2s;
-}
-
-.quick-btn:hover {
-  background: color-mix(in srgb, var(--vermilion-500) 6%, var(--parchment-200) 94%);
-  color: var(--vermilion-500);
-  border-color: color-mix(in srgb, var(--vermilion-300) 30%, var(--parchment-300) 70%);
-}
-
-/* --- 提示 --- */
-.login-hint {
-  margin-top: 14px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--ink-300);
-  font-family: var(--font-ui);
-}
-
-.login-hint strong {
-  color: var(--ink-500);
-  font-weight: 500;
-}
-
-/* --- 功能亮点 --- */
-.feat-row {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  margin-top: 24px;
-  flex-wrap: wrap;
-}
-
-.feat-pill {
-  display: inline-flex;
-  align-items: center;
-  font-size: 11px;
-  font-family: var(--font-ui);
-  color: var(--ink-300);
-  cursor: default;
-}
-
-.feat-sep {
-  margin: 0 6px;
-  color: var(--parchment-400);
-}
-
-/* ═══ 响应式 ═══ */
-@media (max-width: 768px) {
-  .login-page { padding: 20px; }
-  .login-center { max-width: 100%; }
-  .login-card { padding: 24px 20px; }
-}
-
-@media (max-width: 480px) {
-  .login-page { padding: 16px; }
-  .login-headline { font-size: 18px; }
-  .login-card { padding: 20px 16px; border-radius: var(--radius-md); }
-  .feat-pill { font-size: 10px; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
 }
 </style>
