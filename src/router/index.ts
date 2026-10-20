@@ -4,6 +4,7 @@ import pinia from '@/stores/pinia'
 import { useUserStore } from '@/stores'
 import { ElMessage } from 'element-plus'
 import { UserRole } from '@/types'
+import { resolvePlatformRedirectUrl } from '@/utils/platformNavigation'
 
 const APP_NAME = '职导星图'
 const LANDING_PAGE_TITLE = '职导星图｜职业发展平台'
@@ -21,6 +22,21 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to, from, next) => {
+  // Keep the marketing root on www, but send platform routes to the configured
+  // app origin. The destination is supplied by deployment config, not embedded
+  // in the frontend source.
+  if (to.path !== '/') {
+    const platformUrl = resolvePlatformRedirectUrl(
+      import.meta.env.VITE_PLATFORM_ORIGIN,
+      window.location.origin,
+      to.fullPath,
+    )
+    if (platformUrl) {
+      window.location.replace(platformUrl)
+      return next(false)
+    }
+  }
+
   // 延迟获取 store，确保 pinia 已初始化
   const userStore = useUserStore(pinia)
   await userStore.refreshCookieSession()

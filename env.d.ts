@@ -13,6 +13,8 @@ interface ImportMetaEnv {
    * Empty string → same-origin `/api` via Vite proxy
    */
   readonly VITE_API_BASE_URL?: string
+  /** Public platform origin used to send non-landing routes to the app host. */
+  readonly VITE_PLATFORM_ORIGIN?: string
   /** Dev-server proxy target (any host:port); only used by vite.config.ts */
   readonly VITE_API_PROXY_TARGET?: string
 }
