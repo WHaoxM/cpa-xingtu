@@ -15,8 +15,11 @@ export default defineConfig(({ mode }) => {
   const backendDev = mode === 'backend-dev'
 
   return {
-    // GitHub Pages: https://whaoxm.github.io/cpa-xingtu/
-    base: mode === 'production' ? '/cpa-xingtu/' : '/',
+    // The public app hostname is served at `/`. QEdge's origin path must map
+    // `/` to the GitHub Pages project directory `/cpa-xingtu/`.
+    // The legacy github.io URL redirects before Vue starts, so it does not
+    // need the project-path asset base anymore.
+    base: '/',
     plugins: [
       vue(),
       vueDevTools(),

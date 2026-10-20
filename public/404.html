@@ -5,16 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>CPA Xingtu</title>
   <script>
-    // GitHub Pages serves this file for SPA routes. Carry the route through
-    // the root page so index.html can restore it before Vue Router starts.
-    const base = '/cpa-xingtu/';
-    const route = window.location.pathname.startsWith(base)
-      ? window.location.pathname.slice(base.length) + window.location.search + window.location.hash
-      : '';
-    window.location.replace(base + (route ? '?__spa_redirect=' + encodeURIComponent(route) : ''));
+    // GitHub Pages serves this file for routes that are not physical files.
+    // Legacy printed links go to the marketing page; QEdge app-host routes
+    // return to `/` with their original path so Vue Router can restore them.
+    (function () {
+      const location = window.location;
+      const path = location.pathname;
+      const isLegacyPagesHost = location.hostname.toLowerCase() === 'whaoxm.github.io';
+      const isLegacyProjectPath = path === '/cpa-xingtu' || path.startsWith('/cpa-xingtu/');
+      if (isLegacyPagesHost && isLegacyProjectPath) {
+        location.replace('https://www.xingtulabs.top/');
+        return;
+      }
+
+      const route = path + location.search + location.hash;
+      const destination = new URL('/', location.origin);
+      destination.searchParams.set('__spa_redirect', route);
+      location.replace(destination.href);
+    })();
   </script>
 </head>
 <body>
-  <h1>Redirecting to CPA Xingtu...</h1>
+  <h1>正在跳转…</h1>
+  <p>如果页面没有自动跳转，请<a href="https://www.xingtulabs.top/">打开职导星图官网</a>。</p>
 </body>
 </html>
