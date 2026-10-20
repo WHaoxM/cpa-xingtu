@@ -15,15 +15,29 @@
     <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@400;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=LXGW+WenKai:wght@300;400;700&family=Noto+Sans+SC:wght@300;400;500;700;900&family=Noto+Serif+SC:wght@300;400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
     <title>职导星图｜职业发展平台</title>
     <script>
-      // Restore a GitHub Pages deep link before the module initializes Vue Router.
+      // Keep printed legacy links useful: send the old project URL to the
+      // product landing page. Custom accelerator hostnames continue into the
+      // same Vue application without hostname-specific login routing.
       (function () {
-        const base = '/cpa-xingtu/';
-        if (window.location.pathname !== base) return;
-        const route = new URL(window.location.href).searchParams.get('__spa_redirect');
-        if (!route) return;
-        const target = new URL(route, window.location.origin + base);
-        if (target.origin !== window.location.origin || !target.pathname.startsWith(base)) return;
-        window.history.replaceState(null, '', target.pathname + target.search + target.hash);
+        const location = window.location;
+        const path = location.pathname;
+        const isLegacyPagesHost = location.hostname.toLowerCase() === 'whaoxm.github.io';
+        const isLegacyProjectPath = path === '/cpa-xingtu' || path.startsWith('/cpa-xingtu/');
+        if (isLegacyPagesHost && isLegacyProjectPath) {
+          location.replace('https://www.xingtulabs.top/');
+          return;
+        }
+
+        // Restore a deep link after the static-host 404 fallback sent it to `/`.
+        const source = new URL(location.href);
+        if (source.pathname !== '/') return;
+        const route = source.searchParams.get('__spa_redirect');
+        if (route && route.startsWith('/') && !route.startsWith('//')) {
+          const target = new URL(route, source.origin);
+          if (target.origin === source.origin) {
+            window.history.replaceState(null, '', target.pathname + target.search + target.hash);
+          }
+        }
       })();
     </script>
   </head>
