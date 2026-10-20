@@ -11,7 +11,7 @@ import { UserRole } from '@/types'
 import { isMockMode } from '@/api/config'
 import { ApiError } from '@/api/types'
 import { gsap } from '@/plugins/gsap'
-import showcaseImage from '../../design/login-left-showcase-v1.png'
+import showcaseImage from '../../design/login-left-showcase-v1.webp'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -138,7 +138,7 @@ onBeforeUnmount(() => ctx?.revert())
   <main ref="pageRef" class="login-page">
     <div class="login-layout">
       <section class="hero-panel" aria-labelledby="hero-title">
-        <img class="hero-background" :src="showcaseImage" alt="" aria-hidden="true" />
+        <img class="hero-background" :src="showcaseImage" alt="" aria-hidden="true" decoding="async" fetchpriority="high" />
         <div class="brand-lockup hero-stagger">
           <span class="brand-symbol" aria-hidden="true"><Icon icon="lucide:compass" :width="20" /></span>
           <span class="brand-name">职导星图</span>
