@@ -4,7 +4,7 @@ import pinia from '@/stores/pinia'
 import { useUserStore } from '@/stores'
 import { ElMessage } from 'element-plus'
 import { UserRole } from '@/types'
-import { resolvePlatformRedirectUrl } from '@/utils/platformNavigation'
+import { isSeparatePlatformOrigin, resolvePlatformRedirectUrl } from '@/utils/platformNavigation'
 
 const APP_NAME = '职导星图'
 const LANDING_PAGE_TITLE = '职导星图｜职业发展平台'
@@ -47,7 +47,11 @@ router.beforeEach(async (to, from, next) => {
 
   // 检查是否是公开路由
   if (to.meta.public) {
-    if (userStore.isLoggedIn && !to.meta.allowAuthenticated) {
+    const isMarketingLanding = to.path === '/' && isSeparatePlatformOrigin(
+      import.meta.env.VITE_PLATFORM_ORIGIN,
+      window.location.origin,
+    )
+    if (userStore.isLoggedIn && !to.meta.allowAuthenticated && !isMarketingLanding) {
       next('/app/dashboard')
     } else {
       next()

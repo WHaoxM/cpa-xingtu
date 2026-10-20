@@ -9,7 +9,7 @@ const source = readFileSync(new URL('../src/utils/platformNavigation.ts', import
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText
-const { resolvePlatformRedirectUrl } = await import(
+const { isSeparatePlatformOrigin, resolvePlatformRedirectUrl } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`,
 )
 
@@ -27,6 +27,9 @@ test('redirects a platform route to the configured app origin and preserves quer
 test('does not redirect when configuration is unset or current host is already the app', () => {
   assert.equal(resolvePlatformRedirectUrl(undefined, 'https://www.example.test', '/login'), null)
   assert.equal(resolvePlatformRedirectUrl('https://app.example.test', 'https://app.example.test', '/login'), null)
+  assert.equal(isSeparatePlatformOrigin('https://app.example.test', 'https://www.example.test'), true)
+  assert.equal(isSeparatePlatformOrigin('https://app.example.test', 'https://app.example.test'), false)
+  assert.equal(isSeparatePlatformOrigin(undefined, 'https://www.example.test'), false)
 })
 
 test('rejects non-HTTPS, credentialed, path-bearing, or query-bearing origins', () => {
