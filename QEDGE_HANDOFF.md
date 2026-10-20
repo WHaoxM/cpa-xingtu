@@ -3,8 +3,9 @@
 ## 目标
 
 - `https://www.xingtulabs.top/` 使用项目里**现有的** Vue 落地页 `src/views/LandingView.vue`，不新建第二份落地页。
-- 当前落地页入口仍在同一 SPA 内打开 `/login`；`app` 域名尚未验证可用，因此本轮**不把该域名写入前端代码**。
-- `app` 站点的回源和证书验证完成后，再通过部署/站点配置接入 app 登录入口；不要为了尚未打通的域名先发布跳转。
+- 落地页根路径 `/` 留在 `www`；登录/平台等非根路由以及落地页入口，通过 GitHub Actions 仓库变量 `CPA_PLATFORM_ORIGIN` 跳转到 app。
+- app 域名来自部署变量，不写死在前端源码。变量未配置时本地开发/预览继续使用同源路由。
+- QEdge 的 app 回源、HTTPS、证书验证、资源和登录路由已通过线上检查；真实账号后端仍是独立事项，当前 Pages 构建继续使用 Mock。
 - 印刷材料中的旧地址 `https://whaoxm.github.io/cpa-xingtu/` 继续跳转到 `www`。
 - 两个域名继续通过 QEdge 加速同一个 GitHub Pages 项目源站 `whaoxm.github.io/cpa-xingtu`。
 
@@ -14,7 +15,8 @@
 
 - Vite 生产资源路径为 `/`，供自定义域名使用。
 - `www` 根路径显示现有 `LandingView.vue`，不新建落地页。
-- 落地页入口暂时使用现有同站路径 `/login`；没有按 hostname 分流，也没有内嵌 `app` 域名。
+- `www` 上只有根路由保留落地页；用户点击登录/进入平台或直接访问其他路由时，按 `CPA_PLATFORM_ORIGIN` 跳转并保留路由、查询参数和锚点。
+- app 目标通过 `CPA_PLATFORM_ORIGIN` 仓库变量配置，不硬编码在源码；未配置时同源行为不变。
 - Pages 的 404 fallback 会将 SPA 深路径、查询参数和锚点带回站点根路径，再由 Vue Router 恢复。
 - 旧 `whaoxm.github.io/cpa-xingtu` 地址会在启动 Vue 前跳到 `www`。
 - 未配置真实后端时，现有前端仍按项目配置使用 Mock 演示数据；CDN 接通不代表后端已部署。
@@ -53,16 +55,17 @@
 
 ## 实施顺序
 
-1. 本地验证前端改动，提交并合并到仓库 `main`；等待 GitHub Actions Pages 部署成功。
-2. 在 QEdge 现有 `www` 与 `app` 站点分别修正源站 Host、SNI 和 `/` 路径改写；不要新建落地页，也不要重建现有站点。
-3. 用 QEdge 的临时测试域名、回源日志或支持人员提供的验证方式核对上表路径和 `Location`。**DNS 已指向 QEdge，因此这里不需要再次切换或替换 CNAME。**
-4. 检查两个 QEdge HTTPS 证书部署完成后，再从浏览器分别访问以下地址。
+1. 在 GitHub Actions 仓库变量设置 `CPA_PLATFORM_ORIGIN=https://app.xingtulabs.top`；该值为公开站点配置，不是密钥。
+2. 本地验证前端改动，提交并合并到仓库 `main`；等待 GitHub Actions Pages 部署成功。
+3. 在 QEdge 现有 `www` 与 `app` 站点分别修正源站 Host、SNI 和 `/` 路径改写；不要新建落地页，也不要重建现有站点。
+4. 用 QEdge 的临时测试域名、回源日志或支持人员提供的验证方式核对上表路径和 `Location`。**DNS 已指向 QEdge，因此这里不需要再次切换或替换 CNAME。**
+5. 检查两个 QEdge HTTPS 证书部署完成后，再从浏览器分别访问以下地址。
 
 ## 验收
 
-- `https://www.xingtulabs.top/` 显示项目原有落地页；入口按当前实现打开同站 `/login`。
-- 只有在 `app` 域名的证书、回源路径、资源加载和 SPA 刷新都验证通过后，才另行把落地页入口改为配置驱动的 `app` 登录地址；不要硬编码域名。
-- 接入后再验收 `app` 上的 `/login`、`/app/dashboard` 等 SPA 路由及资源加载，不能把当前状态当作已打通。
+- `https://www.xingtulabs.top/` 显示项目原有落地页；入口跳转到 app 的 `/login`，而 app 域名由 `CPA_PLATFORM_ORIGIN` 仓库变量提供。
+- `www` 根路径仍为落地页；点击入口及直接访问 `/login`、其他平台路由时转到配置的 app origin。
+- app 上的 `/login` 和前端静态资源已通过线上浏览器/请求验证；当前仍为 Mock 演示，真实账号后端尚未接入。
 - 两个域名请求的 JS、CSS、图片都能加载；浏览器没有证书告警，也不会跳回 GitHub 域名。
 - `https://whaoxm.github.io/cpa-xingtu/` 仍跳到 `www`。
 - 若任一项失败，先看 QEdge 回源日志里的实际 URI、Host、SNI 和 `Location`，不要先动 DNS。

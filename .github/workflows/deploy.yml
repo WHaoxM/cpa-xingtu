@@ -36,6 +36,7 @@ jobs:
           # 静态 Pages 不接后端；强制 fixture 模式，避免默认 http 打空接口
           VITE_API_MODE: mock
           VITE_APP_TITLE: 职导星图
+          VITE_PLATFORM_ORIGIN: ${{ vars.CPA_PLATFORM_ORIGIN }}
         run: npm run build-only
 
       - name: Upload artifact
