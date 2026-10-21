@@ -99,7 +99,7 @@ const studentMenus = [
   { index: '/app/student/my-reports', icon: ICONS.fileText, title: '我的报告' },
   { index: '/app/student/favorites', icon: ICONS.bookmark, title: '心仪岗位' },
   // ── 助手（横切能力，置于末位）──
-  { index: '/app/student/ai-assistant', icon: ICONS.bot, title: 'AI 工作台' },
+  { index: '/app/student/ai-assistant', icon: ICONS.bot, title: 'AI 助手' },
 ]
 
 // 管理员菜单
@@ -124,18 +124,19 @@ const currentMenus = computed(() => {
 
 
 // 顶栏分组分隔线：职业探索 / 能力成长 / 成果追踪 / 助手
-const NAV_SEP_BEFORE = new Set([
-  '/app/student/career-analysis',
-  '/app/exams',
-  '/app/student/my-reports',
-  '/app/student/ai-assistant',
+const NAV_GROUP_BEFORE = new Map([
+  ['/app/student/career-analysis', '探索'],
+  ['/app/exams', '成长'],
+  ['/app/student/my-reports', '成果'],
+  ['/app/student/ai-assistant', '助手'],
 ])
 
 const cloudTabs = computed(() => {
-  const tabs: { key: string; label: string }[] = []
+  const tabs: { key: string; label: string; kind?: 'group' }[] = []
   for (const m of currentMenus.value) {
-    if (isStudent.value && NAV_SEP_BEFORE.has(m.index)) {
-      tabs.push({ key: `__sep-${m.index}`, label: '' })
+    const groupLabel = isStudent.value ? NAV_GROUP_BEFORE.get(m.index) : undefined
+    if (groupLabel) {
+      tabs.push({ key: `__group-${m.index}`, label: groupLabel, kind: 'group' })
     }
     tabs.push({ key: m.index, label: m.title })
   }
@@ -310,31 +311,36 @@ onBeforeUnmount(() => {
 }
 
 .top-row {
-  min-height: 58px;
+  min-height: 60px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 14px;
+  padding: 8px 4.1%;
   position: relative;
   z-index: 4;
   flex-shrink: 0;
   overflow: visible;
-  background: color-mix(in srgb, var(--color-background) 88%, var(--color-surface) 12%);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent 30%);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.85), 0 8px 24px rgba(17, 24, 39, 0.04);
-  backdrop-filter: blur(12px);
+  background: rgba(255, 253, 250, .96);
+  border-bottom: 1px solid rgba(76, 60, 44, .08);
+  box-shadow: none;
+  backdrop-filter: blur(10px);
 }
 
 /* 品牌锚点：星形字标 + 衬线品名 */
 .top-row__brand {
-  display: flex; align-items: center; gap: 8px;
-  padding-right: 14px; flex-shrink: 0; cursor: pointer;
-  border-right: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent 30%);
+  display: flex; align-items: center; gap: 10px;
+  padding-right: 20px; flex-shrink: 0; cursor: pointer;
+  border-right: 1px solid rgba(76, 60, 44, .12);
+}
+.top-row__brand:focus-visible {
+  outline: 2px solid #bd3714;
+  outline-offset: 4px;
+  border-radius: 8px;
 }
 .top-row__mark { color: var(--color-primary, #be2a00); }
 .top-row__name {
-  font-family: var(--font-title); font-size: 15px; font-weight: 600;
-  color: var(--color-text); letter-spacing: 0.02em;
+  font-family: var(--font-title); font-size: 17px; font-weight: 600;
+  color: var(--color-text); letter-spacing: .03em;
 }
 
 .top-row__nav {
@@ -344,6 +350,14 @@ onBeforeUnmount(() => {
   max-width: 100%;
   margin-right: auto;
 }
+
+:deep(.uib__msg-btn:focus-visible),
+:deep(.uib__card:focus-visible) {
+  outline: 2px solid #bd3714;
+  outline-offset: 2px;
+}
+:deep(.uib__msg-btn) { background: transparent; }
+:deep(.uib__msg-btn):hover { color: #bd3714; background: #fbede7; }
 
 .book-main-area {
   flex: 1;
@@ -419,52 +433,11 @@ onBeforeUnmount(() => {
   height: 100%;
 }
 
-/* Student home only: warm editorial header, isolated from all other routes. */
-.book-shell--dashboard .top-row {
-  min-height: 60px;
-  padding: 8px 4.1%;
-  gap: 14px;
-  background: rgba(255, 253, 250, .96);
-  border-bottom-color: rgba(76, 60, 44, .08);
-  box-shadow: none;
-  backdrop-filter: blur(10px);
-}
-.book-shell--dashboard .top-row__brand { gap: 10px; padding-right: 20px; }
-.book-shell--dashboard .top-row__brand:focus-visible {
-  outline: 2px solid #bd3714;
-  outline-offset: 4px;
-  border-radius: 8px;
-}
-.book-shell--dashboard :deep(.uib__msg-btn:focus-visible),
-.book-shell--dashboard :deep(.uib__card:focus-visible) {
-  outline: 2px solid #bd3714;
-  outline-offset: 2px;
-}
-.book-shell--dashboard .top-row__name { font-size: 17px; letter-spacing: .03em; }
+/* 首页与其余页面共用同一桌面顶栏；仅页面内容保留各自主题。 */
 .book-shell--dashboard .book-content { overflow: hidden; background: #f5f1ec; }
 .book-shell--dashboard .book-content :deep(.book-page),
 .book-shell--dashboard .book-content :deep(.book-page__body) { background: transparent; }
 .book-shell--dashboard .book-content :deep(.book-page__body) { scrollbar-color: #d9cfc4 transparent; }
-.book-shell--dashboard :deep(.cloud-nav) {
-  gap: 2px;
-  min-height: 42px;
-  padding: 3px;
-  border-color: transparent;
-  background: transparent;
-  box-shadow: none;
-}
-.book-shell--dashboard :deep(.cloud-tab) { height: 38px; padding: 0 15px; border-radius: 22px; }
-.book-shell--dashboard :deep(.cloud-tab.is-active) {
-  color: #bd3714;
-  border-color: transparent;
-  background: #fbede7;
-  box-shadow: none;
-}
-.book-shell--dashboard :deep(.cloud-tab.is-active .cloud-label) { color: #bd3714; }
-.book-shell--dashboard :deep(.cloud-tab:focus-visible) { outline-color: #bd3714; }
-.book-shell--dashboard :deep(.cloud-sep) { height: 18px; margin: 0 7px; background: rgba(95, 77, 60, .1); }
-.book-shell--dashboard :deep(.uib__msg-btn) { background: transparent; }
-.book-shell--dashboard :deep(.uib__msg-btn):hover { color: #bd3714; background: #fbede7; }
 
 .student-mobile-tabbar { display: none; }
 .top-row--mobile-only { display: none; }
