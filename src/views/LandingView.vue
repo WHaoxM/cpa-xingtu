@@ -15,6 +15,7 @@ const bgRef     = ref<HTMLElement | null>(null)
 const titleRef  = ref<HTMLElement | null>(null)
 const ctaRef    = ref<HTMLButtonElement | null>(null)
 const activeDemoTab = ref<'chat' | 'portrait' | 'report'>('chat')
+const mobileMenuOpen = ref(false)
 const demoInput = ref('')
 const demoMessages = ref<Array<{ role: 'user' | 'ai'; content: string }>>([])
 
@@ -438,6 +439,21 @@ function initEntry() {
     if (titleRef.value) titleRef.value.textContent = '职导星图'
     return
   }
+  // 手机首屏不等桌面逐字动画结束才露出文案和 CTA；只让星图轻淡入。
+  if (window.matchMedia('(max-width: 768px)').matches) {
+    if (titleRef.value) titleRef.value.textContent = '职导星图'
+    ctx = gsap.context(() => {
+      gsap.from(mapRef.value, {
+        autoAlpha: 0,
+        scale: 0.97,
+        filter: 'blur(8px)',
+        duration: 0.55,
+        ease: 'power3.out',
+        clearProps: 'filter',
+      })
+    }, pageRef.value ?? undefined)
+    return
+  }
   ctx = gsap.context(() => {
     const tl = gsap.timeline({ delay: 0.08 })
     tl.from('.ld-nebula',   { opacity: 0, duration: 1.8, ease: 'power2.out'  }, 0)
@@ -488,21 +504,31 @@ onBeforeUnmount(() => {
   <div ref="pageRef" class="ld-page">
 
     <!-- ══════════ 导航栏（透明） ══════════ -->
-    <nav class="ld-nav">
+    <nav class="ld-nav" @keydown.esc="mobileMenuOpen = false">
       <div class="ld-nav__inner">
         <div class="ld-nav__brand">
           <img class="ld-nav__logo" src="/AstroLogo.png" alt="AstroGraph" width="28" height="28">
           <span class="ld-nav__name">职导星图</span>
         </div>
-        <div class="ld-nav__links">
-          <a href="#pain-points" class="ld-nav__link">痛点</a>
-          <a href="#solution" class="ld-nav__link">怎么用</a>
-          <a href="#demo" class="ld-nav__link">体验</a>
+        <div id="landing-mobile-nav" class="ld-nav__links" :class="{ 'is-open': mobileMenuOpen }">
+          <a href="#pain-points" class="ld-nav__link" @click="mobileMenuOpen = false">痛点</a>
+          <a href="#solution" class="ld-nav__link" @click="mobileMenuOpen = false">怎么用</a>
+          <a href="#demo" class="ld-nav__link" @click="mobileMenuOpen = false">体验</a>
         </div>
         <div class="ld-nav__actions">
           <button class="ld-nav__btn ld-nav__btn--ghost" @click="goToLogin">登录</button>
           <button class="ld-nav__btn ld-nav__btn--primary" @click="goToLogin">免费使用</button>
         </div>
+        <button
+          class="ld-nav__menu-toggle"
+          type="button"
+          :aria-expanded="mobileMenuOpen"
+          aria-controls="landing-mobile-nav"
+          :aria-label="mobileMenuOpen ? '关闭导航菜单' : '打开导航菜单'"
+          @click="mobileMenuOpen = !mobileMenuOpen"
+        >
+          <Icon :icon="mobileMenuOpen ? 'lucide:x' : 'lucide:menu'" />
+        </button>
       </div>
     </nav>
 
@@ -910,6 +936,19 @@ onBeforeUnmount(() => {
 .ld-nav__actions {
   display: flex;
   gap: 12px;
+}
+.ld-nav__menu-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  color: rgba(255,255,255,0.88);
+  cursor: pointer;
 }
 .ld-nav__btn {
   font-family: 'LXGW WenKai', 'PingFang SC', sans-serif;
@@ -2134,6 +2173,589 @@ html {
   }
   .ld-starmap {
     animation-duration: 36s;
+  }
+}
+
+/* ── Mobile landing page: keep the existing star-map identity, reflow the page ── */
+@media (max-width: 768px) {
+  .ld-nav {
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px;
+  }
+
+  .ld-nav__inner {
+    min-height: 44px;
+    gap: 10px;
+  }
+
+  .ld-nav__brand {
+    flex-shrink: 0;
+    gap: 8px;
+  }
+
+  .ld-nav__logo {
+    width: 26px;
+    height: 26px;
+  }
+
+  .ld-nav__name {
+    font-size: 16px;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+
+  .ld-nav__links {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 14px;
+    right: 14px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    background: rgba(8, 8, 20, 0.97);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.4);
+  }
+
+  .ld-nav__links.is-open {
+    display: flex;
+  }
+
+  .ld-nav__link {
+    display: flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 12px;
+    border-radius: 9px;
+  }
+
+  .ld-nav__link:active {
+    background: rgba(139,124,246,0.12);
+  }
+
+  .ld-nav__actions {
+    margin-left: auto;
+    gap: 8px;
+  }
+
+  .ld-nav__btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  .ld-nav__btn--ghost {
+    display: none;
+  }
+
+  .ld-nav__menu-toggle {
+    display: inline-flex;
+    flex: 0 0 44px;
+  }
+
+  .ld-nav__menu-toggle:focus-visible,
+  .ld-nav__link:focus-visible,
+  .ld-nav__btn:focus-visible,
+  .ld-cta:focus-visible {
+    outline: 2px solid rgba(201,162,39,0.95);
+    outline-offset: 3px;
+  }
+
+  .ld-hero-viewport {
+    height: auto;
+    min-height: 100svh;
+    padding: calc(68px + env(safe-area-inset-top, 0px)) 0 22px;
+    overflow: hidden;
+  }
+
+  .ld-mouse-zone,
+  .ld-glow,
+  .ld-corner {
+    display: none;
+  }
+
+  .ld-footer {
+    position: relative;
+    inset: auto;
+    order: 1;
+    width: 100%;
+    max-width: 560px;
+    margin: 0 auto;
+    padding: 14px 20px 0;
+    gap: 11px;
+    background: none;
+  }
+
+  .ld-badge {
+    padding: 6px 12px;
+    font-size: 12px;
+    letter-spacing: 0.06em;
+  }
+
+  .ld-title {
+    min-height: 0;
+    font-size: clamp(30px, 8vw, 36px);
+    line-height: 1.15;
+    letter-spacing: 0.14em;
+  }
+
+  .ld-sub {
+    font-size: 14px;
+    line-height: 1.55;
+    letter-spacing: 0.035em;
+    background: none;
+    animation: none;
+    color: rgba(255,255,255,0.82);
+    -webkit-text-fill-color: currentColor;
+  }
+
+  .ld-value-prop {
+    max-width: none;
+    margin-top: 0;
+    font-size: 14px;
+    line-height: 1.65;
+    color: rgba(255,255,255,0.72);
+  }
+
+  .ld-tags {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+    margin: 3px 0 2px;
+  }
+
+  .ld-tag {
+    justify-content: center;
+    min-width: 0;
+    padding: 9px 7px;
+    border-radius: 12px;
+    font-size: 12px;
+    letter-spacing: 0;
+    white-space: nowrap;
+  }
+
+  .ld-tag svg {
+    flex: 0 0 auto;
+  }
+
+  .ld-cta {
+    width: 100%;
+    min-height: 52px;
+    justify-content: center;
+    padding: 12px 18px;
+    border-color: rgba(139,124,246,0.72);
+    border-radius: 14px;
+    background: linear-gradient(110deg, rgba(119,101,239,0.96), rgba(91,76,208,0.96));
+    box-shadow: 0 8px 28px rgba(89,71,210,0.22);
+    font-size: 15px;
+    letter-spacing: 0.04em;
+  }
+
+  .ld-map-wrap {
+    position: relative;
+    inset: auto;
+    order: 2;
+    width: 100%;
+    height: clamp(290px, 82vw, 320px);
+    margin: 10px auto 0;
+    z-index: 2;
+  }
+
+  .ld-pulse-ring {
+    width: 176px;
+    height: 176px;
+    margin: -88px 0 0 -88px;
+  }
+
+  .ld-starmap {
+    width: 100%;
+    height: 100%;
+    min-height: 0 !important;
+    opacity: 0.9;
+  }
+
+  .ld-starmap :deep(.rp-right) {
+    width: 100%;
+    height: 100%;
+    min-height: 0 !important;
+  }
+
+  .ld-starmap :deep(.rp-orbital-scene) {
+    padding: 0;
+  }
+
+  .ld-starmap :deep(.rp-orbital-field) {
+    width: min(100%, 300px);
+  }
+
+  .ld-starmap :deep(.rp-star-label) {
+    font-size: 18px !important;
+  }
+
+  .ld-starmap :deep(.rp-domain-label-group .rp-star-label:nth-of-type(2)) {
+    display: none;
+  }
+
+  .ld-starmap :deep(.rp-emotion-label) {
+    display: none;
+  }
+
+  .ld-section {
+    padding: 72px 20px;
+    scroll-margin-top: 76px;
+  }
+
+  .ld-section__inner {
+    max-width: 560px;
+  }
+
+  .ld-section__title {
+    margin-bottom: 12px;
+    font-size: clamp(24px, 6.7vw, 28px);
+    line-height: 1.32;
+  }
+
+  .ld-section__sub {
+    margin-bottom: 24px;
+    font-size: 14px;
+    line-height: 1.65;
+    color: rgba(255,255,255,0.7);
+  }
+
+  .ld-pain-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .ld-card {
+    display: grid;
+    grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center;
+    gap: 4px 12px;
+    padding: 16px;
+    border-radius: 16px;
+  }
+
+  .ld-card__stage {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+    margin: 0;
+    padding: 3px 8px;
+    font-size: 11px;
+  }
+
+  .ld-card__icon {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    width: 40px;
+    height: 40px;
+    margin: 0;
+    border-radius: 50%;
+  }
+
+  .ld-card__title {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    font-size: 16px;
+    line-height: 1.45;
+  }
+
+  .ld-card__desc {
+    grid-column: 2;
+    grid-row: 3;
+    font-size: 13px;
+    line-height: 1.6;
+    color: rgba(255,255,255,0.72);
+  }
+
+  .ld-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+  }
+
+  .ld-step {
+    display: grid;
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 3px 12px;
+    padding: 16px 8px;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(255,255,255,0.09);
+    border-radius: 0;
+  }
+
+  .ld-step:last-child {
+    border-bottom: 0;
+  }
+
+  .ld-step__icon {
+    grid-column: 1;
+    grid-row: 1 / span 3;
+    width: 36px;
+    height: 36px;
+    margin: 0;
+    border-radius: 50%;
+  }
+
+  .ld-step__num {
+    grid-column: 2;
+    grid-row: 1;
+    margin: 0;
+    font-size: 12px;
+    color: rgba(201,162,39,0.88);
+  }
+
+  .ld-step__title {
+    grid-column: 2;
+    grid-row: 2;
+    margin: 0;
+    font-size: 16px;
+  }
+
+  .ld-step__desc {
+    grid-column: 2;
+    grid-row: 3;
+    font-size: 13px;
+    line-height: 1.6;
+    color: rgba(255,255,255,0.72);
+  }
+
+  .ld-demo-section {
+    padding: 72px 16px;
+  }
+
+  .ld-demo-window {
+    border-radius: 16px;
+  }
+
+  .ld-demo-chrome {
+    padding: 12px;
+  }
+
+  .ld-demo-dots,
+  .ld-demo-title {
+    display: none;
+  }
+
+  .ld-demo-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    gap: 4px;
+  }
+
+  .ld-demo-tab {
+    min-height: 44px;
+    padding: 8px 4px;
+  }
+
+  .ld-demo-content {
+    min-height: 0;
+    padding: 16px 14px;
+  }
+
+  .ld-demo-welcome {
+    padding: 22px 4px 8px;
+  }
+
+  .ld-demo-mascot {
+    width: 76px;
+    height: 76px;
+    margin-bottom: 16px;
+  }
+
+  .ld-demo-welcome__title {
+    font-size: 23px;
+  }
+
+  .ld-demo-welcome__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    gap: 8px;
+  }
+
+  .ld-demo-action {
+    min-height: 48px;
+    justify-content: flex-start;
+    padding: 11px 14px;
+  }
+
+  .ld-demo-message {
+    max-width: 100%;
+    gap: 8px;
+  }
+
+  .ld-demo-bubble {
+    min-width: 0;
+    padding: 12px 14px;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .ld-demo-job-meta,
+  .ld-demo-portrait__scores {
+    flex-wrap: wrap;
+    gap: 8px 14px;
+  }
+
+  .ld-demo-report__gap-item {
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .ld-demo-report__path-action {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ld-demo-composer {
+    margin-top: 16px;
+  }
+
+  .ld-demo-mode {
+    min-height: 40px;
+  }
+
+  .ld-demo-input input {
+    min-width: 0;
+    font-size: 16px;
+  }
+
+  .ld-demo-send {
+    flex: 0 0 44px;
+    width: 44px;
+    height: 44px;
+  }
+
+  .ld-trust-section {
+    padding-top: 48px;
+    padding-bottom: 48px;
+  }
+
+  .ld-trust-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
+    gap: 14px 10px;
+  }
+
+  .ld-trust-item {
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .ld-trust-icon {
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+  }
+
+  .ld-trust-text {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .ld-cta-section {
+    padding-top: 56px;
+    padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .ld-cta-title {
+    font-size: clamp(23px, 6vw, 27px);
+    line-height: 1.35;
+  }
+
+  .ld-cta-sub {
+    font-size: 14px;
+    line-height: 1.6;
+  }
+
+  .ld-reveal,
+  .ld-reveal.is-visible {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 380px) {
+  .ld-nav {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .ld-nav__name {
+    font-size: 15px;
+  }
+
+  .ld-nav__btn {
+    padding: 0 9px;
+  }
+
+  .ld-footer {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .ld-section {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .ld-card {
+    padding: 14px 12px;
+  }
+
+  .ld-demo-section {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .ld-starmap :deep(.rp-orbital-field) {
+    width: min(100%, 250px);
+  }
+
+  .ld-starmap :deep(.rp-star-label) {
+    font-size: 20px !important;
+  }
+}
+
+@media (max-width: 768px) and (hover: none) {
+  .ld-card:hover,
+  .ld-step:hover {
+    transform: none;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.2);
+  }
+
+  .ld-card:active,
+  .ld-demo-action:active,
+  .ld-nav__btn:active,
+  .ld-nav__menu-toggle:active,
+  .ld-cta:active {
+    transform: scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-title,
+  .ld-sub,
+  .ld-reveal,
+  .ld-cta,
+  .ld-cta__arrow {
+    animation: none !important;
+    transition: none !important;
   }
 }
 </style>
