@@ -1,6 +1,6 @@
 <!-- 组件：顶部 Tab 导航 -->
 <script setup lang="ts">
-defineProps<{ tabs: { key: string; label: string }[]; modelValue: string }>()
+defineProps<{ tabs: { key: string; label: string; kind?: 'group' }[]; modelValue: string }>()
 
 const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
 </script>
@@ -8,7 +8,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
 <template>
   <nav class="cloud-nav" aria-label="功能导航">
     <template v-for="tab in tabs" :key="tab.key">
-      <span v-if="tab.key.startsWith('__sep')" class="cloud-sep" aria-hidden="true" />
+      <span v-if="tab.kind === 'group'" class="cloud-group-label">{{ tab.label }}</span>
       <button
         v-else
         type="button"
@@ -37,67 +37,79 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
 .cloud-nav {
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 4px;
-  background: color-mix(in srgb, var(--color-surface) 55%, var(--color-background) 45%);
-  border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent 22%);
-  border-radius: 16px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  gap: 2px;
+  min-height: 42px;
+  padding: 3px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 24px;
+  box-shadow: none;
   overflow-x: auto;
   overflow-y: hidden;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(156, 126, 105, .32) transparent;
   scroll-snap-type: x proximity;
 }
 
-.cloud-sep {
+.cloud-group-label {
   flex: 0 0 auto;
-  width: 1px;
-  height: 18px;
-  margin: 0 4px;
-  background: color-mix(in srgb, var(--color-border) 85%, transparent 15%);
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  margin: 0 3px 0 5px;
+  padding-left: 9px;
+  border-left: 1px solid rgba(95, 77, 60, .16);
+  color: #9e674e;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  white-space: nowrap;
 }
 
 .cloud-nav::-webkit-scrollbar {
-  display: none;
+  height: 3px;
+}
+
+.cloud-nav::-webkit-scrollbar-thumb {
+  border-radius: 9px;
+  background: rgba(156, 126, 105, .32);
 }
 
 .cloud-tab {
   position: relative;
   flex: 0 0 auto;
   min-width: max-content;
-  height: 36px;
+  height: 38px;
   border: 1px solid transparent;
   background: transparent;
   margin-right: 0;
-  padding: 0 16px;
+  padding: 0 15px;
   cursor: pointer;
   z-index: 1;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: 22px;
   scroll-snap-align: start;
   transition:
     background-color 220ms ease,
     border-color 220ms ease,
-    box-shadow 220ms ease,
-    transform 220ms ease;
+    color 220ms ease;
 }
 
 .cloud-tab:hover {
   z-index: 2;
-  background: color-mix(in srgb, var(--color-text) 5%, var(--color-surface) 95%);
-  border-color: color-mix(in srgb, var(--color-border) 90%, transparent 10%);
+  background: rgba(189, 55, 20, .055);
+  border-color: rgba(189, 55, 20, .08);
 }
 
 .cloud-tab.is-active {
   z-index: 3;
-  background: linear-gradient(180deg, rgba(34, 34, 34, 0.96), rgba(17, 17, 17, 0.96));
-  border-color: rgba(17, 17, 17, 0.96);
-  box-shadow: 0 6px 14px rgba(17, 17, 17, 0.16);
+  background: #fbede7;
+  border-color: rgba(189, 55, 20, .14);
+  box-shadow: inset 0 -2px 0 #bd3714;
 }
 
 .cloud-tab:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-text) 22%, transparent 78%);
+  outline: 2px solid #bd3714;
   outline-offset: 2px;
 }
 
@@ -135,7 +147,7 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
   font-weight: 600;
   font-family: var(--font-ui, sans-serif);
   letter-spacing: 0.01em;
-  color: var(--color-text-muted);
+  color: #6f6b66;
   white-space: nowrap;
   pointer-events: none;
   transition: color 220ms ease;
@@ -143,11 +155,12 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
 }
 
 .cloud-tab:hover .cloud-label {
-  color: var(--color-text);
+  color: #a23518;
 }
 
 .cloud-tab.is-active .cloud-label {
-  color: #ffffff;
+  color: #bd3714;
+  font-weight: 700;
 }
 
 @media (max-width: 1024px) {
@@ -162,13 +175,25 @@ const emit = defineEmits<{ (e: 'update:modelValue', val: string): void }>()
 
 @media (max-width: 767px) {
   .cloud-nav {
-    border-radius: 14px;
+    scrollbar-width: none;
+  }
+
+  .cloud-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .cloud-tab {
     height: 34px;
     padding: 0 13px;
-    border-radius: 10px;
+    border-radius: 19px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-tab,
+  .cloud-fill,
+  .cloud-label {
+    transition: none;
   }
 }
 </style>
