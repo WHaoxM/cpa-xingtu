@@ -92,16 +92,16 @@ function initialPosition(node: AbilityNode, index: number, count: number, compac
   const width = Math.max(1, host.value?.clientWidth ?? 1)
   const height = Math.max(1, host.value?.clientHeight ?? 1)
   const slots: Record<string, [number, number]> = {
-    professional: [0.20, 0.23],
-    position: [0.80, 0.23],
-    cognitive: [0.20, 0.77],
-    general: [0.80, 0.77],
+    professional: [0.28, 0.28],
+    position: [0.72, 0.28],
+    cognitive: [0.28, 0.72],
+    general: [0.72, 0.72],
   }
   const mobileSlots: Record<string, [number, number]> = {
-    professional: [0.22, 0.21],
-    position: [0.78, 0.21],
-    cognitive: [0.22, 0.79],
-    general: [0.78, 0.79],
+    professional: [0.27, 0.27],
+    position: [0.73, 0.27],
+    cognitive: [0.27, 0.73],
+    general: [0.73, 0.73],
   }
   const [cx, cy] = (compact ? mobileSlots[node.group] : slots[node.group]) ?? [0.5, 0.5]
   if (compact) {
@@ -126,8 +126,8 @@ function toGraphData(): GraphData {
     grouped.set(node.group, group)
   })
   const compact = (host.value?.clientWidth ?? 1000) < 600
-  const nodeSize: [number, number] = compact ? [46, 46] : [78, 78]
-  const layoutSize: [number, number] = compact ? [51, 51] : [110, 110]
+  const nodeSize: [number, number] = compact ? [58, 58] : [86, 86]
+  const layoutSize: [number, number] = compact ? [64, 64] : [98, 98]
   const fontFamily = host.value ? getComputedStyle(host.value).fontFamily : 'sans-serif'
 
   const nodes: NodeData[] = skills.map(node => {
@@ -235,7 +235,7 @@ function createGraph(data: GraphData) {
     autoFit: 'center',
     zoom: 1,
     zoomRange: [0.28, 2.6],
-    padding: [52, 52, 52, 52],
+    padding: (host.value?.clientWidth ?? 1000) < 600 ? [26, 26, 26, 26] : [44, 44, 44, 44],
     animation: { duration: prefersReducedMotion() ? 0 : 360, easing: 'ease-out' },
     layout: {
       type: 'force',
@@ -352,10 +352,7 @@ async function applySelection() {
 async function fitOverview() {
   if (!graph) return
   await graph.fitView({ when: 'always' }, { duration: 0 })
-  const minimumZoom = (host.value?.clientWidth ?? 1000) < 600 ? 0.52 : 0.76
-  if (graph.getZoom() < minimumZoom) {
-    await graph.zoomTo(minimumZoom, { duration: 0 }, graph.getCanvasCenter())
-  }
+  // Keep the complete network inside the viewport; dense roles can zoom in manually.
   if (graph.getZoom() > 1.18) {
     await graph.zoomTo(1.18, { duration: 0 }, graph.getCanvasCenter())
   }
@@ -479,6 +476,8 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .career-ability-g6 {
+  /* G6 renders separate canvas layers into the same grid cell. */
+  display: grid;
   width: 100%;
   height: 100%;
   min-height: 0;

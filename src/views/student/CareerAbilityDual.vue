@@ -502,6 +502,38 @@ function logIcon(level: LogEntry['level']) {
 
 /* ═══ 响应式 ═══ */
 @media (max-width: 767px) {
-  .dual-dashboard { height: 140px; }
+  .dual-panel,
+  .dual-right {
+    height: auto;
+    overflow: visible;
+  }
+  .dual-panel {
+    --dual-mobile-dashboard-height: clamp(108px, 12vh, 124px);
+    --dual-mobile-dashboard-height: clamp(108px, 12dvh, 124px);
+  }
+  .dual-cards {
+    flex: 0 0 auto;
+    overflow: visible;
+    padding: 12px 12px calc(var(--dual-mobile-dashboard-height) + env(safe-area-inset-bottom, 0px) + 24px);
+  }
+  .dual-dashboard {
+    position: fixed;
+    z-index: 40;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    height: calc(var(--dual-mobile-dashboard-height) + env(safe-area-inset-bottom, 0px));
+    box-sizing: border-box;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-top: 1px solid var(--bg-300, #CBCBC8);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, .16);
+  }
+  .dual-dashboard__head { padding: 4px 12px; }
+  .dual-dashboard__logs {
+    padding: 4px 12px;
+    font-size: 10px;
+    line-height: 1.4;
+  }
 }
 </style>

@@ -36,7 +36,7 @@ function goToCareerAnalysis() { router.push({ name: 'student-career-analysis' })
 
 /* ═══ 布局模式：同一路由内切换，不依赖子路由 ═══ */
 const layoutMode = ref<LayoutMode>('split')
-const graphDisplay = ref<'bubbles' | 'relations'>('bubbles')
+const graphDisplay = ref<'bubbles' | 'relations'>('relations')
 const isSplit = computed(() => layoutMode.value === 'split')
 const isWorkspace = computed(() => layoutMode.value === 'workspace')
 
@@ -690,14 +690,29 @@ watch(roleName, () => loadData())
   .shell-layout-toggle { flex: 1; min-width: 0; }
   .shell-toggle-btn { flex: 1; justify-content: center; gap: 3px; padding: 7px 5px; font-size: 10px; letter-spacing: 0; white-space: nowrap; }
   .shell-body { flex-direction: column; }
-  .shell-body--split .shell-graph { width: 100%; height: 68%; min-height: 0; }
+  .shell-workspace { height: 0; }
+  .shell-body--split {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+  }
+  .shell-body--split .shell-graph {
+    width: 100%;
+    height: clamp(360px, 68vh, 1180px);
+    height: clamp(360px, 68dvh, 1180px);
+    min-height: 0;
+    flex: 0 0 auto;
+  }
   .shell-body--split .shell-panel {
     width: 100%;
-    height: 32%;
-    flex: 0 0 32%;
+    height: auto;
+    min-height: 0;
+    flex: 0 0 auto;
     opacity: 1;
     border-left: 0;
     border-top: 1px solid var(--bg-300, #CBCBC8);
+    overflow: visible;
   }
   .shell-body--single .shell-graph { width: 100%; height: 100%; }
   .shell-body--single .shell-panel { width: 0; height: 0; }
