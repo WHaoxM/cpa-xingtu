@@ -34,8 +34,10 @@
 | 学生 | student001 | 123456 |
 | 管理员 | admin001 | 123456 |
 
-> GitHub Pages / `npm run build` 默认 **`VITE_API_MODE=mock`**，登录页会显示「演示数据 · 无需后端」，所有接口走 `public/fixtures/`，不连接后端。  
+> GitHub Pages 默认 **`VITE_API_MODE=mock`**，登录页会显示「演示数据 · 无需后端」，数据走 `public/fixtures/`，不连接后端；若为 Actions 配置 `CPA_BACKEND_API_BASE_URL` 仓库变量，则 Pages 构建切换为 HTTP 模式。
 > 本地纯演示：`npm run dev:mock`；独立的宿主机后端联调前端：`npm run dev:backend`（仅监听 `127.0.0.1:5174`）。
+
+统一任务侧栏目前为显式联调能力：在 HTTP 模式设置 `VITE_TASK_COMPANION=true`，并连接已迁移到 `0019_conversation_task_context`、运行对应 Celery worker 的后端。Agent 任务控制面板还要求运行 `0021_agent_run_task_contract_control` 迁移；该面板按 run 回读契约/计划版本、暂停/取消/恢复，且仅在保存回执与计划摘要一致时显示已保存成果。默认关闭，不自动迁移正常库或重启共享服务。原 AI 助手／专家与页面设计继续保留；开关不是完整业务验收通过的声明，实际范围见主仓 `docs/reports/2026-10-22-unified-task-orchestration-replay.md`。
 
 ## ⚡ 项目概述
 
@@ -45,7 +47,7 @@
 - 三角色权限体系（学生 / 管理员 / 公共页面）
 - D3.js + Three.js 数据可视化（雷达图、弦图、Treemap、3D 书架、力导向气泡图）
 
-**数据说明**：Pages CI 强制 Mock（`public/fixtures` + `src/mock`），可独立运行，无需后端。`npm run dev` 则读取 `.env.development`，**默认是 HTTP 模式**，不是离线演示；离线请用 `npm run dev:mock`。本机真实联调使用 `npm run dev:backend`，不要把 Mock 登录当成正式后端账号。
+**数据说明**：Pages CI 未设置 API origin 时使用 Mock（`public/fixtures` + `src/mock`），可独立运行；配置 Actions 变量 `CPA_BACKEND_API_BASE_URL` 后才会请求独立部署的后端。`npm run dev` 则读取 `.env.development`，**默认是 HTTP 模式**，不是离线演示；离线请用 `npm run dev:mock`。本机真实联调使用 `npm run dev:backend`，不要把 Mock 登录当成正式后端账号。
 
 ### 🎯 我们的愿景
 
@@ -76,8 +78,9 @@
 
 | 模块 | 路由 | 说明 |
 |------|------|------|
-| 技能提升 | `student/learning` | 课程学习中心，视频播放、章节测验、笔记 |
+| 技能提升 | `student/learning` | HTTP：真实课程目录、章节与外部材料、本人已学标记和重登恢复；播放器／测验／笔记不在本轮接入 |
 | 职业分析 | `student/career-analysis` | 羊皮卷舆图风格的水墨散点气泡地图 + 职业洞察 |
+| 岗位目录 | `student/job-catalog` | 从真实岗位目录搜索并查看资料；区分官方仅展示与管理员审核发布，明确招聘状态未知 |
 | 职途导航 | `student/career-navigation` | 简历导入与人岗匹配 |
 | 职业能力图谱 | `student/career-ability` | Shell 容器 + 图谱/双栏/工作台三视图切换 |
 | 课程体系 | `student/course-system` | 5 大领域 × 15 细分职业的分层网络关系图 |
@@ -93,7 +96,7 @@
 
 | 模块 | 路由 | 说明 |
 |------|------|------|
-| 岗位数据集 | `admin/job-dataset` | 岗位数据的增删改查管理 |
+| 岗位管理中心 | `admin/job-dataset` | 官方原文只展示、JSON 私有暂存与逐条预检发布、当前及撤回版本；真实 HTTP，不显示模拟成功 |
 | 知识库维护 | `admin/knowledge-base` | 本地知识库内容管理 |
 
 ### 数据可视化组件（D3.js）
@@ -123,7 +126,7 @@ npm run dev:mock
 # 类型检查
 npm run type-check
 
-# 生产构建（Pages CI 强制 VITE_API_MODE=mock；本地须确认没有
+# 生产构建（Pages 默认 VITE_API_MODE=mock；配置后端 origin 才切换 HTTP；本地须确认没有
 # .env.local 等覆盖文件将模式改回 http）
 npm run build
 
@@ -132,6 +135,8 @@ npm run preview
 ```
 
 常规 `npm run dev` 走 `.env.development` 的 HTTP 配置，会请求本机 `127.0.0.1:5001`；没启动后端时出现接口错误是预期现象。不要复制 `.env.example` 到 `.env.local` 后误以为进入 Mock 模式。
+
+职业分析默认保留原岗位舆图、气泡动效、地图卷轴和侧栏，从现有目录接口读取方向线索；没有可信市场数据时原图表区域明确未就绪，不用演示数字填充。主动进入“探索与实践”才承接“原页内讨论与比较 → 本人确认一周尝试 → 学习中心练习 → 复盘 → 本人决定 → 下一轮”，已有 `exploration_id` 仍可回访。基础探索需 `0016_career_exploration`，原页陪伴另需 `0018_exploration_analysis` 和 `cpa.agent` worker；不应整页挡住尚未升级环境里的原分析。不要为联调自动升级正常库。边界和实际回放从主仓 [`career-analysis.md`](../docs/frontend/cpa-xingtu/pages/career-analysis.md) 接续；Mock 和既有 `artifact_id` 阅读保持独立。
 
 ### 本地联调（可选）
 
@@ -151,14 +156,21 @@ npm run dev:backend
 
 已接入后端的联调点：
 
+- `student/dashboard`: `GET /api/home/dashboard`、`POST /api/profile/student/confirmed-resume/roles`、`GET/POST /api/target-roles`、`POST /api/agent/career-suggestions`；首页只展示 owner 范围内的学习进度、有效画像与核验报告，并可将简历推断的职业方向保存为目标后生成建议
 - `student/career-analysis`: `GET /api/career/landscape`
 - `student/ai-assistant`: `POST /api/agent/chat`（http 模式走真实 Ask/Agent，保留服务端 Principal）
-- `student/learning`: 对话中已保存的 `action_plan` 通过 `GET /api/agent/artifacts/<artifact_id>` 读取同 owner 的完整计划正文；HTTP 模式不伪造未落库的步骤勾选进度
+- `student/learning`: 普通 HTTP 课程区直接读 `/api/learning/courses`（标题 `keyword`、分类、分页与总数）、`/courses/<id>` 和 `/learning/progress/<本人ID>`；不合并 Mock 课程、评分、人数或推荐图。章节“标记本章已学／取消已学”经 `/api/learning/learning/progress` 以 `100/true` 或 `0/false` 保存，body 不发送用户身份，并读回才更新。安全 HTTP(S) 材料链接在新标签打开，不自动写进度／时长；无链接也允许本人记录，旧部分百分比不被改写。`?course_id=…` 刷新恢复同一课程；读取失败显示未知并可重试，不作假空状态。带 `artifact_id` 时仍优先通过 `GET /api/agent/artifacts/<artifact_id>` 读取原计划或显示错误，点击“退出计划，浏览全部课程”才进入课程区。
+- `exams`（技能自评）：HTTP 使用 `/api/career/assessment/questionnaire` 读取版本化自述题目，以 `self_reflection` 模式提交到 `/api/career/assessment`，再从 `/assessment/<本人ID>` 读回；重登显示最近一次保存的完整问答。五档自述外可选“暂时无法判断”，不转换成零分；不展示演示岗位要求、竞争力排名或投递建议。题目/回答快照与 owner＋提交标识绑定，失败保留回答，响应不明先读回、主动重试保持同标识；未提交草稿离开不保存。需要后端 `0015_self_reflection` 迁移，不能把隔离浏览器验收当作共享库已升级。Mock 分支保留原演示，旧 `gap_only/skill_levels` 客户端兼容，本轮不改接 `pipeline/ext/exams`。
 - `student/career-navigation`: 权威 `/api/profile/student/upload|confirm|pipeline` 与 `/api/pipeline/events/<task_id>`；页面到会话仅传经后端核验的 task 引用
 - `student/career-report`: `POST /api/report/generate`
 - `student/my-reports`: `GET /api/report/list`、`GET /api/report/{report_id}`
+- `student/job-catalog`: `GET /api/profile/job/list`、`/search`、`/<id>`；HTTP 错误显示为不可用/部分结果，不回退至岗位 fixture。官方来源岗位明确标注仅供查看、不参与评分或匹配；所有岗位的招聘状态均保持未知。
+- 岗位详情的“用我的简历对照这个岗位”先读取 `/api/profile/student/workbench`，再由学生确认执行 `/api/match/run` 并读回匹配与解释；有持久成果才允许明确请求 `/api/report/generate`。允许如实呈现部分成果及规则估计，不把缺资料或未知项显示为零分，不自动重试生成。`student/my-reports?report_id=…` 刷新和重登后仍重新读取服务端详情；来源失效时不保留旧正文或分数。当前收藏链接核对原发布版本，历史收藏不自动切换版本或开始匹配。
+- 更新简历后仍从职途导航核对并确认，再从原收藏重新对照。匹配与解释响应读回后会再次检查当前来源，迟到的旧响应不能恢复旧分数；新画像未就绪时不借旧画像生成报告。更新后回访入口为主仓同一浏览器探针的 `--journey reassess`，流程与证据归用户旅程指南第二条，不是分数改善或模型质量承诺。
+- `student/favorites`: `GET /api/saved-jobs` 读取本人具体岗位收藏；目录详情只提交 `{ publication_ref: { job_portrait_id, publication_version, content_sha256 } }` 到 `POST /api/saved-jobs`，服务端按登录 Principal 绑定当前不可变发布快照，不采信客户端岗位内容；按记录删除使用 `DELETE /api/saved-jobs/records/<saved_job_id>`。HTTP 页面将职业方向与具体岗位分开展示，不以 Mock 行情、薪资或匹配数据补齐；撤回/替代版本保留为历史资料，招聘状态仍未知。
+- `admin/job-dataset`（页面标题“岗位管理中心”）: 通过真实登录、Cookie 与 CSRF 调用 `/api/admin/job-reviews`、`/api/admin/job-source-listings`、`/api/admin/dataset`、`/api/admin/dataset/upload`、`/api/admin/dataset/<id>/content`、`/api/admin/job-publications/preview`、`/api/admin/job-publications` 及撤回接口。岗位 JSON 文件仅支持 2 MiB 内 UTF-8 数组；上传后只暂存，逐条读回、预检并经管理员确认才发布。模型审查不等于人工批准，官方原文在发布时由服务端重新核验；缺字段、摘要变化或依赖不可用都不会显示发布成功。
 
-未接入后端的页面保留 Mock 数据作为降级展示。
+上述岗位目录、心仪岗位和岗位管理中心在显式 Mock 模式下不会改用示例岗位或伪造写入结果，而会提示连接真实后端；其余未接入页面仍按既有演示模式使用 Mock 数据。要验收岗位来源到学生浏览/收藏回访及岗位对照报告的流程，请使用 `npm run dev:backend`，不能用 `npm run dev:mock` 或在线 Demo 代替。收藏版本绑定迁移为后端 Alembic `0013_saved_job_pub_binding`；本轮岗位对照未新增迁移。主仓 `backend/tests/manual/job_source_to_catalog_browser_probe.py --journey catalog|favorites|decision` 使用相同 `backend-dev` 模式，在隔离 schema 中运行真实登录和页面回访；命令前置条件、清理及最新证据统一由主仓用户旅程指南第二、六、七条维护。合成资料的页面回放不等于真实招聘来源或建议质量验收。
 
 ## 📁 项目结构
 

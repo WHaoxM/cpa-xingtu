@@ -31,10 +31,25 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build (mock / offline demo)
+      - name: Validate configured backend origin
+        if: ${{ vars.CPA_BACKEND_API_BASE_URL != '' }}
         env:
-          # 静态 Pages 不接后端；强制 fixture 模式，避免默认 http 打空接口
-          VITE_API_MODE: mock
+          API_BASE_URL: ${{ vars.CPA_BACKEND_API_BASE_URL }}
+        run: |
+          node <<'NODE'
+          const value = process.env.API_BASE_URL;
+          let url;
+          try { url = new URL(value); } catch { throw new Error('CPA_BACKEND_API_BASE_URL must be an absolute HTTPS URL'); }
+          if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
+            throw new Error('CPA_BACKEND_API_BASE_URL must use HTTPS and must not contain credentials, query, or fragment');
+          }
+          NODE
+
+      - name: Build (backend when configured, otherwise mock demo)
+        env:
+          # 未配置外部后端时保持离线演示；仅用公开的 API origin 切换为 HTTP。
+          VITE_API_MODE: ${{ vars.CPA_BACKEND_API_BASE_URL != '' && 'http' || 'mock' }}
+          VITE_API_BASE_URL: ${{ vars.CPA_BACKEND_API_BASE_URL }}
           VITE_APP_TITLE: 职导星图
           VITE_PLATFORM_ORIGIN: ${{ vars.CPA_PLATFORM_ORIGIN }}
         run: npm run build-only

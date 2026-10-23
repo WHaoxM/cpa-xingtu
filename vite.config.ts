@@ -22,7 +22,9 @@ export default defineConfig(({ mode }) => {
     base: '/',
     plugins: [
       vue(),
-      vueDevTools(),
+      // Keep backend replay screenshots focused on the product UI while
+      // preserving Vue DevTools in ordinary local development.
+      ...(!backendDev ? [vueDevTools()] : []),
     ],
     resolve: {
       alias: {
