@@ -85,9 +85,9 @@ export type PortraitSnapshot = {
   portrait?: Record<string, unknown>
 }
 
-export async function getStudentPortraitSnapshots() {
-  return httpGet<{ current_snapshot_id: string | null; items: PortraitSnapshot[] }>(
-    '/api/profile/student/portrait-snapshots', { limit: 20 })
+export async function getStudentPortraitSnapshots(params = { limit: 20, offset: 0 }) {
+  return httpGet<{ current_snapshot_id: string | null; items: PortraitSnapshot[]; total: number }>(
+    '/api/profile/student/portrait-snapshots', params)
 }
 
 export async function getStudentPortraitSnapshot(snapshotId: string) {

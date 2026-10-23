@@ -11,11 +11,17 @@ import { callAgentPortraitStreaming, PHASE_META } from '@/composables/useAgentPo
 import type { AgentPortraitResult, AgentPhase, PhaseData, PersonInfo, AbilityDimension, SummarySource } from '@/composables/useAgentPortrait'
 import type { PortraitReplaySnapshot, PortraitSessionStatus } from '@/composables/usePortraitSession'
 import D3FlowerChart, { DEFAULT_FLOWER_COLORS } from '@/components/charts/D3FlowerChart.vue'
+import ResumeImprovementPanel from '@/components/career/ResumeImprovementPanel.vue'
+import type { ResumeDiagnosticReport } from '@/api/report'
 import D3RadarChart, { type RadarDatum } from '@/components/charts/D3RadarChart.vue'
 import { useAgentArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
 import { getApiMode } from '@/api/config'
 import type { PortraitPreview, SevenDim } from '@/types'
+
+const portraitMobileQuery = window.matchMedia('(max-width: 768px)')
+const portraitMobile = ref(portraitMobileQuery.matches)
+const syncPortraitViewport = () => { portraitMobile.value = portraitMobileQuery.matches }
 
 function dimBarStyle(idx: number, score: number): Record<string, string> {
   const hex = DEFAULT_FLOWER_COLORS[idx] ?? DEFAULT_FLOWER_COLORS[0]!
@@ -50,6 +56,9 @@ const props = withDefaults(defineProps<{
   resultData?: AgentPortraitResult | null
   sessionStatus?: PortraitSessionStatus
   realPortrait?: RealPortraitData | null
+  diagnostic?: ResumeDiagnosticReport | null
+  diagnosticLoading?: boolean
+  diagnosticError?: string
 }>(), {
   embedded: false,
   replaySnapshots: () => [],
@@ -61,6 +70,9 @@ const realFlowerData = computed(() => (props.realPortrait?.dimensions || []).map
   axis: dimension.label,
   value: dimension.score,
 })))
+const emit = defineEmits<{generateDiagnostic: []}>()
+const diagnosticFacts = computed(()=>new Map(props.diagnostic?.chapters.flatMap(ch=>ch.items.map(item=>[item.id,item] as const))||[]))
+const resumeStrengths = computed(()=>(props.diagnostic?.analysis?.strengths||[]).filter(item=>item.evidence_ids.every(id=>diagnosticFacts.value.has(id))).slice(0,3))
 const realScoreCount = computed(() => props.realPortrait?.dimensions.filter(dimension => dimension.score !== null).length ?? 0)
 const realVisualKey = computed(() => props.realPortrait?.dimensions.map(dimension => dimension.score ?? 'pending').join('-') || '')
 const realSkillTerms = computed(() => {
@@ -482,6 +494,7 @@ async function initializePortrait() {
 }
 
 onMounted(() => {
+  portraitMobileQuery.addEventListener('change', syncPortraitViewport)
   if (!artifactId.value) void initializePortrait()
 })
 
@@ -508,6 +521,7 @@ watch([artifactId, artifactPreview], ([id, preview]) => {
 }, { immediate: true })
 
 onBeforeUnmount(() => {
+  portraitMobileQuery.removeEventListener('change', syncPortraitViewport)
   if (typingTimer) clearInterval(typingTimer)
 })
 </script>
@@ -556,14 +570,14 @@ onBeforeUnmount(() => {
       <div class="tp-artifact__intro tp-real__intro">
         <span class="tp-portrait__section-lbl">职途导航 · 简历证据画像</span>
         <div class="tp-real__title-row">
-          <h1>{{ props.realPortrait.status === 'partial' ? '当前可了解的能力信息' : '你的个人能力画像' }}</h1>
+          <h1>从你的经历，看见自己的积累</h1>
           <span class="tp-real__state">{{ props.realPortrait.status === 'partial' ? '当前结果 · 有待核对项' : '已保存画像' }}</span>
         </div>
-        <p>{{ props.realPortrait.status === 'partial' ? '这份结果来自已确认的简历。没有足够依据的维度留空，但已知经历和能力线索现在就可以阅读。' : '以下内容来自已保存的服务端画像及其对应简历，不使用本地演示分数。' }}</p>
+        <p>先看已有经历能说明什么，再选择一处值得补充的表达。没有证据的维度留空，不代表你没有相关能力。</p>
         <button v-if="getApiMode() === 'http'" type="button" class="tp-real__agent-link" @click="discussCurrentPortrait">
           与 AI 助手讨论当前画像 <Icon icon="lucide:arrow-up-right" :width="15" />
         </button>
-        <p v-if="getApiMode() === 'http'" class="tp-real__handoff-note">助手会按当前登录身份重新读取最新画像；若本页是历史任务快照，以服务端当前版本为准。</p>
+        <details v-if="getApiMode() === 'http'" class="tp-real__handoff-note"><summary>资料说明</summary><p>助手讨论使用本人当前已确认的简历画像；历史快照仅供回看，不会作为最新资料。</p></details>
       </div>
 
       <div class="tp-portrait__header">
@@ -583,18 +597,30 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <dl class="tp-real__result-summary">
+        <details class="tp-real__coverage"><summary>资料范围与当前待核对项</summary><dl class="tp-real__result-summary">
           <div><dt>现在已知</dt><dd>简历提及 {{ realSkillTerms.length }} 个不同技术词、{{ props.realPortrait.projects.length }} 项项目；{{ realScoreCount }} 个维度有可查看的依据分数。{{ props.realPortrait.pageCount !== null ? `已取得 ${props.realPortrait.pagesObserved} / ${props.realPortrait.pageCount} 页文字证据。` : '' }}</dd></div>
           <div><dt>仍不确定</dt><dd>{{ props.realPortrait.missingFacts.length ? props.realPortrait.missingFacts.slice(0, 3).join('、') + (props.realPortrait.missingFacts.length > 3 ? '等依据' : '的依据') : '本次画像没有缺证维度；这不代表已经完成岗位匹配。' }}</dd></div>
            <div><dt>可以先做</dt><dd>查看简历经历与诊断报告，再向下探索职业方向。若原简历有遗漏，可补充后重新上传核对；未知维度不会按零分计。</dd></div>
-        </dl>
+        </dl></details>
       </div>
 
       <div class="tp-portrait__viz-row">
         <div class="tp-portrait__radar-wrap tp-real__flower">
-          <D3FlowerChart :key="realVisualKey" :data="realFlowerData" :colors="DEFAULT_FLOWER_COLORS" :zoom="1.6" />
+          <D3FlowerChart :key="realVisualKey" :data="realFlowerData" :colors="DEFAULT_FLOWER_COLORS" :zoom="portraitMobile ? 1.25 : 1.6" />
         </div>
         <div class="tp-portrait__dims">
+          <h2 class="tp-real__reading-title">这些经历值得展开</h2>
+          <p v-if="diagnostic?.analysis?.summary?.text" class="tp-real__reading-lead">{{ diagnostic.analysis.summary.text }}</p>
+          <p v-if="resumeStrengths.length" class="tp-real__reading-lead">下方是基于已确认内容的经历解读，仍需你对照事实核对，不是能力认证。</p>
+          <details v-for="(strength,index) in resumeStrengths" :key="index" class="tp-real__strength">
+            <summary>{{ strength.text }}</summary>
+            <p v-for="id in strength.evidence_ids" :key="id">{{ diagnosticFacts.get(id)?.label }}<template v-for="(reference,ri) in diagnosticFacts.get(id)?.evidence_refs" :key="ri"> · {{ reference.quote }}</template></p>
+          </details>
+          <p v-if="!resumeStrengths.length" class="tp-real__reading-lead">{{ props.realPortrait.projects.length ? '你已记录下方项目经历。先核对自己负责的环节和产物；具体解读仍需当前简历诊断，不用技术词数量代替能力判断。' : '当前材料还没有足够的具体经历供解读，可以先补充真实做过的工作；不会自动生成个人优势。' }}</p>
+          <article v-for="(project,index) in (!resumeStrengths.length ? props.realPortrait.projects.slice(0,2) : [])" :key="'fact'+index" class="tp-real__strength">
+            <strong>{{ project.name || '已记录的项目' }}</strong><p v-if="project.role">本人确认的角色：{{ project.role }}</p><p>{{ project.description }}</p>
+          </article>
+          <details class="tp-real__dimension-details"><summary>查看四维概览与依据</summary>
           <div v-for="(dimension, index) in props.realPortrait.dimensions" :key="dimension.key" class="tp-portrait__dim-item">
             <div class="tp-portrait__dim-top">
               <span class="tp-portrait__dim-label">{{ dimension.label }}</span>
@@ -611,11 +637,14 @@ onBeforeUnmount(() => {
               <ul><li v-for="(evidence, evidenceIndex) in dimension.evidence" :key="evidenceIndex">{{ evidence }}</li></ul>
             </details>
           </div>
+          </details>
         </div>
       </div>
       <p class="tp-real__legend">彩色花瓣与进度条表示服务端分数；灰色轮廓和虚线表示尚无可确认分数，而不是零分。</p>
+      <ResumeImprovementPanel :report="diagnostic || null" :loading="diagnosticLoading" :error="diagnosticError" @generate="emit('generateDiagnostic')" />
 
-      <div v-if="props.realPortrait.skills.length || props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-portrait__highlights tp-real__highlights">
+      <details v-if="props.realPortrait.skills.length || props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-portrait__highlights tp-real__highlights">
+        <summary>查阅简历中的完整项目、竞赛与技能记录</summary>
         <div v-if="props.realPortrait.projects.length || props.realPortrait.competitions.length" class="tp-real__section-heading">
           <div><span class="tp-portrait__section-lbl">简历中的实践</span><h2>项目与竞赛经历</h2></div>
           <span class="tp-real__source-label">简历提取内容 · 可对照原件核对</span>
@@ -652,13 +681,14 @@ onBeforeUnmount(() => {
           <p class="tp-real__hint">这里是原文提及的工具、技术和方法，可能包含重复；提及不等于掌握，也不能单独证明能力。</p>
           <ul class="tp-real__skill-list"><li v-for="term in realSkillTerms" :key="term.label"><span>{{ term.label }}</span><small v-if="term.mentions > 1">提及 {{ term.mentions }} 次</small></li></ul>
         </details>
-      </div>
+      </details>
 
-      <div v-if="props.realPortrait.missingFacts.length" class="tp-portrait__summary tp-real__followup">
+      <details v-if="props.realPortrait.missingFacts.length" class="tp-portrait__summary tp-real__followup">
+        <summary>其他待核对资料与评分边界</summary>
         <span class="tp-portrait__section-lbl">下一步 · 补足可核对依据</span>
         <p>{{ props.realPortrait.missingFacts.length }} 项事实仍需核对；简历诊断独立整理，完成后可查看。正式岗位匹配仍要满足证据条件，这不代表你没有相关能力。</p>
         <div class="tp-real__fact-list"><span v-for="fact in props.realPortrait.missingFacts" :key="fact">{{ fact }}</span></div>
-      </div>
+      </details>
     </div>
 
     <!-- 初始加载中（Phase 1 到达前） -->
@@ -748,7 +778,7 @@ onBeforeUnmount(() => {
       <div v-if="phaseDimensions.length" class="tp-portrait__viz-row">
         <div class="tp-portrait__radar-wrap">
           <D3RadarChart v-if="artifactId" :data="radarData" :show-legend="false" />
-          <D3FlowerChart v-else :data="radarData" :colors="DEFAULT_FLOWER_COLORS" />
+          <D3FlowerChart v-else :data="radarData" :colors="DEFAULT_FLOWER_COLORS" :zoom="portraitMobile ? 1.25 : 1" />
         </div>
         <div class="tp-portrait__dims">
           <div
@@ -909,6 +939,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.tp-real__reading-title{font-family:var(--font-title);font-size:23px;margin:8px 0 14px;color:var(--tp-red)}.tp-real__reading-lead{font-size:13px;line-height:1.9;color:var(--tp-embedded-sub)}.tp-real__strength{padding:13px 0;border-bottom:1px solid var(--tp-embedded-border)}.tp-real__strength summary{cursor:pointer;line-height:1.8;font-size:13px;font-weight:600}.tp-real__strength p{font-size:12px;line-height:1.8;color:var(--tp-embedded-sub)}.tp-real__dimension-details{margin-top:20px}.tp-real__dimension-details>summary,.tp-real__coverage>summary{cursor:pointer;font-size:12px;color:var(--tp-embedded-sub);line-height:1.8}.tp-real__dimension-details .tp-portrait__dim-item{margin-top:15px}.tp-page--embedded .tp-real__intro{padding:18px 22px!important}.tp-page--embedded .tp-real__intro h1{font-size:clamp(22px,2.2vw,30px)!important}.tp-real__coverage{margin-top:12px}
 /* ── CSS vars ── */
 .tp-page {
   --tp-bg: #F5F5F3;
@@ -1781,6 +1812,8 @@ onBeforeUnmount(() => {
 .tp-real__evidence li + li { margin-top: 5px; }
 .tp-real__legend { margin: -7px 0 0; color: var(--tp-embedded-muted); font-size: 10px; line-height: 1.5; }
 .tp-real__highlights { gap: 22px; padding: clamp(20px, 2.6vw, 30px) !important; }
+.tp-real__highlights>summary,.tp-real__followup>summary { cursor:pointer; font-size:13px; line-height:1.8; color:var(--tp-embedded-sub); }
+.tp-real__highlights[open]>summary,.tp-real__followup[open]>summary { margin-bottom:18px; }
 .tp-real__section-heading { display: flex; justify-content: space-between; align-items: end; gap: 18px; border-bottom: 1px solid var(--tp-embedded-border); padding-bottom: 16px; }
 .tp-real__section-heading h2 { margin: 6px 0 0; color: var(--tp-embedded-text); font-size: clamp(20px, 2vw, 27px); line-height: 1.25; font-weight: 650; letter-spacing: -.025em; }
 .tp-real__source-label { color: var(--tp-embedded-muted); font-size: 11px; line-height: 1.5; text-align: right; }
@@ -1913,8 +1946,34 @@ onBeforeUnmount(() => {
 @media (max-width: 600px) {
   .tp-header { padding: 0 14px; }
   .tp-header__left { min-width: 0; gap: 8px; }
-  .tp-back { flex: none; min-height: 34px; white-space: nowrap; }
+  .tp-back { flex: none; min-height: 44px; white-space: nowrap; }
   .tp-brand-name, .tp-header__right { display: none; }
   .tp-header-tag { white-space: nowrap; padding: 4px 8px; }
+}
+
+@media (max-width: 768px) {
+  .tp-page, .tp-portrait, .tp-portrait__viz-row > *, .tp-portrait__project-body { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .tp-portrait, .tp-page--embedded .tp-portrait { padding: 16px 12px max(24px, env(safe-area-inset-bottom)); gap: 20px; }
+  .tp-portrait__radar-wrap, .tp-page--embedded .tp-real__flower { height: 340px; min-height: 320px; }
+  .tp-portrait__dims { gap: 16px; }
+  .tp-portrait__dim-desc, .tp-portrait__step-guide-desc,
+  .tp-portrait__school-row span, .tp-portrait__score-lbl, .tp-portrait__honor-item,
+  .tp-portrait__section-lbl, .tp-portrait__grade, .tp-portrait__project-role,
+  .tp-portrait__dim-badge, .tp-portrait__dim-score, .tp-portrait__suggestion-lbl { font-size: 12px; line-height: 1.65; }
+  .tp-portrait__target, .tp-portrait__tags-inline-lbl, .tp-portrait__honor-lbl,
+  .tp-real__dim-status, .tp-real__evidence, .tp-real__legend,
+  .tp-real__source-label, .tp-real__handoff-note { font-size: 12px; line-height: 1.65; }
+  .tp-portrait__dim-label, .tp-portrait__project-name { font-size: 14px; }
+  .tp-portrait__project-desc, .tp-portrait__summary-text,
+  .tp-portrait__self-summary, .tp-portrait__suggestion { font-size: 14px; line-height: 1.75; }
+  .tp-portrait__dim-desc, .tp-portrait__step-guide-desc,
+  .tp-portrait__score-lbl, .tp-portrait__section-lbl { color: #c6bba9; }
+  .tp-portrait__score-card { padding: 12px 6px; }
+  .tp-portrait__project-head { flex-wrap: wrap; }
+  .tp-portrait__project-desc { display: block; overflow: visible; -webkit-line-clamp: unset; line-clamp: unset; }
+  .tp-portrait__step-guide, .tp-page--embedded .tp-portrait__step-guide { padding: 14px 10px; }
+  .tp-portrait__step-guide-inner { align-items: stretch; }
+  .tp-portrait__step-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+  .tp-portrait__step-guide-btn, .tp-page--embedded .tp-portrait__step-guide-btn { min-height: 44px; min-width: 0; padding: 8px 6px; font-size: 12px; line-height: 1.5; white-space: normal; justify-content: center; }
 }
 </style>

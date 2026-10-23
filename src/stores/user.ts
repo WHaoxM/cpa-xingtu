@@ -16,7 +16,9 @@ export const useUserStore = defineStore(
     const currentUser = ref<User | null>(null)
     const token = ref<string>('')
     let lastCookieCheckAt = 0
-    let cookieCheck: Promise<void> | null = null
+    let authGeneration = 0
+    let cookieChangePending = false
+    let cookieCheck: { generation: number; promise: Promise<void> } | null = null
     const isLoggedIn = computed(() => !!currentUser.value && !!token.value)
 
     // Getters
@@ -29,20 +31,32 @@ export const useUserStore = defineStore(
       token.value = httpAuth ? 'cookie-session' : `mock_token_${user.id}_${Date.now()}`
     }
 
+    function beginCookieChange(): number {
+      authGeneration += 1
+      cookieChangePending = true
+      cookieCheck = null
+      lastCookieCheckAt = 0
+      return authGeneration
+    }
+
     /** Preferred: fixture/auth API. Falls back to inline mockUsers. */
     async function loginAsync(
       username: string,
       password: string,
       role?: UserRole,
     ): Promise<boolean> {
+      const generation = httpAuth ? beginCookieChange() : authGeneration
       try {
         const user = await loginLocal(username, password)
+        if (httpAuth && generation !== authGeneration) return false
         if (user && (httpAuth || !role || user.role === role)) {
           applySession(user)
           return true
         }
       } catch (error) {
         if (httpAuth) throw error
+      } finally {
+        if (httpAuth && generation === authGeneration) cookieChangePending = false
       }
       if (httpAuth || backendDev) return false
       return login(username, password, role)
@@ -85,27 +99,40 @@ export const useUserStore = defineStore(
     }
 
     async function logout(): Promise<void> {
-      if (httpAuth) await logoutAccount()
-      currentUser.value = null
-      token.value = ''
-      lastCookieCheckAt = 0
+      const generation = httpAuth ? beginCookieChange() : authGeneration
+      try {
+        if (httpAuth) await logoutAccount()
+        if (generation !== authGeneration) return
+        currentUser.value = null
+        token.value = ''
+        lastCookieCheckAt = 0
+      } finally {
+        if (generation === authGeneration) cookieChangePending = false
+      }
     }
 
     async function refreshCookieSession(): Promise<void> {
-      if (!httpAuth) return
-      if (cookieCheck) return cookieCheck
+      if (!httpAuth || cookieChangePending) return
+      const generation = authGeneration
+      if (cookieCheck?.generation === generation) return cookieCheck.promise
       if (Date.now() - lastCookieCheckAt < 5_000) return
-      cookieCheck = (async () => {
+      const check = (async () => {
         try {
-          applySession(await currentAccount())
+          const user = await currentAccount()
+          if (generation === authGeneration) applySession(user)
         } catch {
-          currentUser.value = null
-          token.value = ''
+          if (generation === authGeneration) {
+            currentUser.value = null
+            token.value = ''
+          }
         } finally {
-          lastCookieCheckAt = Date.now()
+          if (generation === authGeneration) lastCookieCheckAt = Date.now()
         }
       })()
-      try { await cookieCheck } finally { cookieCheck = null }
+      cookieCheck = { generation, promise: check }
+      try { await check } finally {
+        if (cookieCheck?.promise === check) cookieCheck = null
+      }
     }
 
     function updateUserInfo(info: Partial<User>): void {

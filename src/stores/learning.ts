@@ -757,9 +757,9 @@ export const useLearningStore = defineStore(
     function resolveUserId(): string {
       try {
         const userStore = useUserStore()
-        return userStore.currentUser?.id || CURRENT_USER_ID
+        return userStore.currentUser?.id || (getApiMode() === 'http' ? '' : CURRENT_USER_ID)
       } catch {
-        return CURRENT_USER_ID
+        return getApiMode() === 'http' ? '' : CURRENT_USER_ID
       }
     }
 
@@ -865,6 +865,7 @@ export const useLearningStore = defineStore(
       }
 
       const studentId = resolveUserId()
+      if (!studentId) throw new Error('登录状态已失效，请重新登录后继续。')
       await ensureSession(studentId)
       const interactionMode = opts?.interactionMode ?? 'ask'
       const data = await agentChat({

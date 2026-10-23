@@ -176,7 +176,7 @@ watch(() => props.confirmationTaskId, () => {
           <span class="er-eyebrow">简历原文</span>
           <blockquote>{{ reviewEvidence(mention).quote || '服务端未提供可直接展示的实体原文片段。' }}</blockquote>
           <div v-if="reviewEvidence(mention).refs.length" class="er-pages">
-            <span v-for="(ref, index) in reviewEvidence(mention).refs" :key="`${ref.block_id || 'b'}-${index}`">{{ ref.page ? `第 ${ref.page} 页` : '原文定位' }}<template v-if="ref.block_id"> · {{ ref.block_id }}</template></span>
+            <span v-if="reviewEvidence(mention).refs.length">已定位原文片段</span>
           </div>
         </div>
         <div class="er-proposal">

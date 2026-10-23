@@ -2,6 +2,33 @@
  * Lightweight Markdown → HTML for chat bubbles.
  * Escapes raw HTML first; supports headings, lists, quotes, fences, inline marks.
  */
+import MarkdownIt from 'markdown-it'
+
+// Reuse markdown-it 14.1.1 (MIT), rules_block/table.mjs, for GFM tables only.
+// Existing prose rendering stays unchanged; raw HTML, images and unsafe links
+// are never enabled by this student-only presentation option.
+const studentTableMarkdown = new MarkdownIt({ html: false, linkify: false, typographer: false }).disable('image')
+studentTableMarkdown.renderer.rules.table_open = () => '<div class="md-table-scroll" tabindex="0" role="region" aria-label="表格，可横向滚动"><table class="md-table">\n'
+studentTableMarkdown.renderer.rules.table_close = () => '</table></div>\n'
+
+function renderWithTables(source: string): string {
+  const lines = source.replace(/\r\n/g, '\n').split('\n')
+  const tokens = studentTableMarkdown.parse(lines.join('\n'), {})
+  const out: string[] = []
+  let cursor = 0
+  for (let index = 0; index < tokens.length; index++) {
+    const token = tokens[index]!
+    if (token.type !== 'table_open' || !token.map) continue
+    const end = tokens.findIndex((candidate, next) => next > index && candidate.type === 'table_close')
+    if (end < 0) continue
+    out.push(renderMarkdown(lines.slice(cursor, token.map[0]).join('\n')))
+    out.push(studentTableMarkdown.renderer.render(tokens.slice(index, end + 1), studentTableMarkdown.options, {}))
+    cursor = token.map[1]
+    index = end
+  }
+  out.push(renderMarkdown(lines.slice(cursor).join('\n')))
+  return out.join('')
+}
 
 /** Remove decorative emoji outside fenced code (keeps technical content intact). */
 function stripDecorativeEmoji(source: string): string {
@@ -53,8 +80,9 @@ function flushList(items: string[], ordered: boolean, out: string[]) {
 }
 
 /** Convert a Markdown string to safe HTML for `v-html`. */
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, options?: { studentTables?: boolean }): string {
   if (!source) return ''
+  if (options?.studentTables) return renderWithTables(source)
 
   const lines = stripDecorativeEmoji(source).replace(/\r\n/g, '\n').split('\n')
   const out: string[] = []

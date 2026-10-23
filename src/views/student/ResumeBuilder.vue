@@ -1,14 +1,19 @@
 <!-- 页面：快速制作简历（仿 magicv.art 三栏）；路由：student/resume-builder；角色：STUDENT -->
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router'
 import { Icon } from '@iconify/vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { generateHTML, generateJSON } from '@tiptap/core'
+import StarterKit from '@tiptap/starter-kit'
+import Underline from '@tiptap/extension-underline'
 import { useResumeStore } from '@/stores/resume'
 import { useUserStore } from '@/stores'
 import TiptapEditor from '@/components/TiptapEditor.vue'
 import { parseResumeText } from '@/api/pipeline'
-import { DEMO_STUDENT_ID } from '@/api/config'
+import { DEMO_STUDENT_ID, getApiMode } from '@/api/config'
+import { getResumeDraft, saveResumeDraft, previewResumeDraft, type ResumeDraftForm, type ResumeFillPreview, type DraftGuidance } from '@/api/resumeDraft'
+import { ApiError } from '@/api/types'
 import { useAgentArtifactHandoff, commitMockArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 
 const route       = useRoute()
@@ -16,6 +21,8 @@ const router      = useRouter()
 const resumeStore = useResumeStore()
 const userStore   = useUserStore()
 const hasArtifactQuery = computed(() => Object.prototype.hasOwnProperty.call(route.query, 'artifact_id'))
+const isHttpMode = getApiMode() === 'http'
+const accountDraft = computed(() => isHttpMode && !hasArtifactQuery.value)
 const artifactId = computed(() => typeof route.query.artifact_id === 'string' ? route.query.artifact_id.trim() : '')
 const handoff = useAgentArtifactHandoff(() => artifactId.value)
 type ResumeRecommendation = { id: string; target: 'basic' | 'skills' | 'projects' | 'selfEval'; title: string; detail: string; applied: boolean }
@@ -86,7 +93,7 @@ type ModuleKey = 'basic' | 'skills' | 'work' | 'projects' | 'education' | 'honor
 /* ══ 表单数据 ══ */
 const form = ref({
   name: '', phone: '', email: '', school: '', major: '',
-  grade: '', targetRole: '', gpa: '', summary: '',
+  grade: '', targetRole: '', gpa: '', summary: '', sourceText: '',
   skills:     [] as string[],
   projects:   [{ name: '', role: '', desc: '' }] as ProjectEntry[],
   honors:     [] as HonorEntry[],
@@ -117,12 +124,159 @@ watch(hasArtifactQuery, hasArtifact => {
 
 /* ══ UI 状态 ══ */
 const activeModule = ref<ModuleKey>('basic')
-const accentColor  = ref('#8B2500')
+const draftGuidance = ref<DraftGuidance|null>(null)
+const accentColor  = ref('#F4514B')
 const avatarBase64 = ref('')
 const avatarInput  = ref<HTMLInputElement | null>(null)
+const mobileNav    = ref<HTMLElement | null>(null)
 const skillInput   = ref('')
 const honorInput   = ref('')
 const honorType    = ref<'cert' | 'intern' | 'award'>('intern')
+
+/* Account draft: serialized saves with optimistic revision, never formal evidence. */
+const draftLoading = ref(accountDraft.value)
+const draftError = ref('')
+const submitHint = ref('')
+const saveState = ref<'idle' | 'dirty' | 'saving' | 'saved' | 'failed' | 'conflict'>('idle')
+const draftRevision = ref(0)
+const submitting = ref(false)
+const fillPreview = ref<ResumeFillPreview | null>(null)
+const fillApplied = ref(false)
+const previewError = ref('')
+let loaded = false
+let active = true
+let owner = userStore.currentUser?.id
+let generation = 0
+let editGeneration = 0
+let fillGeneration = 0
+let savedSnapshot = ''
+let pendingSave: Promise<boolean> | null = null
+let saveTimer: ReturnType<typeof setTimeout> | undefined
+const snapshot = () => JSON.stringify({ form: form.value, theme: accentColor.value })
+const saveLabel = computed(() => ({idle: '草稿尚未保存', dirty: '有未保存的修改', saving: '保存中…', saved: '已保存到本人账号', failed: '保存失败，输入仍保留', conflict: '其他页面已更新草稿'}[saveState.value]))
+const current = (gen: number) => active && generation === gen && owner === userStore.currentUser?.id
+
+async function loadDraft() {
+  if (!accountDraft.value) return
+  clearTimeout(saveTimer)
+  const gen = ++generation
+  loaded = false
+  draftLoading.value = true
+  draftError.value = ''
+  try {
+    const env = await getResumeDraft()
+    if (!current(gen)) return
+    if (!env.success || !env.data) throw new Error('草稿未能读取')
+    form.value = env.data.form
+    accentColor.value = env.data.theme
+    draftRevision.value = env.data.revision
+    draftGuidance.value = env.data.guidance || null
+    if(draftGuidance.value?.status==='current')activeModule.value=draftGuidance.value.advice.target
+    savedSnapshot = snapshot()
+    saveState.value = env.data.revision ? 'saved' : 'idle'
+    // Vue watchers flush before this continuation; loading suppresses autosave.
+    await Promise.resolve()
+    loaded = true
+  } catch (e) {
+    if (current(gen)) draftError.value = e instanceof Error ? e.message : '暂时无法读取草稿'
+  } finally {
+    if (current(gen)) draftLoading.value = false
+  }
+}
+
+async function flushDraft(): Promise<boolean> {
+  clearTimeout(saveTimer)
+  if (!accountDraft.value) return true
+  if (!loaded || draftLoading.value || draftError.value || saveState.value === 'conflict') return false
+  if (pendingSave) {
+    if (!await pendingSave) return false
+    return flushDraft()
+  }
+  if (snapshot() === savedSnapshot) return true
+  const gen = generation
+  const payload = snapshot()
+  const parsed = JSON.parse(payload) as {form: ResumeDraftForm; theme: string}
+  saveState.value = 'saving'
+  const operation = (async () => {
+    try {
+      const env = await saveResumeDraft(parsed.form, parsed.theme, draftRevision.value)
+      if (!current(gen)) return false
+      if (!env.success || !env.data) throw new Error('草稿保存未确认')
+      draftRevision.value = env.data.revision
+      draftGuidance.value = env.data.guidance || null
+      savedSnapshot = payload
+      saveState.value = snapshot() === payload ? 'saved' : 'dirty'
+      return true
+    } catch (e) {
+      if (current(gen)) {
+        saveState.value = e instanceof ApiError && e.status === 409 ? 'conflict' : 'failed'
+        draftError.value = ''
+        ElMessage.error(e instanceof Error ? e.message : '保存失败，输入仍保留')
+      }
+      return false
+    }
+  })()
+  pendingSave = operation
+  const ok = await operation
+  if (pendingSave === operation) pendingSave = null
+  if (!ok) return false
+  if (snapshot() !== savedSnapshot) return flushDraft()
+  return true
+}
+
+watch([form, accentColor], () => {
+  editGeneration += 1
+  submitHint.value = ''
+  if (!fillApplied.value) fillPreview.value = null
+  if (!accountDraft.value || !loaded || draftLoading.value) return
+  if (saveState.value === 'conflict') return
+  saveState.value = snapshot() === savedSnapshot ? (draftRevision.value ? 'saved' : 'idle') : 'dirty'
+  clearTimeout(saveTimer)
+  if (saveState.value === 'dirty') saveTimer = setTimeout(() => void flushDraft(), 1000)
+}, { deep: true, flush: 'sync' })
+
+async function reloadDraft() {
+  try {
+    await ElMessageBox.confirm('重新载入会替换本页未保存的输入，请先复制需要保留的内容。', '重新载入草稿', {confirmButtonText: '重新载入', cancelButtonText: '保留本页'})
+    await loadDraft()
+  } catch { /* Keep local input. */ }
+}
+onMounted(() => void loadDraft())
+watch(() => userStore.currentUser?.id, id => {
+  generation += 1
+  fillGeneration += 1
+  clearTimeout(saveTimer)
+  pendingSave = null
+  loaded = false
+  form.value = {name:'',phone:'',email:'',school:'',major:'',grade:'',targetRole:'',gpa:'',summary:'',sourceText:'',skills:[],projects:[],honors:[],workExps:[],educations:[],selfEval:''}
+  fillPreview.value = null
+  draftGuidance.value = null
+  fillApplied.value = false
+  importing.value = false
+  previewError.value = ''
+  submitHint.value = ''
+  submitting.value = false
+  draftRevision.value = 0
+  savedSnapshot = ''
+  owner = id
+  if (id) void loadDraft()
+})
+onBeforeRouteLeave(async () => {
+  if (!accountDraft.value || !loaded || owner !== userStore.currentUser?.id || snapshot() === savedSnapshot) return true
+  if (await flushDraft()) return true
+  try {
+    await ElMessageBox.confirm('草稿还未保存。离开将丢失本页尚未保存的修改。', '保存未完成', {confirmButtonText:'放弃修改并离开', cancelButtonText:'继续填写'})
+    return true
+  } catch { return false }
+})
+function beforeUnload(event: BeforeUnloadEvent) {
+  if (accountDraft.value && loaded && snapshot() !== savedSnapshot) {event.preventDefault(); event.returnValue = ''}
+}
+onMounted(() => window.addEventListener('beforeunload', beforeUnload))
+onBeforeUnmount(() => { active = false; generation += 1; clearTimeout(saveTimer); window.removeEventListener('beforeunload', beforeUnload) })
+function safeRichText(value: string) {
+  return generateHTML(generateJSON(value, [StarterKit, Underline]), [StarterKit, Underline])
+}
 
 /* ══ 模块配置 ══ */
 const MODULES: { key: ModuleKey; label: string; icon: string; color: string }[] = [
@@ -135,7 +289,17 @@ const MODULES: { key: ModuleKey; label: string; icon: string; color: string }[] 
   { key: 'selfEval',  label: '自我评价',    icon: 'lucide:message-square', color: '#9B59B6' },
 ]
 
-const COLOR_PRESETS = ['#1a1a1a', '#8B2500', '#B8292B', '#1a3a6b', '#1a5c3a', '#6b4c1a']
+const COLOR_PRESETS = ['#F4514B', '#1a1a1a', '#8B2500', '#B8292B', '#1a3a6b', '#1a5c3a', '#6b4c1a']
+
+function selectModule(key: ModuleKey) {
+  activeModule.value = key
+  requestAnimationFrame(() => {
+    const behavior = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'
+    mobileNav.value
+      ?.querySelector<HTMLButtonElement>(`[data-module="${key}"]`)
+      ?.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior })
+  })
+}
 
 const accentRgb = computed(() => {
   const hex = accentColor.value.replace('#', '')
@@ -243,11 +407,35 @@ const resumeText = computed(() => {
 })
 
 /* ══ 粘贴解析填充 ══ */
-const importText = ref('')
+const mockImportText = ref('')
+const importText = computed({ get: () => accountDraft.value ? form.value.sourceText : mockImportText.value,
+  set: value => { if (accountDraft.value) form.value.sourceText = value; else mockImportText.value = value } })
 const importing = ref(false)
 const showImport = ref(false)
 
 async function importFromParse() {
+  if (isHttpMode) {
+    const text = importText.value.trim()
+    if (!text) { ElMessage.warning('请先粘贴你自己的经历文字'); return }
+    const request = ++fillGeneration, gen = generation, edits = editGeneration
+    importing.value = true
+    fillApplied.value = false
+    fillPreview.value = null
+    previewError.value = ''
+    try {
+      const env = await previewResumeDraft(text)
+      if (!current(gen) || request !== fillGeneration) return
+      if (edits !== editGeneration) { previewError.value = '读取期间内容已修改，请重新读取以免覆盖新输入'; return }
+      if (!env.success || !env.data) throw new Error('未能取得建议')
+      fillPreview.value = env.data
+      fillApplied.value = false
+    } catch (e) {
+      if (current(gen) && request === fillGeneration) previewError.value = e instanceof Error ? e.message : '读取失败，原表单未改变'
+    } finally {
+      if (current(gen) && request === fillGeneration) importing.value = false
+    }
+    return
+  }
   const text = importText.value.trim() || resumeText.value.trim()
   if (!text) {
     ElMessage.warning('请先粘贴简历文本')
@@ -306,14 +494,58 @@ async function importFromParse() {
 }
 
 /* ══ 操作 ══ */
-function useResume() {
+async function applyFill(overwrite = false) {
+  if (fillApplied.value) return
+  const preview = fillPreview.value
+  if (!preview) return
+  if (overwrite) {
+    try { await ElMessageBox.confirm('将用建议替换已有的对应字段和列表，请对照原文核对。', '确认覆盖', {confirmButtonText:'确认替换', cancelButtonText:'取消'}) }
+    catch { return }
+    if (fillPreview.value !== preview) return
+  }
+  const next = structuredClone(JSON.parse(JSON.stringify(form.value))) as ResumeDraftForm
+  for (const key of ['name','phone','email','school','major','grade','targetRole','gpa','summary','selfEval'] as const) {
+    if (preview.form[key] && (overwrite || !next[key].trim())) next[key] = preview.form[key]
+  }
+  for (const key of ['skills','projects','honors','workExps','educations'] as const) {
+    if (preview.form[key].length && (overwrite || !next[key].some(item => typeof item === 'string' ? item.trim() : Object.values(item).some(v => v.trim())))) {
+      // Keys are correlated array types; assign through their shared record projection.
+      Object.assign(next, {[key]: preview.form[key]})
+    }
+  }
+  fillApplied.value = true
+  form.value = next
+  showImport.value = false
+  ElMessage.success('已应用到草稿，仍需核对后提交')
+}
+async function useResume() {
+  if (accountDraft.value) {
+    if (submitting.value) return
+    const submitOwner = userStore.currentUser?.id
+    const submitGeneration = generation
+    submitting.value = true
+    submitHint.value = ''
+    try {
+      if (!await flushDraft()) return
+      if (!draftRevision.value) {submitHint.value = '请先填写足够的经历内容再提交核对'; return}
+      if (submitOwner !== userStore.currentUser?.id || !current(submitGeneration)) return
+      const env = await getResumeDraft()
+      if (submitOwner !== userStore.currentUser?.id || !current(submitGeneration)) return
+      if (!env.data || env.data.revision !== draftRevision.value) {saveState.value = 'conflict'; return}
+      if (env.data.text.trim().length < 20) {submitHint.value = '请先填写足够的经历内容再提交核对'; return}
+      await router.push({name:'student-career-navigation', query:{new_resume:'1', draft_revision:String(draftRevision.value)}})
+    } catch (e) {
+      if (current(submitGeneration)) submitHint.value = e instanceof Error ? e.message : '暂时无法核对已保存草稿，请重试；草稿仍保留'
+    } finally { if (current(submitGeneration)) submitting.value = false }
+    return
+  }
   resumeStore.setDraftText(resumeText.value)
   router.push({ name: 'student-career-navigation' })
 }
 function clearForm() {
   form.value = {
     name: '', phone: '', email: '', school: '', major: '',
-    grade: '', targetRole: '', gpa: '', summary: '',
+    grade: '', targetRole: '', gpa: '', summary: '', sourceText: '',
     skills: [], projects: [{ name: '', role: '', desc: '' }],
     honors: [], workExps: [], educations: [], selfEval: '',
   }
@@ -338,19 +570,38 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
       <span class="rb-hdr-title">{{ artifactReady ? '简历改进 · ' + handoff.artifact.value?.title : '快速制作简历' }}</span>
       <div class="rb-hdr-actions">
         <button v-if="hasArtifactQuery" class="rb-ghost-btn rb-agent-exit" type="button" @click="browseOrdinaryResume">退出对话产物</button>
-        <button class="rb-ghost-btn" type="button" @click="showImport = !showImport">
+        <button class="rb-ghost-btn" type="button" :disabled="accountDraft && (draftLoading || !!draftError)" @click="showImport = !showImport">
           <Icon icon="lucide:sparkles" :width="13"/>智能填充
         </button>
         <button class="rb-ghost-btn" disabled title="后端接入后开放">
           <Icon icon="lucide:download" :width="13"/>下载 PDF
           <span class="rb-soon-badge">即将开放</span>
         </button>
-        <button class="rb-use-btn" :disabled="hasArtifactQuery && !artifactReady" @click="useResume">
-          <Icon icon="lucide:check" :width="13"/>使用此简历
+        <button class="rb-use-btn" :disabled="(hasArtifactQuery && !artifactReady) || (accountDraft && (draftLoading || !!draftError || submitting || saveState === 'conflict'))" @click="useResume">
+          <Icon icon="lucide:check" :width="13"/>{{ accountDraft ? (submitting ? '正在准备…' : '提交并核对简历') : '使用此简历' }}
         </button>
       </div>
     </header>
+    <div v-if="accountDraft" class="rb-draft-status" role="status" aria-live="polite">
+      <span>{{ draftLoading ? '正在读取本人草稿…' : (draftError || saveLabel) }}</span>
+      <button v-if="draftError" type="button" @click="loadDraft">重新读取</button>
+      <button v-if="saveState === 'failed'" type="button" @click="flushDraft">重试保存</button>
+      <button v-if="saveState === 'conflict'" type="button" @click="reloadDraft">重新载入并核对</button>
+      <small>草稿尚未成为正式资料；提交后还需解析并由你确认。</small>
+      <p v-if="submitHint" class="rb-submit-hint" role="alert">{{ submitHint }}</p>
+    </div>
 
+    <details v-if="accountDraft && draftGuidance" class="rb-guidance">
+      <summary>本次修改指引 · {{ draftGuidance.advice.title }} <span>{{ draftGuidance.status==='current' ? '尚未自动应用' : '来源已变化或暂不可核对' }}</span></summary>
+      <template v-if="draftGuidance.status==='current'">
+        <p v-if="draftGuidance.origin==='existing_draft'">你正在继续现有草稿，没有套入诊断的预填内容。请自行对照这条来自已确认简历的建议。</p>
+        <p>{{ draftGuidance.advice.problem }} · {{ draftGuidance.advice.why }}</p>
+        <blockquote>{{ draftGuidance.advice.source_text }}</blockquote>
+        <ul><li v-for="q in draftGuidance.advice.questions" :key="q">{{ q }}</li></ul>
+        <p>{{ draftGuidance.advice.outline }}</p><small>括号是待填写提示，不是你的经历。保存草稿后仍须提交并核对。</small>
+      </template>
+      <p v-else>草稿已保留，但旧诊断不再作为当前修改依据。可手动继续编辑，或返回职途导航读取新诊断。</p>
+    </details>
     <div v-if="hasArtifactQuery && !artifactReady" class="rb-agent-state" role="status">
       <Icon :icon="handoff.loading.value ? 'lucide:loader-circle' : 'lucide:circle-alert'" :width="26" />
       <h2>{{ handoff.loading.value ? '正在读取对话中的简历' : '无法打开这份简历改进产物' }}</h2>
@@ -358,24 +609,63 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
       <button type="button" @click="browseOrdinaryResume">浏览普通简历制作</button>
     </div>
 
-    <div v-if="(!hasArtifactQuery || artifactReady) && showImport" class="rb-import-panel">
+    <div v-if="(!hasArtifactQuery || artifactReady) && showImport && !draftLoading && !draftError" class="rb-import-panel">
       <textarea
         v-model="importText"
         class="rb-import-ta"
         rows="5"
-        placeholder="粘贴简历全文，点击解析后自动填入姓名/学历/技能…"
+        placeholder="粘贴你自己的经历文字，先读取填充建议；不会修改正式资料"
       />
       <div class="rb-import-actions">
         <button class="rb-ghost-btn" type="button" :disabled="importing" @click="importFromParse">
           <Icon icon="lucide:wand-2" :width="13"/>
-          {{ importing ? '解析中…' : '解析并填充' }}
+          {{ importing ? '正在读取…' : (isHttpMode ? '读取填充建议' : '解析并填充') }}
         </button>
         <button class="rb-ghost-btn" type="button" @click="showImport = false">取消</button>
       </div>
+      <p v-if="previewError" role="alert">{{ previewError }}</p>
+      <section v-if="fillPreview" class="rb-fill-preview">
+        <h2>{{ fillApplied ? '上次已应用的建议（只读回看）' : '待核对的填充建议' }}{{ fillPreview.status === 'partial' ? ' · 部分读取' : '' }}</h2>
+        <p v-if="fillApplied">这是上次应用时的建议，不会随当前编辑内容更新。</p>
+        <p v-for="warning in fillPreview.warnings" :key="warning">{{ warning }}</p>
+        <dl class="rb-suggestion-fields">
+          <template v-for="(label, key) in {name:'姓名',school:'学校',major:'专业',grade:'年级',targetRole:'意向方向',gpa:'GPA',phone:'手机',email:'邮箱'}" :key="key">
+            <template v-if="fillPreview.form[key]"><dt>{{ label }}</dt><dd>{{ fillPreview.form[key] }}</dd></template>
+          </template>
+          <template v-if="fillPreview.form.skills.length"><dt>技能</dt><dd>{{ fillPreview.form.skills.join('、') }}</dd></template>
+        </dl>
+        <article v-for="(project, index) in fillPreview.form.projects" :key="index" class="rb-suggestion-project"><h3>{{ project.name || '项目名称待补充' }}</h3><p v-if="project.role">参与角色：{{ project.role }}</p><p>{{ stripHtml(project.desc) }}</p></article>
+        <ul v-if="fillPreview.form.honors.length"><li v-for="(honor, index) in fillPreview.form.honors" :key="`h${index}`">{{ honor.label }}</li></ul>
+        <button v-if="!fillApplied" class="rb-use-btn" type="button" @click="applyFill(false)">核对后补充空白字段</button>
+        <button v-if="!fillApplied" class="rb-ghost-btn" type="button" @click="applyFill(true)">核对并替换对应字段…</button>
+      </section>
     </div>
 
+    <div v-if="fillApplied && !showImport" class="rb-applied-summary" role="status"><div><strong>已应用到草稿，尚需提交确认</strong><p>请在编辑区核对内容，右侧同步预览；原文和建议仍可展开查看。</p></div><button class="rb-ghost-btn" type="button" @click="showImport = true">查看原文与建议</button></div>
+
+    <nav
+      v-if="(!hasArtifactQuery || artifactReady) && !draftLoading && !draftError"
+      ref="mobileNav"
+      class="rb-mobile-nav"
+      aria-label="简历内容分段"
+    >
+      <button
+        v-for="m in MODULES"
+        :key="m.key"
+        type="button"
+        class="rb-mobile-tab"
+        :class="{ 'rb-mobile-tab--active': activeModule === m.key }"
+        :aria-pressed="activeModule === m.key"
+        :data-module="m.key"
+        @click="selectModule(m.key)"
+      >
+        <span class="rb-mobile-tab-icon"><Icon :icon="m.icon" :width="22" aria-hidden="true" /></span>
+        <span class="rb-mobile-tab-label">{{ m.label }}</span>
+      </button>
+    </nav>
+
     <!-- ══ BODY 三栏 ══ -->
-    <div v-if="!hasArtifactQuery || artifactReady" class="rb-body">
+    <div v-if="(!hasArtifactQuery || artifactReady) && !draftLoading && !draftError" class="rb-body" :inert="submitting">
 
       <!-- ══ LEFT: 模块导航 ══ -->
       <aside class="rb-left">
@@ -385,7 +675,7 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
           <p>{{ handoff.artifact.value?.summary }}</p>
           <div v-for="item in recommendations" :key="item.id" class="rb-agent-advice__item">
             <button type="button" :aria-label="item.applied ? `取消完成 ${item.title}` : `完成 ${item.title}`" @click="toggleRecommendation(item.id)"><Icon :icon="item.applied ? 'lucide:check-circle-2' : 'lucide:circle'" :width="15" /></button>
-            <div><b>{{ item.title }}</b><small>{{ item.detail }}</small><button type="button" class="rb-agent-advice__jump" @click="activeModule = item.target">去修改 →</button></div>
+            <div><b>{{ item.title }}</b><small>{{ item.detail }}</small><button type="button" class="rb-agent-advice__jump" @click="selectModule(item.target)">去修改 →</button></div>
           </div>
         </div>
         <div class="rb-left-section-hd">布局</div>
@@ -394,7 +684,7 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
             v-for="m in MODULES" :key="m.key"
             class="rb-module-btn"
             :class="{ 'rb-module-btn--active': activeModule === m.key }"
-            @click="activeModule = m.key"
+            @click="selectModule(m.key)"
           >
             <span class="rb-module-icon" :style="{ background: m.color + '22', color: m.color }">
               <Icon :icon="m.icon" :width="13"/>
@@ -424,26 +714,43 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
         <div class="rb-mid-hd">
           <span class="rb-mid-hd-icon"
             :style="{ color: MODULES.find(m => m.key === activeModule)?.color }">
-            <Icon :icon="MODULES.find(m => m.key === activeModule)?.icon ?? 'lucide:file'" :width="15"/>
+            <Icon :icon="MODULES.find(m => m.key === activeModule)?.icon ?? 'lucide:file'" :width="22"/>
           </span>
-          {{ MODULES.find(m => m.key === activeModule)?.label }}
+          <span class="rb-mid-hd-copy">
+            <strong>{{ MODULES.find(m => m.key === activeModule)?.label }}</strong>
+            <small v-if="activeModule === 'basic'">填写个人基本信息，让企业更好地了解你</small>
+          </span>
         </div>
 
         <!-- 模块内容 -->
         <div class="rb-mid-body">
 
+          <div v-if="artifactReady" class="rb-agent-advice rb-agent-advice--mobile">
+            <span class="rb-agent-advice__eyebrow">来自 Agent 对话 · 演示简历</span>
+            <strong>{{ handoff.artifact.value?.title }}</strong>
+            <p>{{ handoff.artifact.value?.summary }}</p>
+            <div v-for="item in recommendations" :key="item.id" class="rb-agent-advice__item">
+              <button type="button" :aria-label="item.applied ? `取消完成 ${item.title}` : `完成 ${item.title}`" @click="toggleRecommendation(item.id)"><Icon :icon="item.applied ? 'lucide:check-circle-2' : 'lucide:circle'" :width="18" /></button>
+              <div><b>{{ item.title }}</b><small>{{ item.detail }}</small><button type="button" class="rb-agent-advice__jump" @click="selectModule(item.target)">去修改 →</button></div>
+            </div>
+          </div>
+
           <!-- ── 基本信息 ── -->
           <template v-if="activeModule === 'basic'">
-            <div class="rb-form-group">
+            <div v-if="!isHttpMode" class="rb-form-group">
               <div class="rb-form-group-title">资料</div>
               <div class="rb-field-row rb-field-row--avatar">
                 <div class="rb-frow-l">
                   <Icon icon="lucide:image" :width="13" class="rb-frow-ico"/>
                   <span class="rb-frow-lbl">头像</span>
                 </div>
-                <div class="rb-avatar-box" @click="avatarInput?.click()">
+                <button type="button" class="rb-avatar-box" aria-label="上传头像" @click="avatarInput?.click()">
                   <img v-if="avatarBase64" :src="avatarBase64" class="rb-avi" alt="头像"/>
                   <Icon v-else icon="lucide:camera" :width="16" class="rb-avi-ph"/>
+                </button>
+                <div class="rb-avatar-hint">
+                  <span>点击上传头像</span>
+                  <small>支持图片格式</small>
                 </div>
                 <input ref="avatarInput" type="file" accept="image/*" class="rb-hidden" @change="onAvatarChange"/>
               </div>
@@ -672,8 +979,8 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
           <button class="rb-clear-btn" @click="clearForm">
             <Icon icon="lucide:rotate-ccw" :width="12"/>清空
           </button>
-          <button class="rb-use-btn-lg" @click="useResume">
-            <Icon icon="lucide:check" :width="14"/>使用此简历
+          <button class="rb-use-btn-lg" :disabled="submitting || saveState === 'conflict'" @click="useResume">
+            <Icon icon="lucide:check" :width="14"/>{{ accountDraft ? '提交并核对简历' : '使用此简历' }}
           </button>
         </div>
       </main>
@@ -730,7 +1037,7 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
                   <span v-if="w.position" class="rp-entry-sub">{{ w.position }}</span>
                   <span v-if="w.period" class="rp-entry-period">{{ w.period }}</span>
                 </div>
-                <div v-if="w.desc" class="rp-richtext" v-html="w.desc"/>
+              <div v-if="w.desc" class="rp-richtext" v-html="safeRichText(w.desc)"/>
               </div>
               <div class="rp-rule-light"/>
             </template>
@@ -743,7 +1050,7 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
                   <span class="rp-entry-name">{{ p.name }}</span>
                   <span v-if="p.role" class="rp-entry-role">{{ p.role }}</span>
                 </div>
-                <div v-if="p.desc" class="rp-richtext" v-html="p.desc"/>
+                <div v-if="p.desc" class="rp-richtext" v-html="safeRichText(p.desc)"/>
               </div>
               <div class="rp-rule-light"/>
             </template>
@@ -793,7 +1100,7 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
             <!-- 自我评价 -->
             <template v-if="form.selfEval">
               <div class="rp-sec-title">自我评价</div>
-              <div class="rp-richtext" v-html="form.selfEval"/>
+              <div class="rp-richtext" v-html="safeRichText(form.selfEval)"/>
             </template>
 
             <!-- 空状态 -->
@@ -807,10 +1114,38 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
       </div><!-- /rb-right -->
 
     </div><!-- /rb-body -->
+
+    <div v-if="!hasArtifactQuery || artifactReady" class="rb-mobile-footer">
+      <button class="rb-clear-btn" type="button" @click="clearForm">
+        <Icon icon="lucide:rotate-ccw" :width="19" aria-hidden="true"/>清空
+      </button>
+      <button class="rb-use-btn-lg" type="button" :disabled="(hasArtifactQuery && !artifactReady) || (accountDraft && (draftLoading || !!draftError || submitting || saveState === 'conflict'))" @click="useResume">
+        <Icon icon="lucide:check" :width="20" aria-hidden="true"/>{{ accountDraft ? (submitting ? '正在准备…' : '提交并核对简历') : '使用此简历' }}
+      </button>
+    </div>
   </div><!-- /rb-page -->
 </template>
 
 <style scoped>
+.rb-guidance{flex-shrink:0;background:#fff8ee;border-bottom:1px solid #e2d3bf;padding:10px 24px;color:#644b35;font-size:12px;max-height:220px;overflow:auto}.rb-guidance summary{cursor:pointer;font-weight:600}.rb-guidance summary span{font-weight:400;margin-left:10px;color:#8a7461}.rb-guidance p,.rb-guidance li{line-height:1.7}.rb-guidance blockquote{margin:8px 0;padding-left:12px;border-left:2px solid #b99d7f}@media(max-width:600px){.rb-guidance{padding:10px 16px;max-height:160px}}
+.rb-draft-status { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:10px 24px; background:#fff8f2; color:#633d2c; border-bottom:1px solid #ead8ca; font-size:13px; }
+.rb-draft-status small { color:#75685f; }
+.rb-submit-hint { width:100%; margin:0; font-weight:600; }
+.rb-page .rb-draft-status button { color:#633d2c; border:1px solid #633d2c; border-radius:6px; background:#fff; padding:5px 10px; cursor:pointer; }
+.rb-fill-preview { max-height:35vh; overflow:auto; margin-top:12px; padding:14px; border:1px solid var(--rb-border); background:var(--rb-field); color:var(--rb-text); }
+.rb-page .rb-use-btn:disabled,.rb-page .rb-use-btn-lg:disabled { opacity:.45; cursor:not-allowed; }
+.rb-import-panel { flex-shrink:0; max-height:65vh; overflow:auto; }
+.rb-fill-preview h2 { font-size:16px; margin:0 0 10px; }
+.rb-fill-preview p,.rb-fill-preview dl { font-size:13px; line-height:1.7; margin:8px 0; }
+.rb-fill-preview dt { font-weight:600; display:inline; }
+.rb-fill-preview dd { display:inline; margin:0 16px 0 6px; }
+.rb-fill-preview .rb-suggestion-fields { display: grid; grid-template-columns: minmax(70px,auto) minmax(0,1fr); gap: 8px 16px; }
+.rb-fill-preview .rb-suggestion-fields dt,.rb-fill-preview .rb-suggestion-fields dd { display: block; margin: 0; overflow-wrap: anywhere; }
+.rb-suggestion-project { border-top: 1px solid var(--rb-border); padding-top: 12px; margin-top: 12px; }
+.rb-suggestion-project h3 { font-size: 14px; margin: 0 0 8px; }
+.rb-suggestion-project p { white-space: pre-line; overflow-wrap: anywhere; }
+.rb-applied-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 24px; border-bottom: 1px solid var(--color-border); background: var(--color-surface); color: var(--color-text); font-size: 13px; }
+.rb-applied-summary p { color: var(--color-text-muted); margin: 5px 0 0; font-size: 12px; }
 .rb-agent-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 30px; text-align: center; }
 .rb-agent-state h2 { margin: 14px 0 6px; font-size: 18px; }
 .rb-agent-state p { color: #aaa; }
@@ -1176,4 +1511,465 @@ const honorTypeIcons  = { cert: 'lucide:award', intern: 'lucide:briefcase', awar
 }
 .rp-empty-ico { color: #ccc; }
 .rp-empty p { font-size: 12px; color: #aaa; line-height: 1.6; }
+
+/* ══ 深蓝黑 / 珊瑚红主题 ══ */
+.rb-page {
+  --rb-bg: #0b1422;
+  --rb-surface: #111c2b;
+  --rb-surface-raised: #162338;
+  --rb-field: #172437;
+  --rb-border: #27364a;
+  --rb-border-soft: rgba(142, 162, 188, 0.16);
+  --rb-text: #f2f5fa;
+  --rb-muted: #98a8bd;
+  --rb-subtle: #7788a0;
+  --rb-blue: #55aaf2;
+  background: var(--rb-bg);
+  color: var(--rb-text);
+  color-scheme: dark;
+}
+
+.rb-hdr {
+  border-bottom-color: var(--rb-border-soft);
+  background: #0d1726;
+}
+.rb-hdr-back {
+  min-height: 36px;
+  border-color: rgba(178, 196, 220, 0.18);
+  color: #d4dfef;
+}
+.rb-hdr-back:hover { border-color: var(--accent); color: var(--rb-text); }
+.rb-hdr-title { color: var(--rb-text); }
+.rb-import-panel {
+  border-color: var(--rb-border);
+  background: var(--rb-surface);
+}
+.rb-import-ta {
+  border-color: var(--rb-border);
+  background: var(--rb-field);
+  color: var(--rb-text);
+}
+.rb-import-ta::placeholder { color: var(--rb-subtle); }
+.rb-ghost-btn {
+  border-color: rgba(178, 196, 220, 0.2);
+  color: var(--rb-muted);
+}
+.rb-ghost-btn:not(:disabled) { cursor: pointer; }
+.rb-use-btn,
+.rb-use-btn-lg {
+  background: var(--accent);
+  color: #fff;
+}
+.rb-body { background: var(--rb-bg); }
+.rb-left {
+  border-right-color: var(--rb-border-soft);
+  background: #0d1726;
+}
+.rb-left-section-hd { color: var(--rb-subtle); }
+.rb-module-btn { color: var(--rb-muted); }
+.rb-module-btn:hover { background: rgba(255,255,255,0.05); color: var(--rb-text); }
+.rb-module-btn--active {
+  background: rgba(244, 81, 75, 0.13);
+  color: var(--rb-text);
+}
+.rb-module-icon {
+  background: var(--rb-surface-raised) !important;
+  color: #b8c8de !important;
+}
+.rb-module-btn--active .rb-module-icon {
+  background: var(--accent) !important;
+  color: #fff !important;
+}
+.rb-left-sep {
+  background: var(--rb-border-soft);
+}
+.rb-mid { border-right-color: var(--rb-border-soft); }
+.rb-left-sep,
+.rb-form-group-title,
+.rb-field-row,
+.rb-mid-hd,
+.rb-mid-footer,
+.rb-preview-bar {
+  border-color: var(--rb-border-soft);
+}
+.rb-color-dot { border-color: transparent; }
+.rb-color-dot--active { border-color: #fff; }
+.rb-mid { background: #101b2a; }
+.rb-mid-hd { color: var(--rb-text); }
+.rb-mid-hd-icon { color: var(--rb-blue) !important; }
+.rb-mid-hd-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+.rb-mid-hd-copy strong { color: var(--rb-text); font-weight: 650; }
+.rb-mid-hd-copy small { color: var(--rb-muted); font-size: 12px; font-weight: 400; }
+.rb-mid-body { scrollbar-color: #33445c transparent; }
+.rb-mid-footer { background: #0d1726; }
+.rb-clear-btn {
+  border-color: var(--rb-border);
+  color: #d0dced;
+}
+.rb-clear-btn:hover { border-color: rgba(244, 81, 75, 0.58); color: #ffaaa4; }
+.rb-form-group-title { color: #d1dced; }
+.rb-frow-ico { color: var(--rb-blue); }
+.rb-frow-lbl { color: #e0e8f4; }
+.rb-finput { color: var(--rb-text); }
+.rb-finput::placeholder,
+.rb-ftextarea::placeholder { color: var(--rb-subtle); }
+.rb-fselect { background: var(--rb-field); color: var(--rb-text); }
+.rb-ftextarea {
+  border-color: var(--rb-border);
+  background: var(--rb-field);
+  color: var(--rb-text);
+}
+.rb-ftextarea:focus { border-color: var(--accent); }
+.rb-avatar-box {
+  padding: 0;
+  border-color: rgba(164, 185, 214, 0.42);
+  background: rgba(255,255,255,0.025);
+  color: #aabbd3;
+}
+.rb-avatar-box:hover { border-color: var(--accent); }
+.rb-avatar-hint { display: none; }
+.rb-avi-ph { color: #aabbd3; }
+.rb-add-btn {
+  border-color: rgba(244, 81, 75, 0.38);
+  background: rgba(244, 81, 75, 0.15);
+  color: #ff9a93;
+}
+.rb-stag {
+  border-color: rgba(244, 81, 75, 0.35);
+  background: rgba(244, 81, 75, 0.12);
+  color: #ffc0bc;
+}
+.rb-entry-card {
+  border-color: var(--rb-border-soft);
+  background: rgba(255,255,255,0.025);
+}
+.rb-entry-num { background: rgba(244,81,75,0.18); color: #ffaaa4; }
+.rb-entry-name { color: #e2eaf5; }
+.rb-add-entry-btn {
+  border-color: rgba(244,81,75,0.38);
+  background: rgba(244,81,75,0.08);
+  color: #ffaaa4;
+}
+.rb-hint-text { color: var(--rb-muted); }
+.rb-right { background: #0d1726; }
+.rb-preview-bar { color: var(--rb-muted); }
+.rb-preview-scroll { scrollbar-color: #33445c transparent; }
+.rb-agent-state { color: var(--rb-text); }
+.rb-agent-state p { color: var(--rb-muted); }
+.rb-agent-state button {
+  border-color: var(--rb-border);
+  color: #d4dfef;
+}
+.rb-agent-advice {
+  border-color: rgba(244,81,75,.25);
+  background: rgba(244,81,75,.08);
+}
+.rb-agent-advice__eyebrow { color: #ffaaa4; }
+.rb-agent-advice > p,
+.rb-agent-advice__item small { color: var(--rb-muted); }
+.rb-agent-advice__item { border-top-color: var(--rb-border-soft); }
+.rb-agent-advice__item > button,
+.rb-agent-advice__jump { color: #ffaaa4; }
+.rb-agent-advice--mobile,
+.rb-mobile-nav,
+.rb-mobile-footer { display: none; }
+.rb-page :is(button, input, select, textarea):focus-visible {
+  outline: 2px solid #67b7ff;
+  outline-offset: 2px;
+}
+
+@media (max-width: 767px) {
+  .rb-page { min-height: 0; height: 100%; overflow: hidden; }
+  .rb-hdr {
+    position: relative;
+    min-height: calc(58px + env(safe-area-inset-top, 0px));
+    height: auto;
+    padding: calc(7px + env(safe-area-inset-top, 0px)) 12px 7px;
+    gap: 0;
+    border-bottom: 0;
+  }
+  .rb-hdr-back {
+    z-index: 1;
+    width: 88px;
+    min-height: 44px;
+    justify-content: flex-start;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 8px;
+    color: #d4dfef;
+    font-size: 16px;
+  }
+  .rb-hdr-back :deep(svg) { width: 22px; height: 22px; }
+  .rb-hdr-title {
+    position: absolute;
+    left: 50%;
+    max-width: calc(100% - 132px);
+    overflow: hidden;
+    transform: translateX(-50%);
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rb-hdr-actions,
+  .rb-import-panel { display: none !important; }
+  .rb-mobile-nav {
+    display: flex;
+    flex: 0 0 92px;
+    align-items: stretch;
+    gap: 4px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 7px 12px 9px;
+    border: 1px solid var(--rb-border-soft);
+    border-radius: 18px;
+    background: #0f1928;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: 12px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .rb-mobile-nav::-webkit-scrollbar { display: none; }
+  .rb-mobile-tab {
+    display: flex;
+    flex: 0 0 78px;
+    min-width: 78px;
+    min-height: 74px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 6px 3px;
+    border: 0;
+    border-radius: 14px;
+    background: transparent;
+    color: #b9c8dc;
+    cursor: pointer;
+    scroll-snap-align: center;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .rb-mobile-tab-icon { display: flex; align-items: center; justify-content: center; height: 28px; }
+  .rb-mobile-tab-label {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 12px;
+    line-height: 1.25;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rb-mobile-tab--active {
+    background: var(--accent);
+    color: #fff;
+    font-weight: 650;
+  }
+  .rb-mobile-tab:active { background: rgba(244,81,75,.22); }
+  .rb-mobile-tab--active:active { background: var(--accent); }
+  .rb-body {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 12px 10px 10px;
+  }
+  .rb-left,
+  .rb-right { display: none; }
+  .rb-mid {
+    display: flex;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--rb-border-soft);
+    border-radius: 18px;
+    background: linear-gradient(155deg, #121e2e, #0f1928 80%);
+    box-shadow: 0 12px 32px rgba(0,0,0,.14);
+  }
+  .rb-mid-hd {
+    flex: 0 0 auto;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 18px 16px 14px;
+    border-bottom: 1px solid var(--rb-border-soft);
+  }
+  .rb-mid-hd-icon {
+    display: flex;
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+    align-items: center;
+    justify-content: center;
+    color: var(--rb-blue) !important;
+  }
+  .rb-mid-hd-copy { padding-top: 1px; gap: 3px; }
+  .rb-mid-hd-copy strong { font-size: 21px; }
+  .rb-mid-hd-copy small { font-size: 13px; line-height: 1.45; }
+  .rb-mid-body {
+    min-height: 0;
+    padding: 4px 16px 18px;
+    overscroll-behavior-y: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .rb-mid-footer { display: none; }
+  .rb-mobile-footer {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 10px;
+    padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+    border-top: 1px solid var(--rb-border-soft);
+    background: rgba(11,20,34,.98);
+  }
+  .rb-mobile-footer .rb-clear-btn {
+    flex: 0 0 37%;
+    min-height: 58px;
+    justify-content: center;
+    gap: 10px;
+    border: 1px solid var(--rb-border);
+    border-radius: 14px;
+    background: transparent;
+    color: #c3d0e1;
+    font-size: 17px;
+  }
+  .rb-mobile-footer .rb-use-btn-lg {
+    min-height: 58px;
+    border: 0;
+    border-radius: 14px;
+    font-size: 18px;
+    box-shadow: 0 5px 16px rgba(244,81,75,.22);
+  }
+  .rb-mobile-footer .rb-use-btn-lg:disabled { opacity: .55; cursor: not-allowed; }
+  .rb-mid-body .rb-agent-advice--mobile { display: block; margin: 8px 0 18px; }
+  .rb-agent-advice--mobile .rb-agent-advice__item > button { min-width: 36px; min-height: 36px; display: grid; place-items: center; }
+  .rb-agent-advice--mobile .rb-agent-advice__jump { min-height: 36px; font-size: 12px; }
+  .rb-form-group { margin-bottom: 20px; }
+  .rb-form-group-title {
+    margin-bottom: 6px;
+    padding: 4px 0 8px;
+    border-bottom: 0;
+    color: #d5dfed;
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .rb-field-row {
+    display: grid;
+    grid-template-columns: 94px minmax(0, 1fr);
+    gap: 10px;
+    min-height: 66px;
+    padding: 8px 0;
+    border-bottom-color: rgba(142,162,188,.14);
+  }
+  .rb-frow-l { width: auto; min-width: 0; gap: 8px; }
+  .rb-frow-ico { width: 20px; height: 20px; }
+  .rb-frow-lbl { color: #e3ebf6; font-size: 15px; }
+  .rb-finput {
+    min-width: 0;
+    min-height: 52px;
+    padding: 0 13px;
+    border: 1px solid var(--rb-border);
+    border-radius: 12px;
+    outline: none;
+    background: var(--rb-field);
+    font-size: 16px;
+    line-height: 1.4;
+  }
+  .rb-finput:focus { border-color: #4c97d2; }
+  .rb-fselect { min-height: 52px; padding-right: 30px; }
+  .rb-field-row--avatar {
+    grid-template-columns: 84px 64px minmax(0, 1fr);
+    gap: 10px;
+    min-height: 98px;
+    padding: 12px 0;
+  }
+  .rb-avatar-box { width: 64px; height: 64px; border-radius: 12px; }
+  .rb-avatar-box :deep(.rb-avi) { width: 100%; height: 100%; object-fit: cover; }
+  .rb-avatar-hint { display: flex; min-width: 0; flex-direction: column; gap: 5px; color: #cbd7e8; font-size: 14px; }
+  .rb-avatar-hint small { color: var(--rb-muted); font-size: 12px; }
+  .rb-field-col { gap: 8px; margin-top: 14px; }
+  .rb-fcol-lbl { color: #d5dfed; font-size: 14px; }
+  .rb-ftextarea {
+    min-height: 126px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    font-size: 16px;
+  }
+  .rb-tag-row { gap: 8px; }
+  .rb-tag-row .rb-finput { flex: 1; }
+  .rb-add-btn { width: 48px; height: 48px; border-radius: 12px; }
+  .rb-stag { min-height: 40px; padding: 4px 10px; border-radius: 10px; font-size: 13px; }
+  .rb-stag-x { width: 30px; height: 30px; align-items: center; justify-content: center; }
+  .rb-entry-card { padding: 13px; border-radius: 13px; }
+  .rb-entry-hd { min-height: 40px; }
+  .rb-entry-name { font-size: 14px; }
+  .rb-entry-del { min-width: 40px; min-height: 40px; justify-content: center; }
+  .rb-add-entry-btn { min-height: 48px; justify-content: center; border-radius: 12px; font-size: 14px; }
+  .rb-honor-item { min-height: 44px; border-radius: 10px; font-size: 13px; }
+  .rb-honor-del { min-width: 36px; min-height: 36px; justify-content: center; }
+  .rb-page :deep(.tip-wrap) {
+    border-color: var(--rb-border);
+    border-radius: 12px;
+    background: var(--rb-field);
+  }
+  .rb-page :deep(.tip-toolbar) {
+    min-height: 44px;
+    border-bottom-color: var(--rb-border-soft);
+    background: #111c2b;
+  }
+  .rb-page :deep(.tip-tool) { width: 40px; height: 40px; color: #c0cee0; }
+  .rb-page :deep(.tip-tool--on) { background: rgba(244,81,75,.2); color: #ffaaa4; }
+  .rb-page :deep(.tip-content) {
+    min-height: 120px;
+    padding: 12px 14px;
+    color: var(--rb-text);
+    font-size: 16px;
+  }
+}
+
+@media (max-width: 360px) {
+  .rb-field-row { grid-template-columns: 82px minmax(0, 1fr); gap: 8px; }
+  .rb-field-row--avatar { grid-template-columns: 72px 58px minmax(0, 1fr); gap: 8px; }
+  .rb-avatar-box { width: 58px; height: 58px; }
+  .rb-frow-lbl { font-size: 14px; }
+  .rb-mobile-footer { gap: 8px; padding-right: 9px; padding-left: 9px; }
+  .rb-mobile-footer .rb-clear-btn { flex-basis: 34%; font-size: 15px; }
+  .rb-mobile-footer .rb-use-btn-lg { font-size: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rb-mobile-nav { scroll-behavior: auto; }
+  .rb-page *,
+  .rb-page *::before,
+  .rb-page *::after { scroll-behavior: auto !important; }
+}
+/* Preserve the existing editor layout, but share the surrounding product's
+   warm-paper palette. This is not a second app-wide theme. */
+.rb-page { --rb-bg: var(--color-background,#f5f3ef); --rb-surface: var(--color-surface,#fffdf9); --rb-surface-raised: #f0e9df; --rb-field: #fffdf9; --rb-border: #d9cfc2; --rb-border-soft: #e8e1d7; --rb-text: #302d29; --rb-muted: #716b62; --rb-subtle: #898077; --rb-blue: var(--color-primary,#8b2500); color-scheme: light; }
+.rb-hdr,.rb-left,.rb-mid-footer { background: var(--rb-surface); }
+.rb-hdr-back { color: var(--rb-muted); border-color: var(--rb-border); }
+.rb-mid { background: var(--rb-bg); }
+.rb-right { background: #eee8df; }
+.rb-preview-bar { background: var(--rb-surface); }
+.rb-frow-lbl,.rb-form-group-title,.rb-clear-btn,.rb-entry-name { color: var(--rb-muted); }
+.rb-add-btn,.rb-add-entry-btn,.rb-stag,.rb-entry-num { color: var(--color-primary,#8b2500); border-color: #d9bca9; background: #f4e9df; }
+.rb-clear-btn:hover { color: var(--color-primary,#8b2500); border-color: var(--rb-border); }
+.rb-preview-bar { color: var(--rb-muted); }
+.rb-module-icon { color: var(--rb-muted) !important; }
+.rb-ghost-btn,.rb-finput,.rb-fselect { border-color: var(--rb-border); }
+.rb-mid-body,.rb-preview-scroll { scrollbar-color: #c9b9aa transparent; }
+.rb-module-btn--active { background: #ede0d4; color: var(--rb-text); }
+.rb-applied-summary { flex-shrink: 0; }
+.rb-mobile-nav,.rb-mobile-footer { background: var(--rb-surface); border-color: var(--rb-border); }
+.rb-mobile-tab { color: var(--rb-muted); }
+.rb-mobile-tab--active { color: var(--rb-text); background: #ede0d4; }
+.rb-mobile-footer .rb-clear-btn { color: var(--rb-muted); }
+.rb-page :deep(.tip-wrap) { border-color: var(--rb-border); background: #fffdfa; }
+.rb-page :deep(.tip-toolbar) { background: #f1e8dc; border-color: var(--rb-border); }
+.rb-page :deep(.tip-tool) { color: #685b4c; }
+.rb-page :deep(.tip-tool--on) { color: #8b2500; background: #ead8c5; }
+.rb-page :deep(.tip-content) { color: var(--rb-text); caret-color: #8b2500; }
+.rb-page :deep(.tip-content:focus-visible) { outline: 2px solid #a65d39; outline-offset: -2px; }
+.rb-page :deep(.tip-content:empty::before) { color: #817264; }
+.rb-page :deep(.tip-sep) { background: #d9c9b8; }
+.rb-fcol-lbl { color: var(--rb-muted); }
+@media(max-width:640px) { .rb-applied-summary { align-items: start; padding: 10px 12px; } .rb-applied-summary button { flex-shrink: 0; } }
 </style>

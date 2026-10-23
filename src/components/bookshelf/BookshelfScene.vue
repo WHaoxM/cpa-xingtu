@@ -1,16 +1,18 @@
 <!-- 组件：3D 书架场景；使用 GSAP 驱动书本动画与交互 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { gsap } from '@/plugins/gsap'
 import type { ReportRecord } from '@/types'
 
 const props = defineProps<{
   books: ReportRecord[]
   type: 'portrait' | 'career'
+  emptyText?: string
 }>()
 
 const emit = defineEmits<{
   (e: 'book-fly-out', payload: { record: ReportRecord; originX: number; originY: number; type: 'portrait' | 'career' }): void
+  (e: 'capacity', count: number): void
 }>()
 
 const animatingId = ref<string | null>(null)
@@ -50,7 +52,7 @@ function createBookView(record: ReportRecord): BookViewItem {
   return {
     record,
     dateLabel: formatSpineDate(record.createdAt),
-    titleLabel: record.title.length > 8 ? `${record.title.slice(0, 8)}…` : record.title,
+    titleLabel: record.portraitVersion ? '能力画像' : record.title.length > 8 ? `${record.title.slice(0, 8)}…` : record.title,
     width: 28 + (seed % 15),
     height: 90 + (seed2 % 41),
   }
@@ -65,8 +67,9 @@ const SHELF_ROW_COUNT = 3
 
 const booksPerRow = computed(() => {
   if (measuredRowWidth.value <= 0) return 8
-  return Math.max(4, Math.floor(measuredRowWidth.value / MAX_BOOK_SLOT))
+  return Math.max(1, Math.floor((measuredRowWidth.value - 16) / MAX_BOOK_SLOT))
 })
+watch(booksPerRow, value => emit('capacity', value * SHELF_ROW_COUNT), { immediate: true })
 
 const shelfRows = computed(() => {
   const perRow = booksPerRow.value
@@ -105,6 +108,7 @@ function setBookRef(id: string, el: unknown) {
 }
 
 function handleHover(id: string, enter: boolean) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
   if (animatingId.value === id) return
   const el = bookRefs.get(id)
   if (!el) return
@@ -123,17 +127,19 @@ function handleBookClick(item: BookViewItem, evt: MouseEvent) {
   if (!el) return
 
   animatingId.value = item.record.id
+  const bounds = el.getBoundingClientRect()
+  const payload = { record: item.record, type: props.type,
+    originX: evt.detail === 0 ? bounds.x + bounds.width / 2 : evt.clientX,
+    originY: evt.detail === 0 ? bounds.y + bounds.height / 2 : evt.clientY }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    animatingId.value = null; emit('book-fly-out', payload); return
+  }
 
   gsap.timeline({
     onComplete: () => {
       gsap.set(el, { clearProps: 'all' })
       animatingId.value = null
-      emit('book-fly-out', {
-        record: item.record,
-        originX: evt.clientX,
-        originY: evt.clientY,
-        type: props.type,
-      })
+      emit('book-fly-out', payload)
     },
   })
     .to(el, {
@@ -165,9 +171,13 @@ function handleBookClick(item: BookViewItem, evt: MouseEvent) {
             :key="item.record.id"
             :ref="(el) => setBookRef(item.record.id, el)"
             class="book-item"
+            :data-book-id="item.record.id"
             :class="[`book-item--${type}`, { 'book-item--animating': animatingId === item.record.id }]"
             :style="{ '--book-w': `${item.width}px`, '--book-h': `${item.height}px` }"
             :title="item.record.title"
+            :aria-label="`打开${item.record.title}，${item.dateLabel}`"
+            @focus="handleHover(item.record.id, true)"
+            @blur="handleHover(item.record.id, false)"
             @mouseenter="handleHover(item.record.id, true)"
             @mouseleave="handleHover(item.record.id, false)"
             @click="handleBookClick(item, $event)"
@@ -193,11 +203,12 @@ function handleBookClick(item: BookViewItem, evt: MouseEvent) {
 
               <span class="book-binding"></span>
               <span class="book-date">{{ item.dateLabel }}</span>
-              <span class="book-title">{{ item.titleLabel }}</span>
+              <span class="book-title" :class="{ 'book-title--versioned': item.record.portraitVersion }">{{ item.titleLabel }}</span>
+              <span v-if="item.record.portraitVersion" class="book-version">{{ item.record.portraitVersion === 'current' ? '当前' : '历史' }}</span>
             </span>
           </button>
 
-          <div v-if="!row.length" class="shelf-empty">暂无报告</div>
+          <div v-if="!row.length" class="shelf-empty">{{ rowIndex === 0 ? (emptyText || '暂无报告') : '' }}</div>
         </div>
 
         <div class="shelf-shadow"></div>
@@ -297,6 +308,7 @@ function handleBookClick(item: BookViewItem, evt: MouseEvent) {
 }
 
 .book-item {
+  flex: none;
   position: relative;
   width: var(--book-w);
   height: var(--book-h);
@@ -311,6 +323,7 @@ function handleBookClick(item: BookViewItem, evt: MouseEvent) {
 .book-item--animating {
   pointer-events: none;
 }
+.book-item:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 4px; }
 
 .book-face {
   position: absolute;
@@ -380,17 +393,25 @@ function handleBookClick(item: BookViewItem, evt: MouseEvent) {
 
 .book-title {
   position: absolute;
-  left: 5px;
-  right: 5px;
+  left: 4px;
+  width: 10px;
+  right: auto;
+  top: 12px;
   bottom: 8px;
   text-align: center;
   font-size: 10px;
+  line-height: 11px;
   color: rgba(255, 255, 255, 0.95);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   white-space: nowrap;
+  writing-mode: vertical-rl;
+  text-orientation: upright;
+  letter-spacing: .08em;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.book-title--versioned { bottom: 30px; }
+.book-version { position: absolute; left: 2px; bottom: 4px; width: 17px; padding: 2px 0; background: #f7f3ee; color: #51372a; font-size: 10px; font-weight: 700; line-height: 11px; writing-mode: vertical-rl; text-orientation: upright; letter-spacing: .06em; border-radius: 1px; text-align: center; }
 
 .book-item--career .book-depth--side {
   background: rgba(27, 78, 121, 0.15);

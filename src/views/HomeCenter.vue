@@ -45,9 +45,9 @@ const assessed = computed(() => backendConnected ? backendPortraitReady.value : 
 let _observer: IntersectionObserver | null = null
 
 onMounted(() => {
-  if (backendConnected) {
-    void loadBackendProgress()
-  } else if (!learningStore.learningHistory.length) {
+  // StudentDashboardHome owns the backend projection in HTTP mode. Avoid
+  // issuing the legacy profile/report reads here as duplicate hidden requests.
+  if (!backendConnected && !learningStore.learningHistory.length) {
     learningStore.loadFromStorage()
   }
   _observer = new IntersectionObserver(

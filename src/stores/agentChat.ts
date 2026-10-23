@@ -80,7 +80,7 @@ function mapHistoryToMessages(rows: AgentHistoryMessage[]): AIMessage[] {
 
 function resolveUserId(): string {
   const user = useUserStore()
-  return user.currentUser?.id || 'demo_student'
+  return user.currentUser?.id || (getApiMode() === 'http' ? '' : 'demo_student')
 }
 
 export const useAgentChatStore = defineStore(
@@ -90,6 +90,9 @@ export const useAgentChatStore = defineStore(
     const activeSessionId = ref<string | null>(null)
     const bootstrapped = ref(false)
     const switching = ref(false)
+    const sessionListError = ref('')
+    const historyError = ref('')
+    const userScopeId = ref<string | null>(null)
 
     const activeConversation = computed(() =>
       conversations.value.find(c => c.sessionId === activeSessionId.value) || null,
@@ -140,25 +143,31 @@ export const useAgentChatStore = defineStore(
       }
     }
 
-    async function refreshSessionList(): Promise<void> {
-      if (getApiMode() !== 'http') return
+    async function refreshSessionList(): Promise<boolean> {
+      if (getApiMode() !== 'http') return true
+      const ownerId = resolveUserId()
+      if (!ownerId) {
+        sessionListError.value = '登录状态已失效，请重新登录后查看历史对话。'
+        return false
+      }
       try {
-        const rows = await listSessions(resolveUserId(), 40)
-        const known = new Set(conversations.value.map(c => c.sessionId))
+        const rows = await listSessions(ownerId, 40)
+        const serverIds = new Set(rows.map(row => row.session_id).filter(Boolean))
+        conversations.value = conversations.value.filter(c => serverIds.has(c.sessionId))
+        if (activeSessionId.value && !serverIds.has(activeSessionId.value)) {
+          activeSessionId.value = null
+          clearAgentSessionId()
+        }
         for (const row of rows) {
           if (!row.session_id) continue
-          if (known.has(row.session_id)) {
-            touchConversation(row.session_id, {
-              title: row.title || undefined,
-              updatedAt: row.updated_at || undefined,
-              status: row.status || undefined,
-            })
-          } else {
-            upsertMeta(row)
-          }
+          upsertMeta(row)
         }
+        sessionListError.value = ''
+        return true
       } catch (e) {
         console.warn('[agentChat] listSessions failed', e)
+        sessionListError.value = e instanceof Error ? e.message : '历史对话列表暂时无法读取。'
+        return false
       }
     }
 
@@ -169,6 +178,7 @@ export const useAgentChatStore = defineStore(
         conv.hydrated = true
         return
       }
+      historyError.value = ''
       try {
         const hist = await getSessionHistory(sessionId, 80)
         conv.messages = mapHistoryToMessages(hist)
@@ -179,14 +189,19 @@ export const useAgentChatStore = defineStore(
         }
       } catch (e) {
         console.warn('[agentChat] hydrate failed', e)
-        conv.hydrated = true
+        historyError.value = e instanceof Error ? e.message : '这段对话暂时无法读取，请重试。'
       }
     }
 
     async function switchSession(sessionId: string): Promise<void> {
-      if (!sessionId || sessionId === activeSessionId.value) return
+      if (!sessionId) return
+      if (sessionId === activeSessionId.value) {
+        if (getApiMode() === 'http') await hydrateSession(sessionId)
+        return
+      }
       switching.value = true
       try {
+        historyError.value = ''
         setAgentSessionId(sessionId)
         activeSessionId.value = sessionId
         if (!conversations.value.some(c => c.sessionId === sessionId)) {
@@ -199,6 +214,7 @@ export const useAgentChatStore = defineStore(
     }
 
     async function startNewConversation(opts?: { archivePrevious?: boolean }): Promise<string | null> {
+      if (getApiMode() === 'http' && (!resolveUserId() || sessionListError.value)) return null
       const prev = activeSessionId.value
       const prevConv = activeConversation.value
       const hadUser = Boolean(prevConv?.messages.some(m => m.role === 'user'))
@@ -237,8 +253,16 @@ export const useAgentChatStore = defineStore(
     }
 
     async function ensureActiveSession(): Promise<string> {
+      if (getApiMode() === 'http' && (!resolveUserId() || sessionListError.value)) {
+        throw new Error(sessionListError.value || '登录状态已失效，请重新登录后继续。')
+      }
       const current = activeSessionId.value || getAgentSessionId()
       if (current) {
+        const conv = conversations.value.find(c => c.sessionId === current)
+        if (getApiMode() === 'http' && conv && !conv.hydrated) {
+          await hydrateSession(current)
+          if (!conv.hydrated) throw new Error(historyError.value || '历史对话暂时无法读取，请重试。')
+        }
         setAgentSessionId(current)
         activeSessionId.value = current
         if (!conversations.value.some(c => c.sessionId === current)) {
@@ -251,14 +275,14 @@ export const useAgentChatStore = defineStore(
       return sid
     }
 
-    function addMessage(message: Omit<AIMessage, 'id'>): AIMessage {
+    function addMessage(message: Omit<AIMessage, 'id'> & {id?:string}): AIMessage {
       const sid = activeSessionId.value
       if (!sid) throw new Error('无活跃会话')
       const conv = conversations.value.find(c => c.sessionId === sid)
       if (!conv) throw new Error('会话不存在')
       const row: AIMessage = {
         ...message,
-        id: `ai_msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        id: message.id || `ai_msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       }
       conv.messages.push(row)
       conv.updatedAt = new Date().toISOString()
@@ -283,20 +307,47 @@ export const useAgentChatStore = defineStore(
     }
 
     async function bootstrap(): Promise<void> {
+      if (getApiMode() === 'http') {
+        const ownerId = resolveUserId()
+        if (!ownerId) {
+          sessionListError.value = '登录状态已失效，请重新登录后查看历史对话。'
+          bootstrapped.value = false
+          return
+        }
+        if (userScopeId.value !== ownerId) {
+          conversations.value = []
+          activeSessionId.value = null
+          clearAgentSessionId()
+          userScopeId.value = ownerId
+        }
+        // A component remount (including logout and login again) must read the
+        // user's current server sessions and transcript instead of trusting a
+        // stale in-memory copy.
+        for (const conversation of conversations.value) conversation.hydrated = false
+        bootstrapped.value = true
+        const loaded = await refreshSessionList()
+        if (!loaded) {
+          bootstrapped.value = false
+          return
+        }
+        const preferred = conversations.value.find(c => c.sessionId === activeSessionId.value)?.sessionId
+            // upsertMeta unshifts new rows, so insertion order reverses the
+            // server's newest-first list. Restore in the SAME order shown in
+            // the sidebar, while preserving an explicitly selected task.
+            || sidebarItems.value.find(c => c.status !== 'archived')?.sessionId
+        if (preferred) {
+          await switchSession(preferred)
+          return
+        }
+        await startNewConversation()
+        return
+      }
+
       if (bootstrapped.value) return
       bootstrapped.value = true
       // Restored local tapes are already hydrated; avoid clobbering with empty history fetch
       for (const c of conversations.value) {
         if (c.messages.length > 0) c.hydrated = true
-      }
-      if (getApiMode() === 'http') {
-        await refreshSessionList()
-        const preferred = activeSessionId.value
-          || conversations.value.find(c => c.status !== 'archived')?.sessionId
-        if (preferred) {
-          await switchSession(preferred)
-          return
-        }
       }
       await startNewConversation()
     }
@@ -306,6 +357,8 @@ export const useAgentChatStore = defineStore(
       activeSessionId,
       bootstrapped,
       switching,
+      sessionListError,
+      historyError,
       activeConversation,
       messages,
       sidebarItems,
@@ -320,10 +373,12 @@ export const useAgentChatStore = defineStore(
     }
   },
   {
-    persist: {
+    // HTTP conversations contain private server history. Keep only demo
+    // transcripts in localStorage; authenticated history is reloaded per user.
+    persist: getApiMode() === 'mock' ? {
       key: 'agent-chat-store',
       storage: localStorage,
       pick: ['conversations', 'activeSessionId'],
-    },
+    } : false,
   },
 )

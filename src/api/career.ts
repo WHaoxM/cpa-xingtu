@@ -184,3 +184,38 @@ export async function submitAssessment(body: {
   }
   return httpPost('/api/career/assessment', body)
 }
+
+export interface ReflectionDirection { id: string; label: string; group: string }
+export interface ReflectionQuestion { id: string; label: string }
+export interface ReflectionOption { id: string; label: string; group: 'not_started' | 'concept' | 'practice' | 'unknown' }
+export interface ReflectionQuestionnaire {
+  version: string
+  direction: ReflectionDirection
+  questions: ReflectionQuestion[]
+  options: ReflectionOption[]
+}
+export interface ReflectionSnapshot {
+  direction: ReflectionDirection
+  questionnaire_version: string
+  questions: ReflectionQuestion[]
+  options: ReflectionOption[]
+  answers: Record<string, string>
+}
+export interface ReflectionRecord {
+  assessment_id: string
+  submission_id?: string
+  created_at?: string
+  reflection?: ReflectionSnapshot
+  weak_skills?: string[]
+}
+export interface ReflectionSubmission {
+  assessment_kind: 'self_reflection'
+  submission_id: string
+  direction_id: string
+  questionnaire_version: string
+  answers: Record<string, string>
+}
+export const listReflectionDirections = () => httpGet<{version: string; directions: ReflectionDirection[]}>('/api/career/assessment/questionnaire')
+export const getReflectionQuestionnaire = (direction: string) => httpGet<ReflectionQuestionnaire>('/api/career/assessment/questionnaire', {direction_id: direction})
+export const getLatestReflection = (owner: string) => httpGet<ReflectionRecord>(`/api/career/assessment/${encodeURIComponent(owner)}`)
+export const saveSelfReflection = (body: ReflectionSubmission) => httpPost<ReflectionRecord>('/api/career/assessment', body)

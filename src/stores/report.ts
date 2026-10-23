@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { ReportRecord } from '@/types'
 import { createReport, deleteReport, getReportDetail, getReportList } from '@/api/report'
+import { getApiMode } from '@/api/config'
 
 export const useReportStore = defineStore(
   'report',
@@ -25,14 +26,15 @@ export const useReportStore = defineStore(
     const latestCareer = computed(() => careerRecords.value[0] ?? null)
 
     async function fetchReportList(userId?: string): Promise<void> {
-      // mock / http：优先服务端或 fixture 列表；失败时保留本地持久化，避免 Pages 白屏
+      // In HTTP mode the server is the source of truth, including an empty
+      // list. Never keep a prior user's or mock-persisted report on failure.
       try {
         const list = await getReportList(userId)
-        if (list.length > 0) {
-          records.value = list
-        }
-      } catch {
-        /* keep persisted records */
+        records.value = list
+      } catch (error) {
+        if (getApiMode() === 'http') records.value = []
+        else return
+        throw error
       }
     }
 
@@ -40,6 +42,7 @@ export const useReportStore = defineStore(
       // [API] 后端接入点：点击书籍后按 id 拉取报告详情。
       const detail = await getReportDetail(id)
       if (detail) return detail
+      if (getApiMode() === 'http') return null
       return records.value.find(item => item.id === id) ?? null
     }
 
@@ -88,10 +91,10 @@ export const useReportStore = defineStore(
     }
   },
   {
-    persist: {
+    persist: getApiMode() === 'mock' ? {
       key: 'report-store',
       storage: localStorage,
       pick: ['records', 'mockInitialized'],
-    },
+    } : false,
   },
 )

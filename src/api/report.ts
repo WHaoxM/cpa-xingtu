@@ -3,14 +3,22 @@ import { getApiMode, DEMO_STUDENT_ID } from './config'
 import { mockGet, mockMutate } from './adapters/mockAdapter'
 import { httpGet, httpPost } from './adapters/httpAdapter'
 import { mapReportRecord } from './mappers'
+import type { DecisionEnvelope } from './match'
+
+export async function generateComparisonReport(jobId: string): Promise<DecisionEnvelope> {
+  if (getApiMode() !== 'http') throw new Error('岗位报告需要连接真实服务端')
+  return httpPost('/api/report/generate', { job_portrait_id: jobId }) as Promise<DecisionEnvelope>
+}
 
 export async function getReportList(userId?: string): Promise<ReportRecord[]> {
-  const studentId = userId || DEMO_STUDENT_ID
   if (getApiMode() === 'mock') {
+    const studentId = userId || DEMO_STUDENT_ID
     const env = await mockGet(`report/list.${studentId}.json`)
     return (env.data as unknown[] | undefined)?.map(mapReportRecord) ?? []
   }
-  const env = await httpGet('/api/report/list', { student_id: studentId })
+  // In HTTP mode the authenticated session is the authority. Do not send a
+  // client-selected student_id (including a demo fallback) as identity input.
+  const env = await httpGet('/api/report/list')
   return (env.data as unknown[] | undefined)?.map(mapReportRecord) ?? []
 }
 
@@ -20,7 +28,6 @@ export async function getCompletedReportCount(studentId: string): Promise<number
     return (await getReportList(studentId)).length
   }
   const env = await httpGet<unknown[]>('/api/report/list', {
-    student_id: studentId,
     status: 'completed',
   })
   return Number(env.total ?? env.count ?? 0)
@@ -37,6 +44,18 @@ export async function getReportDetail(id: string): Promise<ReportRecord | null> 
   }
   const env = await httpGet(`/api/report/${encodeURIComponent(id)}`)
   return env.data ? mapReportRecord(env.data) : null
+}
+
+/** Paginated shelf data; unlike the legacy array helper, retains the total. */
+export async function getReportShelfPage(limit: number, offset: number) {
+  const env = await httpGet<unknown[]>('/api/report/list', { limit, offset })
+  if (!env.success || !Array.isArray(env.data) || !Number.isSafeInteger(Number(env.total))) {
+    throw new Error('报告目录暂时不可用，请重试')
+  }
+  return { items: env.data.map(row => {
+    const item = mapReportRecord(row)
+    return { ...item, title: item.title && item.title !== item.id ? item.title : '岗位对照报告' }
+  }), total: Number(env.total) }
 }
 
 /**
@@ -118,6 +137,11 @@ export type ResumeDiagnosticChapter = {
 export type ResumeDiagnosticInterpretation = {
   text: string
   evidence_ids: string[]
+  /** Exact source remains separate from the interpretation and full fact chapters. */
+  source_quotes?: { evidence_id: string; text: string }[]
+  kind?: 'unclear_expression' | 'missing_information' | 'incomplete_reading'
+  problem?: string
+  why?: string
 }
 
 export type ResumeDiagnosticReport = {
@@ -138,6 +162,10 @@ export type ResumeDiagnosticReport = {
     questions?: ResumeDiagnosticInterpretation[]
   } | null
   analysis_status?: string
+  analysis_content_status?: 'current' | 'legacy'
+  improvements?: ResumeImprovement[]
+  improvements_status?: string
+  improvements_version?: number
   quality_status?: string
   limitations: string[]
   missing_sections: string[]
@@ -150,6 +178,14 @@ export type ResumeDiagnosticReport = {
     has_more?: boolean
     items?: PublishedJobCard[]
   } | null
+}
+
+export type ResumeImprovement = {
+  id: string; title: string; evidence_id: string
+  target: 'basic' | 'projects' | 'skills' | 'education' | 'honors'
+  kind: 'unclear_expression' | 'missing_information' | 'incomplete_reading'
+  problem: string; why: string; questions: string[]; outline: string
+  source_text: string; evidence_refs: { quote: string; block_id?: string; page?: number }[]
 }
 
 export type PublishedJobCard = {

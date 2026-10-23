@@ -34,6 +34,11 @@ const kindLabel = computed(() => {
 })
 
 const statusLabel = computed(() => {
+  // Artifact completion only means the plan was persisted. Action-plan
+  // progress is derived from its steps and shown in the plan preview/page.
+  if (shownArtifact.value.kind === 'action_plan' && shownArtifact.value.status === 'completed') {
+    return '已创建'
+  }
   const map: Record<string, string> = {
     pending: '待处理',
     running: '处理中',

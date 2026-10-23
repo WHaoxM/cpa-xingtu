@@ -1,4 +1,4 @@
-import { computed, onScopeDispose, ref } from 'vue'
+import { computed, onScopeDispose, reactive, ref } from 'vue'
 import { getApiMode } from '@/api/config'
 import { getAgentFile, getAgentFileEvents, uploadAgentFile, type AgentFileMeta } from '@/api/agentMedia'
 
@@ -33,6 +33,7 @@ export function useChatAttachments() {
   const attachments = ref<ChatAttachment[]>([])
   const busy = computed(() => attachments.value.some(a => a.status === 'reading'))
   let disposed = false
+  let epoch = 0
   onScopeDispose(() => { disposed = true })
 
   async function followIngest(row: ChatAttachment, fileId: string) {
@@ -74,19 +75,22 @@ export function useChatAttachments() {
 
   async function addFiles(
     fileList: FileList | File[],
-    opts?: { studentId?: string; sessionId?: string | null },
+    opts?: { studentId?: string; sessionId?: string | null; taskContextVersion?:()=>number;
+      onUploaded?:(meta:AgentFileMeta)=>void|Promise<void> },
   ) {
     const files = Array.from(fileList)
+    const started = epoch
     for (const file of files) {
+      if (disposed || epoch !== started) return
       const id = `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
-      const row: ChatAttachment = {
+      const row = reactive<ChatAttachment>({
         id,
         name: file.name,
         size: file.size,
         mime: file.type || 'application/octet-stream',
         status: 'reading',
         excerpt: '',
-      }
+      })
       attachments.value.push(row)
       try {
         const ext = extOf(file.name)
@@ -104,7 +108,11 @@ export function useChatAttachments() {
         const meta: AgentFileMeta = await uploadAgentFile(file, {
           studentId: opts?.studentId,
           sessionId: opts?.sessionId || undefined,
+          taskContextVersion: opts?.taskContextVersion?.(),
         })
+        if (disposed || epoch !== started || !attachments.value.includes(row)) return
+        await opts?.onUploaded?.(meta)
+        if (disposed || epoch !== started || !attachments.value.includes(row)) return
         // Claude: file_id is assigned even if ingest fails — keep id for diagnostics
         row.fileId = meta.file_id
         if (meta.status === 'failed') {
@@ -137,7 +145,35 @@ export function useChatAttachments() {
   }
 
   function clearAttachments() {
+    epoch++
     attachments.value = []
+  }
+
+  async function restoreFiles(refs:{file_id:string;name?:string}[]) {
+    const selected = new Set(refs.map(r=>r.file_id))
+    attachments.value = attachments.value.filter(r=>!!r.fileId && selected.has(r.fileId))
+    const started = epoch
+    await Promise.all(refs.map(async ref=>{
+      const existing=attachments.value.find(r=>r.fileId===ref.file_id)
+      if (existing && existing.status!=='error') return
+      const row = existing || reactive<ChatAttachment>({id:'restored_'+ref.file_id,fileId:ref.file_id,
+        name:ref.name||'附件',size:0,mime:'application/octet-stream',status:'reading',excerpt:''})
+      if(!existing)attachments.value.push(row)
+      row.status='reading';row.error=undefined
+      try {
+        const meta = await getAgentFile(ref.file_id)
+        if (disposed || epoch !== started || !attachments.value.includes(row)) return
+        if (!meta || meta.file_id !== ref.file_id) throw Error('附件状态无法核对，请重新读取任务')
+        row.name=meta.filename||row.name;row.size=meta.size_bytes||0;row.mime=meta.mime_type||row.mime
+        row.excerpt=(meta.excerpt||'').slice(0,EXCERPT_CHARS)
+        if(meta.status==='ready') row.status='ready'
+        else if(meta.status==='queued'||meta.status==='ingesting') void followIngest(row,ref.file_id)
+        else {row.status='error';row.error=meta.error||'附件解析未完成，请重试或移除后重新上传'}
+      } catch(error) {
+        if(disposed || epoch !== started || !attachments.value.includes(row)) return
+        row.status='error';row.error=error instanceof Error?error.message:'附件读取失败'
+      }
+    }))
   }
 
   /** @deprecated full-text prefix — do not use; kept empty for safety */
@@ -161,6 +197,7 @@ export function useChatAttachments() {
     addFiles,
     removeAttachment,
     clearAttachments,
+    restoreFiles,
     buildContextBlock,
     readyFileIds,
     readyCount,

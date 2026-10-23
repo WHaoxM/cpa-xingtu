@@ -17,6 +17,7 @@ export function buildAgentResourceQuery(
   mode: 'mock' | 'http',
   reference: AgentResourceReference,
   sessionId?: string,
+  interactionMode?: 'ask' | 'agent' | 'experts',
 ): Record<string, string> | null {
   if (mode !== 'http') return null
   const query: Record<string, string> = {}
@@ -28,6 +29,7 @@ export function buildAgentResourceQuery(
     query.resource_uri = reference.uri
   }
   if (sessionId) query.session_id = sessionId
+  if (interactionMode) query.interaction_mode = interactionMode
   return query
 }
 

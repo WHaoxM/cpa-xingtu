@@ -15,6 +15,12 @@ import D3ChordDiagram from '@/components/charts/D3ChordDiagram.vue'
 import { useAgentArtifactHandoff, commitMockArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
 import { renderMarkdown } from '@/utils/markdown'
+import { setActionPlanStepCompleted, saveActionPlanStepEvidence } from '@/api/agent'
+import { uploadAgentFile } from '@/api/agentMedia'
+import { getApiMode } from '@/api/config'
+import HttpCourseLibrary from '@/components/learning/HttpCourseLibrary.vue'
+
+const httpCourses = getApiMode() === 'http'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,9 +37,18 @@ const artifactReady = computed(() => handoff.ready.value && handoff.artifact.val
 const planPreview = computed<PlanPreviewData | null>(() => artifactReady.value
   ? handoff.artifact.value?.preview as PlanPreviewData ?? null
   : null)
-const planBody = computed(() => handoff.source.value === 'http' ? handoff.artifact.value?.content?.body || '' : '')
+const httpSteps = computed(() => handoff.artifact.value?.content?.steps || [])
+const hasStructuredSteps = computed(() => handoff.source.value === 'http' && httpSteps.value.length > 0)
+const planBody = computed(() => handoff.source.value === 'http' && !hasStructuredSteps.value
+  ? handoff.artifact.value?.content?.body || '' : '')
 const planItems = computed<PlanItem[]>(() => {
-  if (handoff.source.value === 'http') return []
+  if (handoff.source.value === 'http') return httpSteps.value.map(step => ({
+    id: step.step_id,
+    title: step.title,
+    detail: step.detail,
+    keyword: step.title,
+    done: step.completed,
+  }))
   const items = planPreview.value?.items
   if (Array.isArray(items) && items.length) return items
   const artifact = handoff.artifact.value
@@ -42,6 +57,18 @@ const planItems = computed<PlanItem[]>(() => {
     : []
 })
 const completedPlanCount = computed(() => planItems.value.filter(item => item.done).length)
+const planProgress = computed(() => handoff.artifact.value?.content?.progress)
+const planStatusLabel = computed(() => ({
+  not_started: '未开始', in_progress: '进行中', completed: '已完成',
+}[planProgress.value?.status || ''] || ''))
+const planSourceStatus = computed(() => handoff.artifact.value?.content?.source?.status || '')
+const explorationPlan = computed(() => handoff.artifact.value?.content?.source?.kind === 'career_exploration')
+const updatingStepId = ref('')
+const evidenceEditorStepId = ref('')
+const evidenceDrafts = ref<Record<string, string>>({})
+const evidenceFiles = ref<Record<string, { id: string; name: string; status: string }>>({})
+const evidenceBusyStepId = ref('')
+const evidenceUploadStepId = ref('')
 const savedPlanResourceUri = computed(() => {
   const artifact = handoff.artifact.value
   const planId = artifact?.resource_id
@@ -52,12 +79,19 @@ const savedPlanResourceUri = computed(() => {
 })
 
 function backToAgent() {
+  const source = handoff.artifact.value?.content?.source
+  if (source?.kind === 'career_exploration' && source.exploration_id) {
+    void router.push({ name: 'student-career-analysis', query: { exploration_id: source.exploration_id } })
+    return
+  }
   void router.push({ name: 'student-ai-assistant', query: handoff.sessionId.value ? { session_id: handoff.sessionId.value } : {} })
 }
 
 function discussSavedPlan() {
   if (!savedPlanResourceUri.value) return
-  openAgentWithResource(router, { kind: 'career_resource', uri: savedPlanResourceUri.value }, handoff.sessionId.value)
+  // This is a read-and-reflect action, so return to the same conversation in
+  // direct-answer mode rather than the task-planning mode used to create it.
+  openAgentWithResource(router, { kind: 'career_resource', uri: savedPlanResourceUri.value }, handoff.sessionId.value, 'ask')
 }
 
 function browseOrdinaryLearning() {
@@ -70,6 +104,20 @@ function browseOrdinaryLearning() {
 function togglePlanItem(id: string) {
   const artifact = handoff.artifact.value
   if (!artifactReady.value || !artifact) return
+  if (handoff.source.value === 'http' && hasStructuredSteps.value) {
+    const planId = artifact.resource_id
+    const current = planItems.value.find(item => item.id === id)
+    if (typeof planId !== 'string' || !current || updatingStepId.value) return
+    updatingStepId.value = id
+    void setActionPlanStepCompleted(planId, id, !current.done)
+      .then(content => { artifact.content = content })
+      .catch(error => ElMessage({
+        message: error instanceof Error ? error.message : '进度暂时没有保存，请重试。',
+        type: 'error', duration: 2600,
+      }))
+      .finally(() => { updatingStepId.value = '' })
+    return
+  }
   const preview = (artifact.preview && typeof artifact.preview === 'object' ? artifact.preview : {}) as PlanPreviewData
   if (!Array.isArray(preview.items) || !preview.items.length) preview.items = planItems.value.map(item => ({ ...item }))
   const item = preview.items.find(candidate => candidate.id === id)
@@ -81,6 +129,96 @@ function togglePlanItem(id: string) {
   commitMockArtifactHandoff(handoff.sessionId.value, artifact)
 }
 
+function openEvidenceEditor(item: PlanItem) {
+  const step = httpSteps.value.find(candidate => candidate.step_id === item.id)
+  if (!step) return
+  evidenceEditorStepId.value = item.id
+  evidenceDrafts.value[item.id] = step.evidence?.summary || ''
+  delete evidenceFiles.value[item.id]
+}
+
+function cancelEvidenceEditor(stepId: string) {
+  evidenceEditorStepId.value = ''
+  delete evidenceDrafts.value[stepId]
+  delete evidenceFiles.value[stepId]
+}
+
+async function chooseEvidenceFile(stepId: string, event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+  const plan = handoff.artifact.value
+  if (handoff.source.value !== 'http' || !plan?.resource_id || !handoff.sessionId.value) return
+  evidenceUploadStepId.value = stepId
+  try {
+    const meta = await uploadAgentFile(file, {
+      studentId: userStore.currentUser?.id,
+      sessionId: handoff.sessionId.value,
+      purpose: 'chat_attachment',
+    })
+    evidenceFiles.value[stepId] = {
+      id: meta.file_id,
+      name: meta.filename || file.name,
+      status: meta.status || 'queued',
+    }
+    ElMessage({
+      message: meta.status === 'ready'
+        ? '附件已保存，可在助手复盘时读取。'
+        : '附件已保存，解析完成前助手会标记为未读。',
+      type: meta.status === 'ready' ? 'success' : 'info',
+      duration: 2800,
+    })
+  } catch (error) {
+    ElMessage({
+      message: error instanceof Error ? error.message : '附件上传失败，请重试。',
+      type: 'error', duration: 3000,
+    })
+  } finally {
+    evidenceUploadStepId.value = ''
+  }
+}
+
+async function submitPracticeEvidence(stepId: string) {
+  const artifact = handoff.artifact.value
+  const summary = evidenceDrafts.value[stepId]?.trim() || ''
+  if (handoff.source.value !== 'http' || !artifact?.resource_id || !summary) return
+  evidenceBusyStepId.value = stepId
+  try {
+    const file = evidenceFiles.value[stepId]
+    artifact.content = await saveActionPlanStepEvidence(
+      artifact.resource_id, stepId, summary, file?.id,
+    )
+    evidenceEditorStepId.value = ''
+    delete evidenceDrafts.value[stepId]
+    delete evidenceFiles.value[stepId]
+    ElMessage({ message: '练习记录已保存。它会作为自述材料供复盘，不会自动改写简历或评分。', type: 'success', duration: 3000 })
+  } catch (error) {
+    ElMessage({
+      message: error instanceof Error ? error.message : '成果暂时没有保存，请重试。',
+      type: 'error', duration: 3000,
+    })
+  } finally {
+    evidenceBusyStepId.value = ''
+  }
+}
+
+function attachmentStatusLabel(status?: string) {
+  return ({
+    available: '已准备好读取',
+    processing: '正在解析，助手暂未读取',
+    unavailable: '暂不可读取',
+  } as Record<string, string>)[status || ''] || '尚未读取'
+}
+
+function stepEvidence(stepId: string) {
+  return httpSteps.value.find(step => step.step_id === stepId)?.evidence || null
+}
+
+function evidenceFileForStep(stepId: string) {
+  return evidenceFiles.value[stepId] || null
+}
+
 function findPlanCourse(item: PlanItem) {
   keyword.value = item.keyword || item.title
   selectedCategory.value = 'all'
@@ -88,7 +226,7 @@ function findPlanCourse(item: PlanItem) {
 }
 
 watch(hasArtifactQuery, (hasArtifact) => {
-  if (hasArtifact) return
+  if (hasArtifact || httpCourses) return
   const uid = userStore.currentUser?.id
   courseStore.loadFromApi(uid).catch(() => {})
 }, { immediate: true })
@@ -398,7 +536,7 @@ const chordResult = computed(() => {
           <h1 class="lc-title">学习中心</h1>
           <p class="lc-subtitle">课程发现 · 技能成长</p>
         </div>
-        <div v-if="fromRole" class="lc-role-chip">
+        <div v-if="fromRole && !httpCourses" class="lc-role-chip">
           <Icon icon="lucide:briefcase" :width="12" />
           <span>{{ fromRole }}</span>
           <button class="lc-role-chip__close" @click="clearRole" title="清除方向">
@@ -406,7 +544,7 @@ const chordResult = computed(() => {
           </button>
         </div>
       </div>
-      <div class="lc-header__right">
+      <div v-if="!httpCourses" class="lc-header__right">
         <span class="lc-count">共 {{ filteredCourses.length }} 门课程</span>
         <div class="lc-search-wrap">
           <Icon icon="lucide:search" :width="13" class="lc-search-icon" />
@@ -423,7 +561,7 @@ const chordResult = computed(() => {
         </button>
         <button v-if="hasArtifactQuery" class="lc-back-btn" @click="backToAgent">
           <Icon icon="lucide:arrow-left" :width="13" />
-          <span>返回对话</span>
+          <span>{{ explorationPlan ? '返回方向探索' : '返回对话' }}</span>
         </button>
       </div>
     </header>
@@ -435,25 +573,58 @@ const chordResult = computed(() => {
       <button type="button" @click="browseOrdinaryLearning">浏览普通学习中心</button>
     </section>
 
-    <section v-if="artifactReady" class="lc-agent-plan" aria-label="对话学习计划">
+    <section v-if="artifactReady" class="lc-agent-plan" :aria-label="explorationPlan ? '方向尝试计划' : '对话学习计划'">
       <div class="lc-agent-plan__head">
-        <div><span>来自 Agent 对话 · {{ handoff.source.value === 'http' ? '已保存计划' : '演示计划' }}</span><h2>{{ handoff.artifact.value?.title }}</h2><p>{{ handoff.artifact.value?.summary }}</p></div>
-        <strong v-if="handoff.source.value === 'mock'">{{ completedPlanCount }} / {{ planItems.length }} 已完成</strong>
+        <div><span>{{ explorationPlan ? '来自本轮方向探索' : '来自 Agent 对话' }} · {{ handoff.source.value === 'http' ? '已保存计划' : '演示计划' }}</span><h2>{{ handoff.artifact.value?.title }}</h2><p>{{ handoff.artifact.value?.summary }}</p></div>
+        <strong v-if="planItems.length">{{ completedPlanCount }} / {{ planItems.length }} 已完成<span v-if="planStatusLabel"> · {{ planStatusLabel }}</span></strong>
       </div>
+      <p v-if="planSourceStatus === 'expired'" class="lc-agent-plan__source-warning" role="status">来源版本已变化；这份计划保留为历史记录，已勾选进度仍会保留。</p>
+      <p v-else-if="planSourceStatus === 'unavailable'" class="lc-agent-plan__source-warning" role="status">暂时无法核对计划来源；计划和已有进度仍保存在这里。</p>
       <div v-if="planBody" class="lc-agent-plan__body" v-html="renderMarkdown(planBody)" />
-      <div v-else class="lc-agent-plan__items">
+      <p v-if="savedPlanResourceUri" class="lc-agent-plan__evidence-note">
+        每一步的勾选只记录行动进度；练习成果是你的自述材料，不会自动进入简历、能力画像或匹配评分。
+      </p>
+      <div v-if="!planBody" class="lc-agent-plan__items">
         <div v-for="item in planItems" :key="item.id" class="lc-agent-plan__item" :class="{ 'lc-agent-plan__item--done': item.done }">
-          <button type="button" class="lc-agent-plan__check" :aria-label="item.done ? `取消完成 ${item.title}` : `完成 ${item.title}`" @click="togglePlanItem(item.id)"><Icon :icon="item.done ? 'lucide:check-circle-2' : 'lucide:circle'" :width="19" /></button>
-          <div><h3>{{ item.title }}</h3><p>{{ item.detail }}</p></div>
-          <button type="button" class="lc-agent-plan__course" @click="findPlanCourse(item)">找相关课程 <Icon icon="lucide:arrow-right" :width="12" /></button>
+          <button type="button" class="lc-agent-plan__check" :disabled="updatingStepId === item.id" :aria-label="item.done ? `取消完成 ${item.title}` : `完成 ${item.title}`" @click="togglePlanItem(item.id)"><Icon :icon="item.done ? 'lucide:check-circle-2' : 'lucide:circle'" :width="19" /></button>
+          <div class="lc-agent-plan__item-main">
+            <h3>{{ item.title }}</h3><p>{{ item.detail }}</p>
+            <div v-if="stepEvidence(item.id)" class="lc-agent-plan__practice-record">
+              <span>练习记录 · 学生自述（未核验）</span>
+              <p>{{ stepEvidence(item.id)?.summary }}</p>
+              <small v-if="stepEvidence(item.id)?.attachment">
+                {{ stepEvidence(item.id)?.attachment?.filename || '附件' }} · {{ attachmentStatusLabel(stepEvidence(item.id)?.attachment?.read_status) }}
+              </small>
+            </div>
+            <div v-if="savedPlanResourceUri && evidenceEditorStepId === item.id" class="lc-agent-plan__evidence-editor">
+              <label :for="`practice-summary-${item.id}`">这一步你做了什么？遇到什么结果或卡点？</label>
+              <textarea :id="`practice-summary-${item.id}`" v-model="evidenceDrafts[item.id]" maxlength="2000" rows="3" placeholder="写下你实际完成的练习、观察到的结果，以及还不确定的地方。" />
+              <input :id="`practice-file-${item.id}`" type="file" accept=".txt,.md,.csv,.pdf,.doc,.docx" :disabled="evidenceUploadStepId === item.id" @change="chooseEvidenceFile(item.id, $event)" />
+              <span v-if="evidenceFileForStep(item.id)" class="lc-agent-plan__file-state">
+                {{ evidenceFileForStep(item.id)?.name }} · {{ evidenceFileForStep(item.id)?.status === 'ready' ? '已上传' : '已上传，等待解析' }}
+              </span>
+              <div class="lc-agent-plan__evidence-actions">
+                <button type="button" :disabled="!evidenceDrafts[item.id]?.trim() || evidenceBusyStepId === item.id || evidenceUploadStepId === item.id" @click="submitPracticeEvidence(item.id)">
+                  {{ evidenceBusyStepId === item.id ? '正在保存…' : '保存练习记录' }}
+                </button>
+                <button type="button" :disabled="evidenceBusyStepId === item.id || evidenceUploadStepId === item.id" @click="cancelEvidenceEditor(item.id)">取消</button>
+              </div>
+            </div>
+          </div>
+          <button v-if="handoff.source.value === 'mock'" type="button" class="lc-agent-plan__course" @click="findPlanCourse(item)">找相关课程 <Icon icon="lucide:arrow-right" :width="12" /></button>
+          <button v-if="savedPlanResourceUri && evidenceEditorStepId !== item.id" type="button" class="lc-agent-plan__evidence-button" @click="openEvidenceEditor(item)">
+            {{ stepEvidence(item.id) ? '修改记录' : '记录成果' }}
+          </button>
         </div>
       </div>
-      <button v-if="savedPlanResourceUri" type="button" class="lc-agent-plan__ordinary" @click="discussSavedPlan">带这份已保存计划继续和 AI 助手讨论 <Icon icon="lucide:arrow-up-right" :width="13" /></button>
+      <button v-if="explorationPlan" type="button" class="lc-agent-plan__ordinary" @click="backToAgent">回到这次方向探索，复盘练习与感受 <Icon icon="lucide:arrow-up-right" :width="13" /></button>
+      <button v-else-if="savedPlanResourceUri" type="button" class="lc-agent-plan__ordinary" @click="discussSavedPlan">回到原对话，复盘练习记录与报告差距 <Icon icon="lucide:arrow-up-right" :width="13" /></button>
       <button type="button" class="lc-agent-plan__ordinary" @click="browseOrdinaryLearning">退出计划，浏览全部课程</button>
     </section>
 
     <!-- ═══ 分类筛选栏 ═══ -->
-    <nav v-if="!hasArtifactQuery || artifactReady" class="lc-filters">
+    <HttpCourseLibrary v-if="httpCourses && !hasArtifactQuery" />
+    <nav v-if="!httpCourses && (!hasArtifactQuery || artifactReady)" class="lc-filters">
       <button
         class="lc-filter-btn"
         :class="{ 'lc-filter-btn--active': selectedCategory === 'all' }"
@@ -469,7 +640,7 @@ const chordResult = computed(() => {
     </nav>
 
     <!-- ═══ D3 可视化区 ═══ -->
-    <section v-if="!hasArtifactQuery || artifactReady" class="lc-viz card-base">
+    <section v-if="!httpCourses && (!hasArtifactQuery || artifactReady)" class="lc-viz card-base">
       <div class="lc-viz__treemap">
         <div class="lc-viz__panel-head">
           <span class="lc-viz__panel-title">课程结构分布</span>
@@ -500,7 +671,7 @@ const chordResult = computed(() => {
     </section>
 
     <!-- ═══ 课程 Grid ═══ -->
-    <section v-if="!hasArtifactQuery || artifactReady" class="lc-courses">
+    <section v-if="!httpCourses && (!hasArtifactQuery || artifactReady)" class="lc-courses">
       <div v-if="fromRole" class="lc-role-banner">
         <Icon icon="lucide:zap" :width="14" />
         <span>已为岗位「{{ fromRole }}」推荐相关课程，金色边框为推荐课程</span>
@@ -582,18 +753,32 @@ const chordResult = computed(() => {
 .lc-agent-plan__head h2 { margin: 6px 0; font-size: 21px; }
 .lc-agent-plan__head p { margin: 0; color: var(--color-text-muted, #766f68); line-height: 1.6; }
 .lc-agent-plan__head strong { flex: none; font-size: 13px; font-weight: 600; color: var(--primary-100, #8b2500); }
+.lc-agent-plan__source-warning { margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: #fff6e8; color: #805316; font-size: 12px; line-height: 1.55; }
+.lc-agent-plan__evidence-note { margin: 14px 0 -8px; color: var(--color-text-muted, #766f68); font-size: 12px; line-height: 1.6; }
 .lc-agent-plan__body { margin: 20px 0 12px; line-height: 1.8; overflow-wrap: anywhere; color: var(--color-text, #312b26); }
 .lc-agent-plan__body :deep(.md-p) { margin: 0 0 12px; }
 .lc-agent-plan__body :deep(.md-ol), .lc-agent-plan__body :deep(.md-ul) { margin: 0 0 12px; padding-left: 22px; }
 .lc-agent-plan__body :deep(.md-li) { margin-bottom: 8px; }
 .lc-agent-plan__items { display: grid; gap: 8px; margin: 20px 0 12px; }
-.lc-agent-plan__item { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--color-border, #e5ddd3); border-radius: 11px; }
+.lc-agent-plan__item { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border: 1px solid var(--color-border, #e5ddd3); border-radius: 11px; }
+.lc-agent-plan__item-main { flex: 1; min-width: 0; }
 .lc-agent-plan__item--done { opacity: .62; }
 .lc-agent-plan__item h3 { margin: 0 0 4px; font-size: 14px; }
 .lc-agent-plan__item p { margin: 0; color: var(--color-text-muted, #766f68); font-size: 12px; line-height: 1.55; }
 .lc-agent-plan__check, .lc-agent-plan__course { display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--primary-100, #8b2500); cursor: pointer; }
 .lc-agent-plan__check { flex: none; padding: 4px; }
 .lc-agent-plan__course { gap: 4px; margin-left: auto; white-space: nowrap; font-size: 12px; }
+.lc-agent-plan__evidence-button, .lc-agent-plan__evidence-actions button { border: 1px solid var(--color-border, #e5ddd3); border-radius: 8px; background: #fff; color: var(--primary-100, #8b2500); cursor: pointer; font: inherit; font-size: 12px; padding: 7px 10px; }
+.lc-agent-plan__practice-record { margin-top: 10px; padding: 10px 12px; border-radius: 9px; background: #f7f2ed; }
+.lc-agent-plan__practice-record span { color: #80604e; font-size: 11px; font-weight: 600; }
+.lc-agent-plan__practice-record p { margin-top: 5px; color: var(--color-text, #312b26); white-space: pre-wrap; }
+.lc-agent-plan__practice-record small, .lc-agent-plan__file-state { display: block; margin-top: 6px; color: var(--color-text-muted, #766f68); font-size: 11px; }
+.lc-agent-plan__evidence-editor { display: grid; gap: 8px; margin-top: 12px; }
+.lc-agent-plan__evidence-editor label { color: var(--color-text, #312b26); font-size: 12px; font-weight: 600; }
+.lc-agent-plan__evidence-editor textarea { width: 100%; box-sizing: border-box; resize: vertical; border: 1px solid var(--color-border, #e5ddd3); border-radius: 8px; padding: 9px; font: inherit; font-size: 13px; line-height: 1.55; }
+.lc-agent-plan__evidence-editor input[type=file] { max-width: 100%; color: var(--color-text-muted, #766f68); font-size: 11px; }
+.lc-agent-plan__evidence-actions { display: flex; gap: 8px; }
+.lc-agent-plan__evidence-actions button:disabled { opacity: .45; cursor: not-allowed; }
 .lc-agent-plan__ordinary { font-size: 12px; }
 @media (max-width: 720px) { .lc-agent-plan__head, .lc-agent-plan__item { align-items: flex-start; } .lc-agent-plan__head { flex-direction: column; } .lc-agent-plan__course { align-self: center; } }
 /* ═══ 根容器 ═══ */

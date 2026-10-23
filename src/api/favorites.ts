@@ -2,6 +2,7 @@ import type { SavedJob, TargetRole, TargetRoleMarket } from '@/types'
 import { getApiMode } from './config'
 import { mockGet, mockMutate } from './adapters/mockAdapter'
 import { httpDelete, httpGet, httpPost } from './adapters/httpAdapter'
+import { ApiError } from './types'
 import {
   mapSavedJob,
   mapTargetRole,
@@ -32,12 +33,47 @@ export async function createSavedJob(userId: string, job: SavedJob): Promise<voi
   await httpPost('/api/saved-jobs', toSavedJobBody(job, userId))
 }
 
+export type PublishedJobFavoriteResult = {
+  saved_job_id: number | string
+  job_portrait_id: string
+  publication_version: string
+  publication_status: string
+  vacancy_validity: 'unknown' | string
+  message: string
+}
+
+/** Save one exact, server-published version. Never accepts client job facts. */
+export async function createPublishedJobFavorite(reference: {
+  job_portrait_id: string
+  publication_version: string
+  content_sha256: string
+}): Promise<PublishedJobFavoriteResult> {
+  if (getApiMode() !== 'http') {
+    throw new ApiError('只有连接平台服务端后才能收藏岗位目录资料。')
+  }
+  const response = await httpPost<PublishedJobFavoriteResult>('/api/saved-jobs', {
+    publication_ref: reference,
+  })
+  if (!response.success || !response.data?.saved_job_id) {
+    throw new ApiError('服务端没有确认收藏成功，请稍后重新读取。', 503, response, 'http')
+  }
+  return response.data
+}
+
 export async function deleteSavedJob(jobId: string): Promise<void> {
   if (getApiMode() === 'mock') {
     await mockMutate('favorites/saved-jobs.delete.ok.json')
     return
   }
   await httpDelete(`/api/saved-jobs/${encodeURIComponent(jobId)}`)
+}
+
+/** Delete one exact owner-scoped favorite record, not every version of a job. */
+export async function deleteSavedJobRecord(savedJobId: string | number): Promise<void> {
+  if (getApiMode() !== 'http') {
+    throw new ApiError('按记录删除仅适用于真实服务端收藏。')
+  }
+  await httpDelete(`/api/saved-jobs/records/${encodeURIComponent(String(savedJobId))}`)
 }
 
 export async function listTargetRoles(userId: string): Promise<TargetRole[]> {

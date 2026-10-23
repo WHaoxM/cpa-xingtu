@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import D3RadarChart, { type RadarDatum } from '@/components/charts/D3RadarChart.vue'
 import { getApiMode } from '@/api/config'
-import { getStudentDashboard, type DashboardCareerDirection, type StudentDashboard } from '@/api/home'
+import { getStudentDashboard, type DashboardActivity, type DashboardCareerDirection, type StudentDashboard } from '@/api/home'
+import { activityCopy, activityDestination, resumeHomeActions, type ResumeHomeAction } from '@/utils/homeContinuation'
 import { inferConfirmedResumeRoles } from '@/api/career'
 import { getCareerSuggestions } from '@/api/aiAnalysis'
 import { addTargetRole, listTargetRoles } from '@/api/favorites'
@@ -32,6 +33,32 @@ const targetRoleMessage = ref('')
 const suggestions = ref<string[]>([])
 const suggestionState = ref<'loading' | 'ready' | 'empty' | 'unavailable'>('loading')
 const suggestionMessage = ref('')
+const continuationNotice = ref('')
+const continuationBusy = ref(false)
+const learningBusy = ref(false)
+const learningNotice = ref('')
+let requestEpoch = 0
+const currentRequest = (epoch: number, owner: string) => epoch === requestEpoch && owner === userStore.currentUser?.id
+const resumeActions = computed(() => resumeHomeActions(dashboard.value?.resume_continuation))
+const learningContinuation = computed(() => dashboard.value?.learning_continuation ?? {state:'unavailable', courses:[]})
+function learningTitle(title: string | null) {
+  return !title?.trim() || /[\u0080-\u009f\ufffd]/.test(title) ? '课程名称待整理' : title
+}
+async function openLearningCourse(courseId: string) {
+  if (learningBusy.value || !courseId || learningContinuation.value.state !== 'ready') return
+  if (!learningContinuation.value.courses.some(item => item.course_id === courseId)) return
+  const epoch = requestEpoch, owner = userStore.currentUser?.id ?? ''
+  learningBusy.value = true
+  learningNotice.value = ''
+  try {
+    // The existing detail page re-reads the course and owner's chapter records.
+    await router.push(`/app/student/learning?course_id=${encodeURIComponent(courseId)}`)
+  } catch {
+    if (currentRequest(epoch, owner)) learningNotice.value = '暂时无法打开课程，请重试。学习记录没有改变。'
+  } finally {
+    if (currentRequest(epoch, owner)) learningBusy.value = false
+  }
+}
 
 const userName = computed(() => userStore.currentUser?.name?.trim() || '同学')
 const greeting = computed(() => {
@@ -44,6 +71,7 @@ const greeting = computed(() => {
 })
 
 const portrait = computed(() => dashboard.value?.portrait ?? null)
+const portraitUnreadable = computed(() => !dashboard.value || ['unavailable','source_invalid'].includes(portrait.value?.state ?? ''))
 const dimensions = computed(() => portrait.value?.dimensions)
 const hasFullRadar = computed(() => Boolean(dimensions.value && ['D1', 'D2', 'D3', 'D4'].every(key => {
   const score = dimensions.value?.[key as 'D1' | 'D2' | 'D3' | 'D4']
@@ -73,8 +101,8 @@ const planningPhases = computed(() => {
     },
     {
       title: '了解自己',
-      detail: portrait.value?.completeness != null ? '当前能力画像已核验' : '根据当前资料了解能力现状',
-      done: portrait.value?.scoring_eligible === true,
+      detail: portrait.value?.completeness != null ? '已有可读画像，未知项仍保留' : '根据当前资料了解能力现状',
+      done: isMock ? portrait.value?.scoring_eligible === true : Boolean(dashboard.value?.resume_continuation?.portrait_ready),
       route: '/app/student/career-navigation',
       cta: '查看分析',
     },
@@ -95,11 +123,13 @@ const planningPhases = computed(() => {
       cta: '查看报告',
     },
   ]
-  const currentIndex = roleState.value === 'loading' ? -1 : phases.findIndex(phase => !phase.done)
+  const currentIndex = !dashboard.value || !['ready','empty'].includes(roleState.value)
+    ? -1 : phases.findIndex(phase => !phase.done)
   return phases.map((phase, index) => ({ ...phase, active: index === currentIndex }))
 })
 
 const heroAction = computed(() => {
+  if (!isMock) return resumeActions.value.primary
   if (!dashboard.value || roleState.value === 'loading') return null
   return planningPhases.value.find(phase => !phase.done) ?? {
     title: '规划阶段已完成',
@@ -108,6 +138,51 @@ const heroAction = computed(() => {
     cta: '继续学习',
   }
 })
+
+async function openResumeAction(action: ResumeHomeAction) {
+  if (continuationBusy.value) return
+  if (action.kind === 'reload') { await loadDashboard(); return }
+  const epoch = requestEpoch, owner = userStore.currentUser?.id ?? ''
+  continuationBusy.value = true
+  continuationNotice.value = ''
+  try {
+    const fresh = await getStudentDashboard()
+    if (!currentRequest(epoch, owner)) return
+    dashboard.value = fresh
+    const actions = resumeHomeActions(fresh.resume_continuation)
+    const match = [actions.primary, ...actions.secondary].find(item => item.identity === action.identity && item.route === action.route)
+    if (!match?.route) {
+      continuationNotice.value = '资料状态已有变化，已重新核对。请查看当前提示后再继续；不会自动覆盖草稿或重新上传。'
+      return
+    }
+    await router.push(match.route)
+  } catch {
+    if (currentRequest(epoch, owner)) continuationNotice.value = '暂时无法核对资料，尚未执行任何修改。请稍后重试。'
+  } finally {
+    if (currentRequest(epoch, owner)) continuationBusy.value = false
+  }
+}
+
+async function openActivity(item: DashboardActivity) {
+  if (isMock) { go(item.route); return }
+  if (continuationBusy.value) return
+  const epoch = requestEpoch, owner = userStore.currentUser?.id ?? ''
+  continuationBusy.value = true
+  continuationNotice.value = ''
+  try {
+    const fresh = await getStudentDashboard()
+    if (!currentRequest(epoch, owner)) return
+    dashboard.value = fresh
+    const found = fresh.recent_activities.find(row => row.id === item.id)
+    const route = found && activityDestination(found)
+    if (route) await router.push(route)
+    else continuationNotice.value = '进展列表已有变化，未打开旧链接。请从更新后的记录或成果页继续查看。'
+  } catch {
+    if (currentRequest(epoch, owner)) continuationNotice.value = '暂时无法核对这条进展，请重试；不会使用失效结果。'
+  } finally {
+    if (currentRequest(epoch, owner)) continuationBusy.value = false
+  }
+}
 
 function go(path: string) {
   void router.push(path)
@@ -134,9 +209,11 @@ async function saveTargetRole(direction: DashboardCareerDirection) {
   if (isTargetRoleSaved(direction.role_name) || savingRole.value) return
   savingRole.value = direction.role_name
   targetRoleMessage.value = ''
+  const epoch = requestEpoch, owner = userStore.currentUser?.id ?? ''
   try {
     const userId = userStore.currentUser?.id ?? ''
     await addTargetRole(userId, direction.role_name)
+    if (!currentRequest(epoch, owner)) return
     if (isMock) {
       // Mock mutations acknowledge the demo action but do not persist fixture
       // state, so mirror the saved badge only for this page session.
@@ -145,16 +222,19 @@ async function saveTargetRole(direction: DashboardCareerDirection) {
         savedAt: new Date().toISOString().slice(0, 10),
       }]
     } else {
-      targetRoles.value = await listTargetRoles(userId)
+      const saved = await listTargetRoles(userId)
+      if (!currentRequest(epoch, owner)) return
+      targetRoles.value = saved
     }
     if (!isTargetRoleSaved(direction.role_name)) {
       throw new Error('目标方向已提交，但暂未通过服务器回读确认，请稍后刷新再试。')
     }
-    await loadSuggestions()
+    await loadSuggestions(epoch, owner)
   } catch (error) {
+    if (!currentRequest(epoch, owner)) return
     targetRoleMessage.value = error instanceof Error ? error.message : '保存目标方向失败，请稍后重试。'
   } finally {
-    savingRole.value = ''
+    if (currentRequest(epoch, owner)) savingRole.value = ''
   }
 }
 
@@ -183,7 +263,7 @@ function messageForSuggestionError(error: unknown): string {
   return error instanceof Error ? error.message : '暂时无法读取 AI 建议，请稍后重试。'
 }
 
-async function loadSuggestions() {
+async function loadSuggestions(epoch = requestEpoch, owner = userStore.currentUser?.id ?? '') {
   if (isMock) {
     suggestions.value = dashboard.value?.demo?.ai_suggestions ?? []
     suggestionState.value = suggestions.value.length ? 'ready' : 'empty'
@@ -200,17 +280,19 @@ async function loadSuggestions() {
   suggestionMessage.value = ''
   try {
     const result = await getCareerSuggestions(userStore.currentUser?.id ?? '', [])
+    if (!currentRequest(epoch, owner)) return
     suggestions.value = result.filter(item => typeof item === 'string' && item.trim()).slice(0, 3)
     suggestionState.value = suggestions.value.length ? 'ready' : 'empty'
     if (!suggestions.value.length) suggestionMessage.value = '当前没有可展示的个性化建议；完善职业兴趣测评或确认简历后可再次获取。'
   } catch (error) {
+    if (!currentRequest(epoch, owner)) return
     suggestions.value = []
     suggestionState.value = 'unavailable'
     suggestionMessage.value = messageForSuggestionError(error)
   }
 }
 
-async function loadDirections(taskId: string | null) {
+async function loadDirections(taskId: string | null, epoch = requestEpoch, owner = userStore.currentUser?.id ?? '') {
   if (isMock) {
     roleDirections.value = dashboard.value?.demo?.career_directions ?? []
     roleState.value = roleDirections.value.length ? 'ready' : 'empty'
@@ -227,6 +309,7 @@ async function loadDirections(taskId: string | null) {
   roleMessage.value = ''
   try {
     const result = await inferConfirmedResumeRoles(taskId)
+    if (!currentRequest(epoch, owner)) return
     roleDirections.value = (result.roles.candidates ?? []).slice(0, 3).map(candidate => ({
       role_name: candidate.role_name,
       description: candidate.matched_skills?.length
@@ -238,6 +321,7 @@ async function loadDirections(taskId: string | null) {
     roleState.value = roleDirections.value.length ? 'ready' : 'empty'
     if (!roleDirections.value.length) roleMessage.value = '当前已确认简历没有返回可展示的职业方向；可补充简历信息后再试。'
   } catch (error) {
+    if (!currentRequest(epoch, owner)) return
     roleDirections.value = []
     roleState.value = 'unavailable'
     roleMessage.value = error instanceof ApiError && error.status === 409
@@ -247,47 +331,71 @@ async function loadDirections(taskId: string | null) {
 }
 
 async function loadDashboard() {
+  const epoch = ++requestEpoch, owner = userStore.currentUser?.id ?? ''
   pageLoading.value = true
   pageError.value = ''
+  continuationNotice.value = ''
+  continuationBusy.value = false
+  learningBusy.value = false
+  learningNotice.value = ''
+  dashboard.value = null
+  roleDirections.value = []
+  targetRoles.value = []
+  suggestions.value = []
+  savingRole.value = ''
+  roleState.value = 'loading'
+  suggestionState.value = 'loading'
   try {
-    dashboard.value = await getStudentDashboard()
+    const data = await getStudentDashboard()
+    if (!currentRequest(epoch, owner)) return
+    dashboard.value = data
+    pageLoading.value = false
+    // Continuation does not wait for optional direction/model requests.
+    void loadDirections(data.source_confirmation_task_id, epoch, owner)
     targetRoleMessage.value = ''
     try {
-      targetRoles.value = await listTargetRoles(userStore.currentUser?.id ?? '')
+      const roles = await listTargetRoles(owner)
+      if (!currentRequest(epoch, owner)) return
+      targetRoles.value = roles
     } catch (error) {
+      if (!currentRequest(epoch, owner)) return
       // A target-role read failure must not hide otherwise valid dashboard
       // evidence; keep the failure visible next to the save controls.
       targetRoles.value = []
       targetRoleMessage.value = error instanceof Error ? error.message : '暂时无法读取已保存的目标方向。'
     }
-    pageLoading.value = false
     // The AI endpoint is intentionally called once for the initial page load;
     // additional calls require the explicit “换一批” action.
-    void loadSuggestions()
-    void loadDirections(dashboard.value.source_confirmation_task_id)
+    void loadSuggestions(epoch, owner)
   } catch (error) {
+    if (!currentRequest(epoch, owner)) return
     pageLoading.value = false
     pageError.value = error instanceof Error ? error.message : '首页数据暂时不可用。'
+    roleState.value = 'unavailable'
+    roleMessage.value = '暂时无法读取职业方向。'
+    suggestionState.value = 'unavailable'
+    suggestionMessage.value = '暂时无法读取建议。'
   }
 }
 
-onMounted(() => { void loadDashboard() })
+watch(() => userStore.currentUser?.id, () => { void loadDashboard() }, {immediate:true})
+onBeforeUnmount(() => { ++requestEpoch })
 </script>
 
 <template>
   <div class="student-dashboard" :class="{ 'is-demo': isMock }">
     <div v-if="isMock" class="demo-ribbon"><Icon icon="lucide:flask-conical" :width="13" /> 演示数据</div>
 
-    <div v-if="pageLoading" class="dashboard-state" role="status" aria-live="polite">
+    <div v-if="pageLoading" class="dashboard-read-notice" role="status" aria-live="polite">
       <span class="state-spinner" aria-hidden="true" />正在整理你的学习与成长记录…
     </div>
-    <div v-else-if="pageError" class="dashboard-state dashboard-state--error" role="alert">
+    <div v-else-if="pageError" class="dashboard-read-notice dashboard-state--error" role="alert">
       <Icon icon="lucide:cloud-off" :width="22" />
       <div><strong>暂时无法加载首页</strong><p>{{ pageError }}</p></div>
       <button class="text-action" type="button" @click="loadDashboard">重新加载</button>
     </div>
 
-    <template v-else-if="dashboard">
+    <template v-if="true">
       <section class="top-grid" aria-label="学习与职业发展概览">
         <div class="hero-column">
           <section class="hero" :style="{ '--hero-image': `url(${heroLandscape})` }">
@@ -296,14 +404,20 @@ onMounted(() => { void loadDashboard() })
               <h1>{{ greeting }}，<strong>{{ userName }}</strong></h1>
               <p>探索适合你的职业方向，从每一次学习与积累，走向更广阔的未来。</p>
               <Transition name="hero-action" mode="out-in">
-                <div v-if="heroAction" :key="heroAction.route" class="hero-next" aria-live="polite">
-                  <span class="hero-next__label">下一步 · {{ heroAction.title }}</span>
-                  <button class="hero-cta" type="button" @click="go(heroAction.route)">
+                <div v-if="heroAction && !pageLoading" :key="heroAction.route ?? 'reload'" class="hero-next" aria-live="polite">
+                  <span class="hero-next__label">{{ isMock ? '下一步' : '接着做' }} · {{ heroAction.title }}</span>
+                  <button class="hero-cta" type="button" :disabled="continuationBusy" @click="isMock ? go(heroAction.route!) : openResumeAction(resumeActions.primary)">
                     {{ heroAction.cta }} <Icon icon="lucide:arrow-right" :width="16" aria-hidden="true" />
                   </button>
                 </div>
                 <p v-else key="hero-action-loading" class="hero-next__pending" role="status">正在整理你的下一步…</p>
               </Transition>
+              <p v-if="!isMock && !pageLoading" class="hero-resume-detail">{{ resumeActions.primary.detail }}</p>
+              <div v-if="!isMock && !pageLoading" class="hero-resume-links">
+                <button v-for="action in resumeActions.secondary" :key="action.identity" type="button" class="text-action" :disabled="continuationBusy" @click="openResumeAction(action)">{{ action.cta }} <Icon icon="lucide:arrow-up-right" :width="13" /></button>
+                <span v-if="dashboard?.resume_continuation?.draft.state === 'unavailable'">草稿暂不可读，已有内容不会删除。<button class="text-action" type="button" @click="loadDashboard">重试</button></span>
+              </div>
+              <p v-if="continuationNotice" class="continuation-notice" role="status">{{ continuationNotice }}</p>
             </div>
           </section>
 
@@ -315,19 +429,19 @@ onMounted(() => { void loadDashboard() })
             <div class="metrics-grid" aria-label="学习指标">
               <article class="metric-card">
                 <span class="metric-icon metric-icon--red"><Icon icon="lucide:book-open" :width="19" /></span>
-                <div class="metric-copy"><span class="metric-label">已完成课程</span><strong>{{ metrics?.completed_courses ?? 0 }}</strong><small>章节均完成的课程</small></div>
+                <div class="metric-copy"><span class="metric-label">已完成课程</span><strong>{{ metrics?.completed_courses ?? '—' }}</strong><small>本人标记全部章节</small></div>
               </article>
               <article class="metric-card">
                 <span class="metric-icon metric-icon--coral"><Icon icon="lucide:calendar-check" :width="18" /></span>
-                <div class="metric-copy"><span class="metric-label">本周完成章节</span><strong>{{ metrics?.weekly_completed_chapters ?? 0 }}</strong><small>自 {{ metrics?.week_start ?? '本周' }} 起</small></div>
+                <div class="metric-copy"><span class="metric-label">本周完成章节</span><strong>{{ metrics?.weekly_completed_chapters ?? '—' }}</strong><small>自 {{ metrics?.week_start ?? '本周' }} 起</small></div>
               </article>
               <article class="metric-card">
                 <span class="metric-icon metric-icon--gold"><Icon icon="lucide:target" :width="19" /></span>
                 <div class="metric-copy">
-                  <span class="metric-label">能力画像完整度</span>
+                  <span class="metric-label">画像维度可用比例</span>
                   <strong v-if="portrait?.completeness != null">{{ portrait.completeness }}%</strong>
                   <strong v-else class="metric-empty">—</strong>
-                  <small>{{ portrait?.completeness != null ? '来自当前有效画像' : '当前没有可核验画像' }}</small>
+                  <small>{{ portrait?.completeness != null ? '来自当前有效画像' : portraitUnreadable ? '画像暂不可读取' : '当前没有可核验画像' }}</small>
                 </div>
               </article>
             </div>
@@ -335,23 +449,37 @@ onMounted(() => { void loadDashboard() })
               <div
                 class="portrait-completion__track"
                 role="progressbar"
-                aria-label="能力画像完整度"
+                aria-label="画像维度可用比例"
                 :aria-valuenow="portrait.completeness"
                 aria-valuemin="0"
                 aria-valuemax="100"
               ><span :style="{ transform: `scaleX(${Math.min(100, Math.max(0, portrait.completeness)) / 100})` }" /></div>
             </div>
             <div v-else class="portrait-completion portrait-completion--empty">
-              <p>还没有可核验的能力画像。完成职业测评或补充简历资料后，即可查看进度。</p>
+              <p>{{ portraitUnreadable ? '当前画像暂不可读取，已有资料不会因此删除。' : '当前尚无可读画像，可先核对简历或查看处理状态。' }}</p>
               <button class="text-action" type="button" @click="go('/app/student/career-analysis')">了解职业方向 <Icon icon="lucide:arrow-right" :width="14" aria-hidden="true" /></button>
             </div>
+            <section v-if="!isMock" class="learning-continuation" aria-labelledby="continue-learning-title" :aria-busy="pageLoading">
+              <div class="learning-continuation__heading"><h3 id="continue-learning-title">接着学</h3><span>按最近更新的本人学习记录</span></div>
+              <p v-if="pageLoading" class="learning-continuation__message" role="status">正在读取课程记录…</p>
+              <template v-else-if="learningContinuation.state === 'ready'">
+                <article v-for="course in learningContinuation.courses" :key="course.course_id" class="learning-continuation__course">
+                  <span class="learning-continuation__icon" aria-hidden="true"><Icon icon="lucide:book-open" :width="18" /></span>
+                  <div class="learning-continuation__copy"><strong>{{ learningTitle(course.title) }}</strong><small>已标记 {{ course.completed_chapters }}/{{ course.chapter_count }} 章 · 本人记录</small></div>
+                  <button class="text-action learning-continue" type="button" :disabled="learningBusy" :aria-label="`继续学习：${learningTitle(course.title)}`" @click="openLearningCourse(course.course_id)">继续学习 <Icon icon="lucide:arrow-right" :width="14" aria-hidden="true" /></button>
+                </article>
+              </template>
+              <div v-else-if="learningContinuation.state === 'empty'" class="learning-continuation__message"><span>还没有待继续的章节记录。</span><button class="text-action" type="button" @click="go('/app/student/learning')">浏览课程 <Icon icon="lucide:arrow-right" :width="14" aria-hidden="true" /></button></div>
+              <div v-else class="learning-continuation__message" role="status"><span>课程记录暂不可读，已有记录不会删除。</span><button class="text-action learning-retry" type="button" @click="loadDashboard">重试读取</button></div>
+              <p v-if="learningNotice" class="learning-continuation__message" role="alert">{{ learningNotice }}</p>
+            </section>
           </section>
         </div>
 
         <section class="panel suggestions-panel" aria-labelledby="suggestions-title">
           <header class="panel-heading suggestions-heading">
             <div class="heading-title"><span class="heading-icon heading-icon--warm"><Icon icon="lucide:sparkles" :width="18" /></span><h2 id="suggestions-title">AI 为你推荐</h2></div>
-            <button class="quiet-action" type="button" :disabled="suggestionState === 'loading'" @click="loadSuggestions">
+            <button class="quiet-action" type="button" :disabled="suggestionState === 'loading'" @click="loadSuggestions()">
               {{ suggestionState === 'loading' ? '生成中' : '换一批' }} <Icon icon="lucide:refresh-cw" :width="13" />
             </button>
           </header>
@@ -381,8 +509,8 @@ onMounted(() => { void loadDashboard() })
               <div class="phase-node"><Icon v-if="phase.done" icon="lucide:check" :width="17" /><span v-else>{{ String(index + 1).padStart(2, '0') }}</span></div>
               <h3>{{ phase.title }}</h3>
               <p>{{ phase.detail }}</p>
-              <button v-if="phase.active" class="phase-cta" type="button" @click="go(phase.route)">{{ phase.cta }} <Icon icon="lucide:arrow-right" :width="14" /></button>
-              <span v-else-if="phase.done" class="phase-status"><Icon icon="lucide:check" :width="13" /> 已有记录</span>
+              <button v-if="phase.done" class="phase-status" type="button" @click="go(phase.route)"><Icon icon="lucide:check" :width="13" /> 已有记录 · 查看</button>
+              <button v-else class="phase-cta" :class="{'phase-cta--quiet':!phase.active}" type="button" @click="go(phase.route)">{{ phase.cta }} <Icon icon="lucide:arrow-right" :width="14" /></button>
             </article>
           </div>
         </section>
@@ -440,17 +568,18 @@ onMounted(() => { void loadDashboard() })
         <section class="panel activity-panel" aria-labelledby="activity-title">
           <header class="panel-heading">
             <div class="heading-title"><span class="section-mark" /><h2 id="activity-title">最近进展</h2></div>
-            <button class="text-action" type="button" @click="go('/app/student/learning')">查看全部 <Icon icon="lucide:arrow-right" :width="14" /></button>
+            <button class="text-action" type="button" @click="go('/app/student/my-reports')">查看成果 <Icon icon="lucide:arrow-right" :width="14" /></button>
           </header>
-          <p class="panel-subtitle">只展示已完成课程与核验通过的报告记录</p>
+          <p class="panel-subtitle">本人确认的简历、可读诊断与学习／岗位报告记录</p>
+          <p v-if="dashboard?.recent_activities_state === 'partial'" class="activity-read-error" role="status">部分简历进展暂不可读。<button class="text-action" type="button" @click="loadDashboard">重试读取</button></p>
           <ol v-if="activities.length" class="activity-list">
             <li v-for="item in activities" :key="item.id">
               <time :datetime="item.occurred_at ?? undefined">{{ formatDate(item.occurred_at) }}</time>
-              <span class="activity-node" :class="item.type === 'career_report' ? 'activity-node--report' : 'activity-node--course'"><Icon :icon="item.type === 'career_report' ? 'lucide:file-check-2' : 'lucide:book-open-check'" :width="16" /></span>
-              <button type="button" class="activity-copy" @click="go(item.route)"><strong>{{ item.type === 'career_report' ? '完成职业报告' : '完成课程' }}《{{ item.title }}》</strong><small>{{ item.type === 'career_report' ? '已核验报告记录' : '课程章节均已完成' }}</small></button>
+              <span class="activity-node" :class="item.type !== 'course_completed' ? 'activity-node--report' : 'activity-node--course'"><Icon :icon="activityCopy(item).icon" :width="16" /></span>
+              <button type="button" class="activity-copy" :disabled="continuationBusy" @click="openActivity(item)"><strong>{{ activityCopy(item).title }}</strong><small>{{ activityCopy(item).detail }}</small></button>
             </li>
           </ol>
-          <div v-else class="panel-empty activity-empty"><Icon icon="lucide:clock-3" :width="23" /><p>完成课程或生成已核验报告后，进展会显示在这里。</p><button class="text-action" type="button" @click="go('/app/student/learning')">开始学习 <Icon icon="lucide:arrow-right" :width="14" /></button></div>
+          <div v-else class="panel-empty activity-empty"><Icon icon="lucide:clock-3" :width="23" /><p>{{ !dashboard ? '正在核对进展，暂不显示为空记录。' : dashboard.recent_activities_state === 'partial' ? '部分记录暂不可读，请重试。' : '确认简历、产生可读成果或标记课程后，进展会显示在这里。' }}</p><button class="text-action" type="button" @click="go('/app/student/learning')">查看学习记录 <Icon icon="lucide:arrow-right" :width="14" /></button></div>
         </section>
 
         <section class="panel ability-panel" aria-labelledby="ability-title">
@@ -464,7 +593,7 @@ onMounted(() => { void loadDashboard() })
           </div>
           <div v-else class="panel-empty radar-empty" role="status">
             <span class="radar-empty__icon"><Icon icon="lucide:radar" :width="25" /></span>
-            <p>{{ portrait?.state === 'ready_with_unknowns' ? '当前画像部分维度缺少可核验分数，补全后会展示完整雷达图。' : portrait?.state === 'source_invalid' ? `${portrait.error || '简历确认来源暂不可核验。'} 请检查简历确认状态后重试。` : '还没有可核验的当前能力画像。' }}</p>
+            <p>{{ portrait?.state === 'ready_with_unknowns' ? '当前画像有未知维度，暂不绘制完整雷达；仍可阅读已有画像与诊断。' : portraitUnreadable ? '暂时无法核对当前画像，请重试读取；不使用旧分数填补。' : '还没有可核验的当前能力画像。' }}</p>
             <button class="text-action" type="button" @click="go('/app/student/career-navigation')">查看画像状态 <Icon icon="lucide:arrow-right" :width="14" /></button>
           </div>
         </section>
@@ -529,6 +658,30 @@ onMounted(() => { void loadDashboard() })
 .hero-next { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin-top: 19px; }
 .hero-next__label { color: #8b4d38; font-size: 12px; font-weight: 650; letter-spacing: .02em; }
 .hero-next__pending { margin: 12px 0 0; color: #77736d; font-family: var(--font-title, "Noto Serif SC", serif); font-size: 12px; }
+.hero .hero-resume-detail { margin-top: 8px; font-size: 12px; line-height: 1.7; }
+.hero-resume-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-top: 9px; font-size: 12px; color: #756456; }
+.hero .continuation-notice { padding-left: 10px; border-left: 2px solid #b94725; font-size: 12px; line-height: 1.7; }
+.hero-cta:disabled, .text-action:disabled, .activity-copy:disabled { opacity: .65; cursor: wait; }
+.dashboard-read-notice { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 10px 16px; margin-bottom: 12px; border: 1px solid #e2d4c8; border-radius: 10px; background: #fffaf3; color: #775544; font-size: 13px; }
+.dashboard-read-notice p { margin: 3px 0; }
+.learning-continuation { margin-top: 15px; padding-top: 14px; border-top: 1px solid #eee6de; }
+.learning-continuation__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 4px; }
+.learning-continuation__heading h3 { margin: 0; font-size: 13px; color: #40362e; }
+.learning-continuation__heading > span { font-size: 11px; color: #918476; }
+.learning-continuation__course { display: flex; align-items: center; gap: 10px; padding: 11px 0; }
+.learning-continuation__course + .learning-continuation__course { border-top: 1px solid #f2ebe4; }
+.learning-continuation__icon { display: flex; flex: 0 0 32px; height: 32px; align-items: center; justify-content: center; border-radius: 10px; background: #fbf0e5; color: #a45232; }
+.learning-continuation__copy { flex: 1; min-width: 0; }
+.learning-continuation__copy strong { display: block; font-size: 12px; font-weight: 500; line-height: 1.6; color: #473c32; overflow-wrap: anywhere; }
+.learning-continuation__copy small { display: block; font-size: 11px; color: #928576; line-height: 1.6; }
+.learning-continue { flex-shrink: 0; min-height: 40px; white-space: nowrap; }
+.learning-continuation__message { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 10px 0 0; font-size: 12px; color: #8c7868; line-height: 1.7; }
+.learning-continuation button:focus-visible { outline: 2px solid #b74625; outline-offset: 3px; }
+.progress-panel { container: dashboard-progress / inline-size; }
+.path-panel { container: dashboard-path / inline-size; }
+.activity-read-error { color: #8b4d38; font-size: 12px; line-height: 1.7; }
+.phase-status { border: 0; font-family: inherit; cursor: pointer; }
+.phase-cta--quiet { color: #8b4d38 !important; background: transparent !important; box-shadow: none !important; }
 .hero-cta { min-height: 40px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; border: 0; border-radius: 22px; color: #fff; background: linear-gradient(135deg, #cf4b2a, #a93216); box-shadow: 0 5px 16px rgba(153, 53, 28, .2); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; transition: transform .16s ease, box-shadow .16s ease, background-color .16s ease; }
 .hero-cta:hover { transform: translateY(-1px); box-shadow: 0 6px 15px rgba(182, 54, 20, .2); }
 .hero-cta:active { transform: translateY(1px); }
@@ -804,5 +957,15 @@ onMounted(() => { void loadDashboard() })
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .01ms !important; }
+}
+/* Container width also follows magnification; viewport breakpoints alone do not. */
+@container dashboard-progress (max-width: 300px) {
+  .metrics-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .metric-card, .metric-card:first-child, .metric-card:last-child { padding: 4px 0; border-right: 0; overflow: visible; }
+  .metric-label, .metric-copy small { white-space: normal; overflow-wrap: anywhere; }
+}
+@container dashboard-path (max-width: 400px) {
+  .heading-note { display: none; }
+  .panel-heading { flex-wrap: wrap; }
 }
 </style>

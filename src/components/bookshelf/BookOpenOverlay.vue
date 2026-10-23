@@ -1,6 +1,6 @@
 <!-- 组件：书架书本展开浮层；点击书架中的书后弹出的详情/阅读面板 -->
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { Icon } from '@iconify/vue'
 import { gsap } from '@/plugins/gsap'
 import type { ReportRecord } from '@/types'
@@ -18,6 +18,7 @@ const props = defineProps<{
   type: 'portrait' | 'career' | null
   originX: number
   originY: number
+  serverMode?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -30,6 +31,10 @@ const pageRef = ref<HTMLDivElement | null>(null)
 
 let timeline: gsap.core.Timeline | null = null
 let isClosing = false
+let animationEpoch = 0
+let closeEmitted = false
+let disposed = false
+const readerPhase = ref<'opening' | 'open' | 'closing' | 'closed'>('closed')
 
 const userStore = useUserStore()
 
@@ -39,7 +44,7 @@ function toLevel(score: number): '优秀' | '良好' | '待提升' {
 
 // ── 个人能力画像：从 snapshot 解析，兼容旧 { name, score } 和新 AbilityDimension 格式 ──
 const portraitSnap = computed(() => {
-  if (!props.record || props.type !== 'portrait') return null
+  if (props.serverMode || !props.record || props.type !== 'portrait') return null
   const snap = props.record.snapshot as Record<string, unknown>
 
   // 解析维度数组：兼容旧格式 { name, score } 和新格式 AbilityDimension
@@ -110,7 +115,7 @@ function deriveLevelInfo(score: number): { label: string; desc: string; color: s
 }
 
 const selectedCareerJob = computed(() => {
-  if (!props.record || props.type !== 'career') return null
+  if (props.serverMode || !props.record || props.type !== 'career') return null
   const snap = props.record.snapshot as Record<string, unknown>
   const selectedId = String(snap.selectedJobId ?? '')
   if (selectedId) return JOB_PORTRAITS.find(job => job.id === selectedId) ?? null
@@ -120,7 +125,7 @@ const selectedCareerJob = computed(() => {
 })
 
 const careerRadarData = computed(() => {
-  if (!props.record || props.type !== 'career') return []
+  if (props.serverMode || !props.record || props.type !== 'career') return []
   const snap = props.record.snapshot as Record<string, unknown>
   const studentDim = (snap.studentDimSnapshot as Partial<Record<(typeof DIM_NAMES)[number], number>> | undefined) ?? {}
   const jobDim = selectedCareerJob.value?.sevenDim
@@ -143,7 +148,7 @@ const careerGrowthPlan = computed(() => {
 })
 
 const careerSummary = computed(() => {
-  if (!props.record || props.type !== 'career') return null
+  if (props.serverMode || !props.record || props.type !== 'career') return null
   const snap = props.record.snapshot as Record<string, unknown>
   const raw = Number(snap.topMatchScore ?? 0)
   const pct = raw > 1 ? raw : Math.round(raw * 100)
@@ -152,22 +157,35 @@ const careerSummary = computed(() => {
 
 // ── 动画 ──
 function runEnter() {
-  if (!bookRef.value || !pageRef.value) return
+  if (disposed || isClosing || !props.visible || !bookRef.value || !pageRef.value) return
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    gsap.set([bookRef.value, pageRef.value], { clearProps: 'all' }); readerPhase.value = 'open'; return
+  }
   const dx = props.originX - window.innerWidth / 2
   const dy = props.originY - window.innerHeight / 2
   gsap.set(bookRef.value, { x: dx, y: dy, scale: 0.28, opacity: 0.9, rotate: -6 })
   gsap.set(pageRef.value, { opacity: 0, y: 12 })
   timeline?.kill()
-  timeline = gsap.timeline()
+  const epoch = animationEpoch
+  timeline = gsap.timeline({ onComplete: () => {
+    if (!disposed && epoch === animationEpoch && !isClosing) readerPhase.value = 'open'
+  } })
     .to(bookRef.value, { x: 0, y: 0, scale: 1, rotate: 0, opacity: 1, duration: 0.5, ease: 'power3.out' })
     .to(pageRef.value, { opacity: 1, y: 0, duration: 0.3, ease: 'power2.out' }, '-=0.18')
 }
 
 function closeWithAnim() {
-  if (isClosing || !bookRef.value || !pageRef.value) { emit('close'); return }
+  if (disposed || !props.visible || isClosing || closeEmitted) return
   isClosing = true
+  readerPhase.value = 'closing'
+  const epoch = ++animationEpoch
   timeline?.kill()
-  gsap.timeline({ onComplete: () => { isClosing = false; emit('close') } })
+  const finish = () => {
+    if (disposed || epoch !== animationEpoch || !props.visible || closeEmitted) return
+    closeEmitted = true; timeline = null; emit('close')
+  }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !bookRef.value || !pageRef.value) { finish(); return }
+  timeline = gsap.timeline({ onComplete: finish })
     .to(pageRef.value, { opacity: 0, y: 10, duration: 0.18, ease: 'power1.in' })
     .to(bookRef.value, { opacity: 0, scale: 0.86, duration: 0.22, ease: 'power2.in' })
 }
@@ -177,13 +195,40 @@ function removeRecord() {
   emit('remove', props.record.id)
 }
 
+let returnFocus: HTMLElement | null = null
+function onKey(event: KeyboardEvent) {
+  if (!props.visible) return
+  if (event.key === 'Escape') { event.preventDefault(); closeWithAnim() }
+  if (event.key !== 'Tab') return
+  const elements = [...(bookRef.value?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], summary, [tabindex="0"]') || [])]
+  const first = elements[0], last = elements[elements.length - 1]
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus() }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
+}
+function dateLabel(value: string) {
+  const parsed = new Date(value)
+  return !value || Number.isNaN(parsed.getTime()) ? '' : new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(parsed)
+}
 watch(
-  () => props.visible,
-  async (visible) => {
-    if (visible) { await nextTick(); runEnter() }
-    else { timeline?.kill() }
-  }
+  [() => props.visible, () => props.record?.id],
+  async ([visible, id], previous) => {
+    const epoch = ++animationEpoch
+    timeline?.kill(); timeline = null; isClosing = false; closeEmitted = false
+    if (visible && id) {
+      readerPhase.value = 'opening'
+      if (!previous?.[0]) returnFocus = document.activeElement as HTMLElement
+      document.addEventListener('keydown', onKey)
+      await nextTick()
+      if (disposed || epoch !== animationEpoch || !props.visible || id !== props.record?.id) return
+      runEnter(); bookRef.value?.querySelector<HTMLElement>('[data-close]')?.focus()
+    } else {
+      readerPhase.value = 'closed'
+      document.removeEventListener('keydown', onKey)
+      if (returnFocus?.isConnected) returnFocus.focus()
+    }
+  }, { immediate: true }
 )
+onBeforeUnmount(() => { disposed = true; ++animationEpoch; timeline?.kill(); document.removeEventListener('keydown', onKey) })
 </script>
 
 <template>
@@ -192,23 +237,24 @@ watch(
       <div v-if="visible && record" class="open-overlay">
         <button class="overlay-mask" aria-label="关闭报告" @click="closeWithAnim"></button>
 
-        <div ref="bookRef" class="open-book-shell">
+        <div ref="bookRef" class="open-book-shell" :data-reader-state="readerPhase" role="dialog" aria-modal="true" :aria-label="record.title">
           <div ref="pageRef" class="open-book-page" :class="{ 'open-book-page--portrait': type === 'portrait' }">
             <BookPage>
               <div class="detail-head">
-                <span class="detail-date">{{ record.createdAt }}</span>
-                <span class="detail-sub">{{ type === 'portrait' ? '个人能力画像报告' : '职业生涯发展报告' }}</span>
-                <button class="icon-btn icon-btn--danger" title="删除报告" @click="removeRecord">
+                <span class="detail-date">{{ dateLabel(record.createdAt) }}</span>
+                <span class="detail-sub">{{ type === 'portrait' ? '个人能力画像报告' : serverMode ? '岗位对照报告' : '职业生涯发展报告' }}</span>
+                <button v-if="!serverMode" class="icon-btn icon-btn--danger" title="删除报告" @click="removeRecord">
                   <Icon icon="lucide:trash-2" :width="14" />
                   删除报告
                 </button>
-                <button class="icon-btn" title="关闭" @click="closeWithAnim">
+                <button data-close class="icon-btn" title="关闭" @click="closeWithAnim">
                   <Icon icon="lucide:x" :width="14" />
                   关闭
                 </button>
               </div>
 
-              <template v-if="type === 'portrait' && portraitSnap">
+              <slot v-if="serverMode" />
+              <template v-else-if="type === 'portrait' && portraitSnap">
                 <!-- [A] 个人信息头部 -->
                 <div class="port-profile">
                   <div class="port-profile__header">
@@ -443,6 +489,11 @@ watch(
 }
 
 .detail-head {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 12px 18px;
+  background: var(--color-surface);
   display: flex;
   align-items: center;
   gap: 0.6rem;

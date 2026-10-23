@@ -15,8 +15,34 @@ function asNumber(v: unknown, fallback = 0): number {
   return Number.isFinite(n) ? n : fallback
 }
 
+function asDateOnly(value: unknown): string {
+  const raw = asString(value).trim()
+  if (!raw) return ''
+  if (/^\d{4}-\d{2}-\d{2}(?:$|[T ])/.test(raw)) return raw.slice(0, 10)
+  // Flask serializes MySQL datetimes as RFC 1123, not always ISO 8601.
+  const date = new Date(raw)
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10)
+}
+
 function asStringArray(v: unknown): string[] {
-  if (Array.isArray(v)) return v.map(String)
+    if (typeof v === 'string') {
+      const trimmed = v.trim()
+      if (trimmed.startsWith('[')) {
+        try {
+          const parsed: unknown = JSON.parse(trimmed)
+          if (Array.isArray(parsed)) {
+            return parsed.map(item => typeof item === 'string'
+              ? item
+              : String(asRecord(item).name ?? '')).filter(Boolean)
+          }
+        } catch {
+          // Keep the legacy scalar representation below.
+        }
+      }
+    }
+  if (Array.isArray(v)) return v.map(item => typeof item === 'string'
+    ? item
+    : String(asRecord(item).name ?? '')).filter(Boolean)
   if (typeof v === 'string') {
     try {
       const parsed = JSON.parse(v)
@@ -32,8 +58,11 @@ function asStringArray(v: unknown): string[] {
 /** Backend saved-jobs row → FE SavedJob */
 export function mapSavedJob(row: unknown): SavedJob {
   const r = asRecord(row)
+  const publication = asRecord(r.publication)
+  const snapshot = r.publication_snapshot
   return {
     id: asString(r.job_id ?? r.id),
+    savedJobId: r.saved_job_id == null ? asString(r.id) : asString(r.saved_job_id),
     jobTitle: asString(r.job_title ?? r.jobTitle),
     company: asString(r.company),
     industry: asString(r.industry),
@@ -41,9 +70,21 @@ export function mapSavedJob(row: unknown): SavedJob {
     location: asString(r.location),
     matchScore: asNumber(r.match_score ?? r.matchScore),
     requiredSkills: asStringArray(r.required_skills ?? r.requiredSkills),
-    savedAt: asString(r.saved_at ?? r.savedAt).slice(0, 10),
+    savedAt: asDateOnly(r.saved_at ?? r.savedAt),
     notes: r.notes == null ? undefined : asString(r.notes),
     role: r.role == null ? undefined : asString(r.role),
+    jobPortraitId: r.job_portrait_id == null
+      ? (publication.job_portrait_id == null ? undefined : asString(publication.job_portrait_id))
+      : asString(r.job_portrait_id),
+    publicationVersion: r.publication_version == null
+      ? (publication.publication_version == null ? undefined : asString(publication.publication_version))
+      : asString(r.publication_version),
+    publicationStatus: r.publication_status == null ? undefined : asString(r.publication_status),
+    contentSha256: r.content_sha256 == null
+      ? (publication.content_sha256 == null ? undefined : asString(publication.content_sha256))
+      : asString(r.content_sha256),
+    vacancyValidity: r.vacancy_validity == null ? undefined : asString(r.vacancy_validity),
+    publicationSnapshot: snapshot && typeof snapshot === 'object' ? snapshot as Record<string, unknown> : null,
   }
 }
 
@@ -118,21 +159,26 @@ export function mapReportRecord(row: unknown): ReportRecord {
   const created = asString(r.created_at ?? r.createdAt)
   const typeRaw = asString(r.type, 'career')
   const type: ReportRecord['type'] = typeRaw === 'portrait' ? 'portrait' : 'career'
-  const snapshot =
+  const reportJson =
     r.report_json && typeof r.report_json === 'object'
       ? (r.report_json as Record<string, unknown>)
-      : r.snapshot && typeof r.snapshot === 'object'
-        ? (r.snapshot as Record<string, unknown>)
-        : {
-            chapters: r.chapters ?? undefined,
-            job_portrait_id: r.job_portrait_id,
-            status: r.status,
-            student_name: r.student_name,
-          }
+      : null
+  // Keep the actual HTTP envelope alongside its domain snapshot: newer
+  // evidence reports are sparse and must not lose status, chapters, source
+  // metadata or the published position name while adapting for the UI.
+  const snapshot = {
+    ...(r.snapshot && typeof r.snapshot === 'object' ? r.snapshot as Record<string, unknown> : {}),
+    ...(r.chapters !== undefined ? { chapters: r.chapters } : {}),
+    ...(r.job_portrait_id !== undefined ? { job_portrait_id: r.job_portrait_id } : {}),
+    ...(r.position_name !== undefined ? { position_name: r.position_name } : {}),
+    ...(r.status !== undefined ? { status: r.status } : {}),
+    ...(r.student_name !== undefined ? { student_name: r.student_name } : {}),
+    ...(reportJson ? { report_json: reportJson, ...reportJson } : {}),
+  }
   return {
     id,
     type,
-    createdAt: created.slice(0, 10) || created,
+    createdAt: asDateOnly(created),
     title: asString(r.title, id),
     snapshot,
   }

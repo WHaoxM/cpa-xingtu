@@ -1,6 +1,6 @@
 import { getApiMode } from './config'
 import { mockGet, mockMutate } from './adapters/mockAdapter'
-import { httpDelete, httpGet, httpPost } from './adapters/httpAdapter'
+import { httpDelete, httpGet, httpPost, httpSend } from './adapters/httpAdapter'
 import type { AIToolCall, ArtifactRef, MessagePart, PublicTurn, TurnOutcome } from '@/types'
 
 export type InteractionMode = 'ask' | 'agent' | 'experts'
@@ -78,13 +78,71 @@ export type AgentArtifactDetail = ArtifactRef & {
   resource_id?: string
   session_id?: string
   turn_id?: string
-  content?: { body: string; status: string }
+  content?: {
+    body: string
+    status: string
+    steps?: Array<{
+      step_id: string
+      position: number
+      title: string
+      detail: string
+      completed: boolean
+      completed_at?: string | null
+      evidence?: {
+        summary: string
+        source: 'student_submitted' | string
+        verified: false
+        created_at?: string | null
+        updated_at?: string | null
+        attachment?: {
+          filename?: string | null
+          ingest_status?: string
+          read_status?: 'available' | 'processing' | 'unavailable' | string
+        } | null
+      } | null
+    }>
+    progress?: { completed: number; total: number; status: 'not_started' | 'in_progress' | 'completed' | string }
+    source?: { label: string; status: 'current' | 'expired' | 'unavailable' | string; kind?: string; exploration_id?: string; round_id?: string } | null
+  }
 }
 
 export async function getAgentArtifact(artifactId: string): Promise<AgentArtifactDetail | null> {
   if (getApiMode() === 'mock') return null
   const env = await httpGet<AgentArtifactDetail>(`/api/agent/artifacts/${encodeURIComponent(artifactId)}`)
   return env.data ?? null
+}
+
+export async function setActionPlanStepCompleted(
+  planId: string,
+  stepId: string,
+  completed: boolean,
+): Promise<NonNullable<AgentArtifactDetail['content']>> {
+  if (getApiMode() === 'mock') throw new Error('演示计划不调用正式进度接口')
+  const env = await httpSend<NonNullable<AgentArtifactDetail['content']>>(
+    'PATCH',
+    `/api/agent/action-plans/${encodeURIComponent(planId)}/steps/${encodeURIComponent(stepId)}`,
+    { completed },
+  )
+  if (!env.data) throw new Error('未能读取更新后的计划进度')
+  return env.data
+}
+
+export async function saveActionPlanStepEvidence(
+  planId: string,
+  stepId: string,
+  summary: string,
+  attachmentId?: string | null,
+): Promise<NonNullable<AgentArtifactDetail['content']>> {
+  if (getApiMode() === 'mock') throw new Error('演示计划不调用正式成果记录接口')
+  const body: { summary: string; attachment_id?: string | null } = { summary }
+  if (attachmentId !== undefined) body.attachment_id = attachmentId
+  const env = await httpSend<NonNullable<AgentArtifactDetail['content']>>(
+    'PUT',
+    `/api/agent/action-plans/${encodeURIComponent(planId)}/steps/${encodeURIComponent(stepId)}/evidence`,
+    body,
+  )
+  if (!env.data) throw new Error('未能读取更新后的练习记录')
+  return env.data
 }
 
 
@@ -306,7 +364,6 @@ export async function chat(req: AgentChatRequest): Promise<AgentChatData> {
 
   const env = await httpPost<AgentChatData>('/api/agent/chat', {
     message: req.message,
-    student_id: req.student_id,
     session_id: sessionId ?? undefined,
     mode,
     interaction_mode: req.interaction_mode ?? 'ask',
@@ -331,9 +388,9 @@ export async function createSession(studentId?: string): Promise<AgentSessionCre
     agentSessionId = data.session_id
     return data
   }
-  const env = await httpPost<AgentSessionCreateData>('/api/agent/session/create', {
-    student_id: studentId,
-  })
+  // Authenticated HTTP session determines ownership; studentId is only used
+  // by mock fixtures and must not act as a client-selected identity.
+  const env = await httpPost<AgentSessionCreateData>('/api/agent/session/create', {})
   const data = (env.data ?? { session_id: '' }) as AgentSessionCreateData
   if (data.session_id) agentSessionId = data.session_id
   return data
@@ -373,7 +430,6 @@ export async function listSessions(studentId?: string, limit = 40): Promise<Agen
       : []
   }
   const env = await httpGet<{ sessions?: AgentSessionListItem[] }>('/api/agent/sessions', {
-    student_id: studentId,
     limit,
   })
   return (env.data as { sessions?: AgentSessionListItem[] } | undefined)?.sessions ?? []
