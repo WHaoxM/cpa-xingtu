@@ -79,7 +79,7 @@ function agentLabel(value: unknown): string {
 }
 
 /** Project only allow-listed, user-safe event facts. Unknown payload fields stay hidden. */
-export function toAgentRunTimelineItem(event: AgentRunEvent): AgentRunTimelineItem | null {
+export function toAgentRunTimelineItem(event: AgentRunEvent, runId = ''): AgentRunTimelineItem | null {
   const payload = asRecord(event.payload)
   const base = {
     id: String(event.event_seq),
@@ -125,7 +125,7 @@ export function toAgentRunTimelineItem(event: AgentRunEvent): AgentRunTimelineIt
     case 'run.finalizing': return { ...base, title: '正在整理结果' }
     case 'run.completed': return { ...base, title: '任务已完成', tone: 'success' }
     case 'run.partial': return { ...base, title: '任务部分完成', tone: 'warning' }
-    case 'run.failed': return { ...base, title: '任务执行失败', tone: 'error' }
+    case 'run.failed': return { ...base, title: '任务执行失败', detail: failureDetail(payload, runId), tone: 'error' }
     case 'run.dispatch_needs_reconciliation': return { ...base, title: '需要核对执行结果', tone: 'warning' }
     case 'run.executor_unavailable': return { ...base, title: '执行暂时不可用', tone: 'warning' }
     case 'run.dispatch_retry_scheduled': return { ...base, title: '任务将在可用时继续执行' }
@@ -140,6 +140,17 @@ export function toAgentRunTimelineItem(event: AgentRunEvent): AgentRunTimelineIt
     case 'run.followup_applied': return { ...base, title: '任务已按补充更新', tone: 'success' }
     default: return null
   }
+}
+
+function failureDetail(payload: Record<string, unknown>, runId: string): string {
+  const code = safeLabel(payload.error_code, 64)
+  const known: Record<string, string> = {
+    resource_read_result_unverified:
+      '这一步需要参考资料，但没有取得可核验的读取结果；任务已停止，未把未读内容作为依据。请确认资料已就绪，或改成不依赖资料的问题。',
+  }
+  const reason = known[code] || '系统没有提供可安全展示的失败说明。'
+  const reference = safeLabel(runId, 80)
+  return reference ? `${reason} 运行编号：${reference}` : reason
 }
 
 /** Merge durable per-run events by sequence, discarding duplicate pages. */

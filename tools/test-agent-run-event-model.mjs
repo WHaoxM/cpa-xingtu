@@ -49,6 +49,25 @@ test('timeline projection exposes allow-listed facts and ignores unknown tool ev
   assert.equal(model.toAgentRunTimelineItem(event(5, 'run.tool_started', { arguments: 'private' })), null)
 })
 
+test('failed run shows a safe known cause and the run reference without exposing internal codes', () => {
+  const known = model.toAgentRunTimelineItem(
+    event(8, 'run.failed', { error_code: 'resource_read_result_unverified' }),
+    'run_synthetic_123',
+  )
+  assert.equal(known.title, '任务执行失败')
+  assert.match(known.detail, /没有取得可核验的读取结果/)
+  assert.match(known.detail, /运行编号：run_synthetic_123/)
+  assert.doesNotMatch(known.detail, /resource_read_result_unverified/)
+
+  const unknown = model.toAgentRunTimelineItem(
+    event(9, 'run.failed', { error_code: 'secret_internal_exception_name' }),
+    'run_synthetic_456',
+  )
+  assert.match(unknown.detail, /系统没有提供可安全展示的失败说明/)
+  assert.match(unknown.detail, /运行编号：run_synthetic_456/)
+  assert.doesNotMatch(unknown.detail, /secret_internal_exception_name/)
+})
+
 test('summary names a real current step without fabricating a percentage or timer', () => {
   const summary = model.summarizeAgentRun({
     run_id: 'run_a', status: 'running', current_contract_revision: 1, current_plan_version: 2,

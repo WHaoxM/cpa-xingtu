@@ -99,6 +99,7 @@ watch(() => props.run?.status || props.fallbackStatus, () => {
     <div class="agent-run-card__body">
       <AgentRunTimeline
         :events="events"
+        :run-id="runId"
         :sync-state="syncState"
         :sync-error="syncError"
       />
