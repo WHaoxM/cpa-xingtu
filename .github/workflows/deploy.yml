@@ -45,11 +45,10 @@ jobs:
           }
           NODE
 
-      - name: Build (backend when configured, otherwise mock demo)
+      - name: Build against the configured production API
         env:
-          # 未配置外部后端时保持离线演示；仅用公开的 API origin 切换为 HTTP。
-          VITE_API_MODE: ${{ vars.CPA_BACKEND_API_BASE_URL != '' && 'http' || 'mock' }}
-          VITE_API_BASE_URL: ${{ vars.CPA_BACKEND_API_BASE_URL }}
+          VITE_API_MODE: http
+          VITE_API_BASE_URL: ${{ vars.CPA_BACKEND_API_BASE_URL != '' && vars.CPA_BACKEND_API_BASE_URL || 'https://api.xingtulabs.top' }}
           VITE_APP_TITLE: 职导星图
           VITE_PLATFORM_ORIGIN: ${{ vars.CPA_PLATFORM_ORIGIN }}
         run: npm run build-only

@@ -42,7 +42,7 @@ export function toFriendlyApiError(err: unknown): ApiError {
     || err instanceof TypeError
   ) {
     return new ApiError(
-      '无法连接后端服务。请确认后端已启动（默认 http://127.0.0.1:5001），或稍后重试。',
+      '无法连接后端服务。请检查服务状态或稍后重试。',
       0,
       err,
       'network',

@@ -6,6 +6,7 @@ import { Icon } from '@iconify/vue'
 import { ElMessage } from 'element-plus'
 import UserInfoBar from '@/components/UserInfoBar.vue'
 import CareerExplorationWorkspace from '@/components/career/CareerExplorationWorkspace.vue'
+import CareerRelationGraph from '@/components/career/CareerRelationGraph.vue'
 import { getApiMode } from '@/api/config'
 import { useAgentArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 import type { MatchPreview } from '@/types'
@@ -209,21 +210,13 @@ const route = useRoute()
 const router = useRouter()
 const showExploration=computed(()=>resolveCareerAnalysisView(getApiMode(),route.query)==='exploration')
 const isRealOverview=computed(()=>isHttpMode&&!artifactId.value)
-const overviewGroups=ref<OverviewDomain[]>([]),overviewPage=ref(0),overviewLoading=ref(false),overviewError=ref('')
-const overviewPartial=ref(false)
-const overviewPages=computed(()=>Math.max(1,Math.ceil(overviewGroups.value.length/5)))
+const overviewGroups=ref<OverviewDomain[]>([]),overviewLoading=ref(false),overviewError=ref('')
 const overviewDetail=ref<CareerInsight|null>(null),overviewDetailError=ref(''),overviewDetailLoading=ref(false)
 const overviewSkills=computed(()=>careerOverviewSkills(overviewDetail.value?.core_skills))
 let overviewLive=true,overviewFlight=0,detailFlight=0,overviewReady=false
 const returnOverviewRole=ref('')
 function openExploration(){returnOverviewRole.value=selectedJob.value?.jobName||roleSearch.value;void router.push({query:{view:'exploration',...(returnOverviewRole.value?{role:returnOverviewRole.value}:{})}})}
 function closeExploration(){const role=returnOverviewRole.value||(typeof route.query.role==='string'?route.query.role:'');void router.replace({query:role?{role}:{}})}
-function setOverviewPage(page:number){
-  overviewPage.value=Math.max(0,Math.min(page,overviewPages.value-1))
-  CAREER_DOMAINS.splice(0,CAREER_DOMAINS.length,...overviewGroups.value.slice(overviewPage.value*5,overviewPage.value*5+5))
-  _flatJobs=buildFlatJobs()
-  void nextTick(()=>{if(overviewLive&&!showExploration.value)initBubbleChart()})
-}
 async function loadOverviewDetail(role:string){
   const n=++detailFlight;overviewDetail.value=null;overviewDetailError.value='';overviewDetailLoading.value=!!role
   if(!role)return
@@ -234,14 +227,12 @@ async function loadOverviewDetail(role:string){
 async function initializeOverview(){
   const n=++overviewFlight;overviewLoading.value=true;overviewError.value=''
   try{
-    if(!overviewReady){const rows=await getLandscape();if(n!==overviewFlight||!overviewLive||showExploration.value||!isRealOverview.value)return;overviewGroups.value=careerOverviewGroups(rows);overviewPartial.value=rows.some(row=>!overviewGroups.value.some(group=>group.name===row.category&&group.jobs.length===(row.roles||[]).length));overviewReady=true}
-    setOverviewPage(overviewPage.value)
+    if(!overviewReady){const rows=await getLandscape();if(n!==overviewFlight||!overviewLive||showExploration.value||!isRealOverview.value)return;overviewGroups.value=careerOverviewGroups(rows);CAREER_DOMAINS.splice(0,CAREER_DOMAINS.length,...overviewGroups.value);_flatJobs=buildFlatJobs();overviewReady=true}
     if(typeof route.query.role==='string'){roleSearch.value=route.query.role;handleSearchSubmit()}
     await nextTick();if(!overviewLive||showExploration.value||!isRealOverview.value)return
     if(selectedJob.value?.jobName)void loadOverviewDetail(selectedJob.value.jobName)
-    setupEntranceAnimation();initBubbleChart()
-    _bubbleRo?.disconnect();if(bubbleSvgRef.value){_bubbleRo=new ResizeObserver(initBubbleChart);_bubbleRo.observe(bubbleSvgRef.value)}
-  }catch{if(n===overviewFlight&&overviewLive)overviewError.value='职业方向目录暂时不可用，原岗位舆图仍保留，请重试。'}
+    setupEntranceAnimation()
+  }catch{if(n===overviewFlight&&overviewLive)overviewError.value='职业方向目录暂时不可用，请重试。'}
   finally{if(n===overviewFlight&&overviewLive)overviewLoading.value=false}
 }
 const artifactId = computed(() => {
@@ -858,7 +849,6 @@ function doSearch() {
 function handleSearchSubmit() {
   const q = roleSearch.value.trim()
   if (!q) return
-  if(isRealOverview.value){const group=overviewGroups.value.findIndex(g=>g.jobs.some(name=>name===q||name.includes(q)));if(group>=0)setOverviewPage(Math.floor(group/5))}
   // 尝试精确 / 模糊匹配气泡内的岗位
   const exact = _flatJobs.find(j => j.jobName === q)
   const fuzzy = !exact ? _flatJobs.find(j => j.jobName.includes(q) || q.includes(j.jobName)) : null
@@ -1275,7 +1265,7 @@ function onRightLeave(el: Element, done: () => void) {
   )
 }
 
-/* ═══ 气泡图数据（基于 CAREER_DOMAINS 5×3=15 岗位）═══ */
+/* Mock-mode bubble fixture; HTTP mode renders the database relationship graph. */
 
 interface FlatJob { domainIdx: number; jobIdx: number; domainId: string; domainName: string; domainColor: string; jobName: string }
 function buildFlatJobs(): FlatJob[] {
@@ -1293,6 +1283,18 @@ function buildFlatJobs(): FlatJob[] {
 let _flatJobs: FlatJob[] = buildFlatJobs()
 
 const selectedJob = ref<{ id: string; name: string; domainColor: string; jobName?: string } | null>(null)
+function selectGraphRole(role: string) {
+  const group = overviewGroups.value.find(item => item.jobs.includes(role))
+  selectedJob.value = {
+    id: group?.id ?? 'verified-pathway',
+    name: group?.name ?? '已核验职业资料',
+    domainColor: group?.color ?? C.zhusha,
+    jobName: role,
+  }
+  roleSearch.value = role
+  selectedProvince.value = null
+  aiCommentPage.value = 0
+}
 watch(()=>selectedJob.value?.jobName,role=>{if(isRealOverview.value)void loadOverviewDetail(role||'')})
 const hasSelectedJob = computed(() => Boolean(selectedJob.value?.jobName))
 const hasSelectedProvince = computed(() => Boolean(selectedProvince.value))
@@ -2024,12 +2026,12 @@ onBeforeUnmount(() => {
               <span class="da-bubble-job-tag__domain">{{ selectedJobDomainLabel }}</span>
             </template>
             <template v-else>
-              <span>第 1 步：从气泡图选择岗位</span>
+              <span>{{ isRealOverview ? '从关联图选择职业' : '第 1 步：从气泡图选择岗位' }}</span>
               <span class="da-bubble-job-tag__domain">当前方向：{{ currentAnalysisLabel }}</span>
             </template>
           </div>
-          <svg ref="bubbleSvgRef" class="da-bubble-svg"></svg>
-          <div v-if="isRealOverview" class="overview-directory-state"><span v-if="overviewLoading">正在读取方向目录…</span><span v-else-if="overviewError" role="alert">{{ overviewError }} <button @click="initializeOverview">重试</button></span><span v-else-if="!overviewGroups.length">当前没有可用的方向资料</span><template v-else><button :disabled="overviewPage===0" aria-label="上一组职业方向" @click="setOverviewPage(overviewPage-1)">←</button><span>{{ overviewPage+1 }} / {{ overviewPages }} 组 · 目录线索，不是匹配度{{ overviewPartial?' · 部分条目待核对':'' }}</span><button :disabled="overviewPage+1>=overviewPages" aria-label="下一组职业方向" @click="setOverviewPage(overviewPage+1)">→</button></template></div>
+          <CareerRelationGraph v-if="isRealOverview" @select-role="selectGraphRole" />
+          <svg v-else ref="bubbleSvgRef" class="da-bubble-svg"></svg>
         </div>
 
         <!-- 下半：薪资柱状图 + 地图 -->

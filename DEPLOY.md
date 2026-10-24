@@ -4,22 +4,21 @@
 
 🌐 **https://whaoxm.github.io/cpa-xingtu/**
 
-默认 GitHub Actions 构建仍是 **`VITE_API_MODE=mock`**：演示站使用 `public/fixtures/` 与前端本地数据，**不请求 CPA-Agent 后端**。这不是平台账号、真实简历处理或岗位匹配的部署。
+GitHub Pages 生产构建默认使用 **`VITE_API_MODE=http`**，并请求 `https://api.xingtulabs.top`。它只配置前端 API 地址，**不会部署 Flask、数据库、Redis、Neo4j 或 Celery**。只有登录成功且服务端具备相应数据的功能才会显示真实业务结果；目录为空或接口不可用时，页面应展示明确的空态/错误态。
 
-若仓库变量 `CPA_BACKEND_API_BASE_URL` 配置为真实后端的绝对 HTTPS origin，Pages 构建会切换到 `VITE_API_MODE=http` 并将所有真实 API 请求发往该 origin。这个变量只配置前端 API 地址，**不会部署 Flask、数据库、Redis、Neo4j 或 Celery**；未配置时继续构建离线演示。
+如需改用其他生产后端，可用仓库变量 `CPA_BACKEND_API_BASE_URL` 覆盖默认 origin。演示数据仅由显式 `VITE_API_MODE=mock` 或 `npm run dev:mock` 启用。
 
-| 角色 | 用户名 | 密码 |
-|------|--------|------|
-| 学生 | `student001` | `123456` |
-| 管理员 | `admin001` | `123456` |
+| 角色 | 账号来源 |
+|------|----------|
+| 学生、管理员 | 由配置的后端账号服务管理；Mock 演示账号仅适用于显式 Mock 模式 |
 
-登录页会显示「演示数据 · 无需后端」标记。
+登录页在离线演示模式显示「演示数据 · 无需后端」标记。
 
 ## ✅ 已配置
 
 1. `vite.config.ts` — production `base: '/cpa-xingtu/'`
-2. `.env.production` — `VITE_API_MODE=mock`
-3. `.github/workflows/deploy.yml` — 默认 Mock；仅在显式配置后端 origin 后切换 HTTP
+2. `.env.production` — `VITE_API_MODE=http`，默认 API origin 为 `https://api.xingtulabs.top`
+3. `.github/workflows/deploy.yml` — 使用 `CPA_BACKEND_API_BASE_URL`，缺省时回退到上述生产 origin
 4. `public/fixtures/` — 全站演示 JSON
 5. `public/404.html` — SPA 刷新回跳；应恢复原路径、查询参数及锚点
 
@@ -35,11 +34,11 @@
 # 在 cpa-xingtu 仓库根目录；Node ^20.19.0 || >=22.12.0
 npm ci
 npm run dev:mock          # 开发态，mode=demo
-# 或构建后预览（与 Pages 同为 production + mock）
+# 或构建后预览纯 Mock 演示
 npm run preview:demo
 ```
 
-不要用 `npm run dev` 验证离线演示：它读取 `.env.development`，默认 HTTP 模式。若本机存在 `.env.local`，它也可能覆盖模式；在本地构建前确认 `VITE_API_MODE=mock`。Pages CI 没有后端地址时会使用 Mock。
+不要用 `npm run dev` 验证离线演示：它读取 `.env.development`，默认 HTTP 模式。若本机存在 `.env.local`，它也可能覆盖模式。生产构建不会回退到浏览器 localhost；本地联调时仅 Vite 开发代理使用本机服务地址。
 
 ## 本机真实后端联调（不部署到 Pages）
 
@@ -56,7 +55,7 @@ npm run dev:backend
 ## Pages 接入独立后端
 
 1. 先把 CPA-Agent 后端部署到可公开访问的 HTTPS 地址，并验证 `/health`、账号登录和首页所需 API。
-2. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 新增 `CPA_BACKEND_API_BASE_URL`，值为后端 origin（例如 `https://api.example.com`，不要带账号、密码或访问令牌）。下一次 Pages 构建会自动切换为 HTTP 模式；删除该变量即可恢复 Mock。
+2. 在 GitHub 仓库 **Settings → Secrets and variables → Actions → Variables** 新增 `CPA_BACKEND_API_BASE_URL`，值为后端 origin（例如 `https://api.example.com`，不要带账号、密码或访问令牌）。下一次 Pages 构建会向该 HTTPS origin 发请求；删除该变量会恢复默认的 `https://api.xingtulabs.top`。
 3. 后端必须只允许实际前端 origin，并正确配置带凭据 CORS、CSRF、HTTPS 与安全 Cookie。当前默认 session cookie 为 `SameSite=Lax`；如果前后端不属于同一站点，浏览器的跨站 Cookie 策略会阻止登录态，单改前端 API 地址不能解决。生产环境优先使用同站点自定义域名/API 反向代理，并完成真实浏览器登录、刷新和 owner 隔离验收。
 4. 这只切换前端构建模式，不代表后端已部署、数据库已迁移或异步 worker 已运行。后端部署与数据迁移须另行按 CPA-Agent 主仓库运行手册完成。
 

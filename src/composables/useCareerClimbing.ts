@@ -2,7 +2,6 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { getLandscape } from '@/api/career'
-import { httpGet } from '@/api/adapters/httpAdapter'
 import { getStudentWorkbenchState, getStudentPortraitSnapshot, type StudentWorkbenchState, type PortraitSnapshot } from '@/api/pipeline'
 import { getLatestResumeDiagnosticReport, type ResumeDiagnosticReport } from '@/api/report'
 import { listExplorations, readExploration, createExploration, patchExploration, sendExplorationAnalysis, type Exploration } from '@/api/careerExploration'
@@ -12,8 +11,6 @@ export function useCareerClimbing(enabled:()=>boolean) {
   const route=useRoute(),router=useRouter(),user=useUserStore()
   const catalogue=ref<{role:string;category:string}[]>([]),search=ref(''),page=ref(0)
   const recentRoles=ref<string[]>([])
-  const promotionPaths=ref<{chain:string[];requirements:unknown[];depth:number}[]>([])
-  const promotionState=ref<'loading'|'ready'|'empty'|'unavailable'>('empty')
   const loading=ref(false),error=ref(''),sourceError=ref(''),portraitError=ref(''),reportError=ref('')
   const workbench=ref<StudentWorkbenchState|null>(null),portrait=ref<PortraitSnapshot|null>(null),report=ref<ResumeDiagnosticReport|null>(null)
   const record=ref<Exploration|null>(null),busy=ref(false),message=ref(''),notice=ref('')
@@ -60,17 +57,8 @@ export function useCareerClimbing(enabled:()=>boolean) {
   async function load(){
     stop();const e=++epoch;pending=null;record.value=null;recentRoles.value=[];busy.value=false;error.value='';sourceError.value='';portraitError.value='';reportError.value=''
     workbench.value=null;portrait.value=null;report.value=null;notice.value='';message.value=''
-    promotionPaths.value=[];promotionState.value='empty'
     if(!enabled()||!user.currentUser?.id)return
     loading.value=true
-    if(role.value&&role.value.length<=100){
-      promotionState.value='loading'
-      void httpGet<{paths:{chain:string[];requirements:unknown[];depth:number}[];fallback?:boolean}>('/api/career/paths',{role:role.value}).then(response=>{
-        if(!valid(e))return
-        if(response.data?.fallback)promotionState.value='unavailable'
-        else{promotionPaths.value=(response.data?.paths||[]).filter(p=>Array.isArray(p.chain)&&p.chain.length>1&&p.chain.every(n=>typeof n==='string'));promotionState.value=promotionPaths.value.length?'ready':'empty'}
-      }).catch(()=>{if(valid(e))promotionState.value='unavailable'})
-    }
     await Promise.all([loadSources(e),(async()=>{try{const rows=await getLandscape();if(!valid(e))return;catalogue.value=rows.flatMap(r=>(r.roles||[]).map(role=>({role,category:r.category}))).filter(c=>!/[\ufffd\u0080-\u009f]|æœ|å™|å­|Ã|Â/.test(c.role));const index=catalogue.value.findIndex(c=>c.role===role.value);if(index>=0)page.value=Math.floor(index/8);await restore(e)}catch(ex){if(valid(e))error.value=explanation(ex)}})()])
     if(valid(e))loading.value=false
   }
@@ -109,5 +97,5 @@ export function useCareerClimbing(enabled:()=>boolean) {
   watch(()=>latest.value?.status,status=>{if(status==='failed'&&!message.value)message.value=latest.value?.message||''})
   watch([()=>user.currentUser?.id,role,enabled],()=>{catalogue.value=[];search.value='';page.value=0;void load()},{immediate:true})
   onBeforeUnmount(()=>{live=false;++epoch;stop();pending=null;record.value=null;portrait.value=null;report.value=null})
-  return {catalogue,recentRoles,promotionPaths,promotionState,search,page,pages,visible,loading,error,sourceError,portraitError,reportError,workbench,portrait,report,role,selected,record,busy,message,notice,latest,active,stale,legacy,positioning,choose,submit,load,reloadProgress,discuss}
+  return {catalogue,recentRoles,search,page,pages,visible,loading,error,sourceError,portraitError,reportError,workbench,portrait,report,role,selected,record,busy,message,notice,latest,active,stale,legacy,positioning,choose,submit,load,reloadProgress,discuss}
 }
