@@ -32,3 +32,15 @@ export function resolvePlatformRedirectUrl(
     return null
   }
 }
+
+/**
+ * A marketing hostname is separate from the configured platform origin.
+ * Keep its public root visible even when the visitor already has a session;
+ * app routes still redirect to the platform through resolvePlatformRedirectUrl.
+ */
+export function isSeparatePlatformOrigin(
+  configuredOrigin: string | undefined,
+  currentOrigin: string,
+): boolean {
+  return resolvePlatformRedirectUrl(configuredOrigin, currentOrigin, '/') !== null
+}

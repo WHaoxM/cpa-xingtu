@@ -63,6 +63,7 @@ npm run dev:backend
 ## 注意事项
 
 - Mock 模式下写操作（收藏、进度、消息已读）不落库，刷新后恢复 fixture
+- 若部署切换期间已打开的旧页面请求到已移除的哈希 JS chunk，客户端会使用一次性查询参数刷新页面以获取新版本，并在成功后清除参数；最多自动重试一次，避免循环刷新。若重试仍失败，再手动刷新并检查本次 Pages 发布状态。
 - 直接打开或刷新 `/cpa-xingtu/app/...` 时，Pages 先返回 `404.html`，再跳回入口并在 Vue Router 启动前恢复原路径、查询参数与锚点；不应落回首页
 - 详细 fixture 说明见 `public/fixtures/README.md`
 - 静态 Pages 无法承载 Flask、MySQL、Redis、Neo4j 或 Celery；需要真实服务时单独部署后端并完成安全、数据和任务验收
