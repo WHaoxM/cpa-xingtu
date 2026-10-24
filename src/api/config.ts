@@ -28,7 +28,7 @@ export function isMockMode(): boolean {
 export function getApiBaseUrl(): string {
   const raw = import.meta.env.VITE_API_BASE_URL
   if (raw === undefined || raw === null) {
-    return getApiMode() === 'http' ? '' : 'http://127.0.0.1:5001'
+    return ''
   }
   const trimmed = String(raw).trim()
   if (trimmed === '' || trimmed === '/' || trimmed === '.') {

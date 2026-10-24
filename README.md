@@ -34,7 +34,7 @@
 | 学生 | student001 | 123456 |
 | 管理员 | admin001 | 123456 |
 
-> GitHub Pages 默认 **`VITE_API_MODE=mock`**，登录页会显示「演示数据 · 无需后端」，数据走 `public/fixtures/`，不连接后端；若为 Actions 配置 `CPA_BACKEND_API_BASE_URL` 仓库变量，则 Pages 构建切换为 HTTP 模式。
+> GitHub Pages 生产构建默认 **`VITE_API_MODE=http`** 并请求 `https://api.xingtulabs.top`；可用 Actions 仓库变量 `CPA_BACKEND_API_BASE_URL` 覆盖。离线演示需显式运行 `npm run dev:mock` 或设置 `VITE_API_MODE=mock`。
 > 本地纯演示：`npm run dev:mock`；独立的宿主机后端联调前端：`npm run dev:backend`（仅监听 `127.0.0.1:5174`）。
 
 统一任务侧栏目前为显式联调能力：在 HTTP 模式设置 `VITE_TASK_COMPANION=true`，并连接已迁移到 `0019_conversation_task_context`、运行对应 Celery worker 的后端。Agent 任务控制面板还要求运行 `0021_agent_run_task_contract_control` 迁移；该面板按 run 回读契约/计划版本、暂停/取消/恢复，且仅在保存回执与计划摘要一致时显示已保存成果。默认关闭，不自动迁移正常库或重启共享服务。原 AI 助手／专家与页面设计继续保留；开关不是完整业务验收通过的声明，实际范围见主仓 `docs/reports/2026-10-22-unified-task-orchestration-replay.md`。
@@ -47,7 +47,7 @@
 - 三角色权限体系（学生 / 管理员 / 公共页面）
 - D3.js + Three.js 数据可视化（雷达图、弦图、Treemap、3D 书架、力导向气泡图）
 
-**数据说明**：Pages CI 未设置 API origin 时使用 Mock（`public/fixtures` + `src/mock`），可独立运行；配置 Actions 变量 `CPA_BACKEND_API_BASE_URL` 后才会请求独立部署的后端。`npm run dev` 则读取 `.env.development`，**默认是 HTTP 模式**，不是离线演示；离线请用 `npm run dev:mock`。本机真实联调使用 `npm run dev:backend`，不要把 Mock 登录当成正式后端账号。
+**数据说明**：Pages 生产构建默认请求 `https://api.xingtulabs.top`；配置 Actions 变量 `CPA_BACKEND_API_BASE_URL` 可覆盖后端 origin。离线 fixtures 仅在显式 Mock 模式使用。`npm run dev` 读取 `.env.development`，**默认是 HTTP 模式**；离线请用 `npm run dev:mock`。本机真实联调使用 `npm run dev:backend`，不要把 Mock 登录当成正式后端账号。
 
 ### 🎯 我们的愿景
 
@@ -126,8 +126,7 @@ npm run dev:mock
 # 类型检查
 npm run type-check
 
-# 生产构建（Pages 默认 VITE_API_MODE=mock；配置后端 origin 才切换 HTTP；本地须确认没有
-# .env.local 等覆盖文件将模式改回 http）
+# 生产构建（Pages 使用 https://api.xingtulabs.top；本地环境变量可以覆盖）
 npm run build
 
 # 预览构建产物
@@ -148,7 +147,7 @@ npm run dev:backend
 # → http://127.0.0.1:5174
 ```
 
-`backend-dev` 模式读取 `.env.backend-dev`：`VITE_API_MODE=http`、同源 `/api` 经 Vite 代理到 `127.0.0.1:5001`。代理不注入开发身份；页面通过 `/api/auth/csrf`、注册/登录、服务端 Cookie 与 `/api/auth/me` 使用平台账号。学生可在登录页注册新账号，管理员仅由后端可信 CLI 开户；HTTP 模式不会在认证失败时退回演示账号。新账号的 `acct_*` ID 不自动认领历史 `student_001` 资料，须自行导入和确认简历。公开 Pages 仍使用纯 Mock 登录。
+`backend-dev` 模式读取 `.env.backend-dev`：`VITE_API_MODE=http`、同源 `/api` 经 Vite 开发代理到 `127.0.0.1:5001`。代理不注入开发身份；页面通过 `/api/auth/csrf`、注册/登录、服务端 Cookie 与 `/api/auth/me` 使用平台账号。学生可在登录页注册新账号，管理员仅由后端可信 CLI 开户；HTTP 模式不会在认证失败时退回演示账号。新账号的 `acct_*` ID 不自动认领历史 `student_001` 资料，须自行导入和确认简历。生产 Pages 使用配置的 HTTPS API origin。
 
 后端联调首页的完成标记只依据 owner 范围内的服务端画像与已完成报告；本地演示学习记录、简历缓存和计时器不充当业务完成证据。服务端画像与学生资料不一致时，首页显式提示状态异常，不显示“已完成”。
 

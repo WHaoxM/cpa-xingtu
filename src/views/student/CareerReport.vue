@@ -26,7 +26,7 @@ import { getReportList } from '@/api/report'
 import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
 import { hasServerReportCollection } from '@/composables/agentResourceHandoffContract'
 import { useCareerClimbing } from '@/composables/useCareerClimbing'
-import { personalClimbLayout } from '@/composables/careerClimbingContract'
+import CareerRelationGraph from '@/components/career/CareerRelationGraph.vue'
 import CareerStartingPoint from '@/components/career/CareerStartingPoint.vue'
 import ServerPortraitDetail from '@/components/reports/ServerPortraitDetail.vue'
 import { followupLocation } from '@/utils/portraitFollowup'
@@ -984,7 +984,7 @@ function isSkillMastered(skill: string): boolean {
 }
 
 const climbLayout = computed<{ nodes: ClimbNode[]; ropes: ClimbRope[] }>(() => {
-  if (isRealPath.value) return personalClimbLayout(climb.selected?.role || '', climb.positioning,climb.promotionPaths)
+  if (isRealPath.value) return { nodes: [], ropes: [] }
   if (!selectedJob.value) return { nodes: [], ropes: [] }
   const selId = selectedJob.value.id
   const selLineId = selectedJob.value.lineId
@@ -1653,11 +1653,12 @@ onBeforeUnmount(() => {
       <div id="career-path-wall" class="cr-left" tabindex="-1">
         <div class="cr-panel-title">
           <Icon icon="lucide:mountain" :width="12"/>
-          <span>职业攀岩路径</span>
-          <span v-if="hasClimbTarget" class="cr-panel-sub">{{ isRealPath ? climb.role : selectedJob?.title }} 所在线路</span>
+          <span>{{ isRealPath ? '职业关联图谱' : '职业攀岩路径' }}</span>
+          <span v-if="hasClimbTarget" class="cr-panel-sub">{{ isRealPath ? '关联方向 · ' + climb.role : selectedJob?.title + ' 所在线路' }}</span>
         </div>
 
-        <div class="cr-cw-wrap">
+        <CareerRelationGraph v-if="isRealPath" :focus-role="climb.role" compact @select-role="climb.choose" />
+        <div v-else class="cr-cw-wrap">
           <svg
             v-if="climbLayout.nodes.length"
             ref="climbingSvgEl"
@@ -1871,7 +1872,6 @@ onBeforeUnmount(() => {
             <div class="cw-legend-item"><span class="cw-legend-dot cw-legend-dot--mastered"></span><span>已掌握</span></div>
             <div class="cw-legend-item"><span class="cw-legend-dot cw-legend-dot--unmastered"></span><span>未掌握</span></div>
           </div>
-          <div v-else class="cw-legend-overlay cw-legend-personal"><span>从经历 → 下一步 → 目标方向</span><small>路线表达探索顺序，不代表职级或距离。</small><small v-if="climb.promotionState==='ready'">右侧为目录晋升参考，不代表本人职级。</small><small v-else-if="climb.selected">{{ climb.promotionState==='loading' ? '正在读取晋升参考…' : climb.promotionState==='unavailable' ? '晋升参考暂时无法读取。' : '现有目录暂未提供此方向的晋升链。' }}</small></div>
           <div v-if="isRealPath && hasClimbTarget && wallNoteOpen" class="cw-personal-note" role="status">
             <button class="cw-sp-close" aria-label="关闭路线说明" @click="wallNoteOpen=false"><Icon icon="lucide:x" :width="16" /></button>
             <strong>{{ selectedPathNode.startsWith('reference-') ? climbLayout.nodes.find(n=>n.id===selectedPathNode)?.title : selectedPathNode==='personal-target' ? climb.role : selectedPathNode==='personal-next' ? '先做的一件事' : '从已有经历开始' }}</strong>
@@ -1910,7 +1910,7 @@ onBeforeUnmount(() => {
       <div class="cr-center">
 
         <div v-if="isRealPath" class="cr-hero cr-real-heading">
-          <div class="cr-hero__info"><div class="cr-hero-job">{{ climb.selected ? '走向'+climb.role+'，我从哪里开始？' : '把已经做过的事，接到想走的方向' }}</div><p class="cr-hero-desc">先看本人经历如何衔接，再决定补清一段经历，还是亲自试一次。</p></div>
+          <div class="cr-hero__info"><div class="cr-hero-job">{{ climb.selected ? '围绕「'+climb.role+'」查看职业关联' : '选择一个职业方向' }}</div><p class="cr-hero-desc">图中只显示已发布职业资料共享的规范技能。个人进展另依据本人确认资料展示，不代表晋升顺序或岗位匹配。</p></div>
           <button type="button" class="cr-real-button cr-real-button--quiet cr-source-refresh" :disabled="climb.loading" @click="climb.load">刷新资料</button>
         </div>
 

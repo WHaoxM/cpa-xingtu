@@ -34,7 +34,7 @@
 | Student | student001 | 123456 |
 | Admin | admin001 | 123456 |
 
-> GitHub Pages CI forces **`VITE_API_MODE=mock`** (fixtures only, no backend). Local mock preview: `npm run dev:mock`. Plain `npm run dev` reads `.env.development` and defaults to **HTTP**, not Mock. Use the isolated `npm run dev:backend` for account-backed integration.
+> GitHub Pages production builds use **`VITE_API_MODE=http`** and default to `https://api.xingtulabs.top`; the `CPA_BACKEND_API_BASE_URL` Actions variable can override the API origin. For offline fixtures, explicitly run `npm run dev:mock`. Plain `npm run dev` reads `.env.development` and defaults to **HTTP**. Use the isolated `npm run dev:backend` for account-backed local integration.
 
 ## ⚡ Overview
 
@@ -44,7 +44,7 @@ This demo repository showcases the **frontend interactive layer** of the CPA-Age
 - Three-role permission system (Student / Admin / Public pages)
 - D3.js + Three.js data visualization (radar charts, chord diagrams, treemaps, 3D bookshelves, force-directed bubble charts)
 
-**Data note**: The Pages build uses Mock data; some pages can use backend APIs in HTTP mode while other pages still use fixtures or local demo data. Mock login is not a backend account.
+**Data note**: The Pages production build uses the configured HTTPS API origin, defaulting to `https://api.xingtulabs.top`. Some features may still have separate fixture or demo behavior; Mock login is not a backend account.
 
 ### 🎯 Our Vision
 
