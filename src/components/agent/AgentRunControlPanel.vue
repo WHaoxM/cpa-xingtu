@@ -2,12 +2,14 @@
 import { computed, ref, watch } from 'vue'
 import {
   canCancelTask, canPauseTask, canResumeTask, canReviseTask,
-  controlRequest, currentPlanCanBeSaved, statusLabel,
+  controlRequest, currentPlanCanBeSaved, isCancellationPending, statusLabel,
   type AgentRunControlRequest, type AgentRunControlSnapshot, type AgentRunTaskPatch,
 } from './agentRunControlModel'
 
 const props = withDefaults(defineProps<{
   run: AgentRunControlSnapshot | null
+  readOnly?: boolean
+  showFinalReply?: boolean
   savedPlan?: AgentRunControlSnapshot['current_plan']
   busy?: boolean
   error?: string
@@ -16,7 +18,7 @@ const props = withDefaults(defineProps<{
     plan_version: number
     status: 'saving' | 'uncertain'
   } | null
-}>(), { savedPlan: null, busy: false, error: '', saveState: null })
+}>(), { readOnly: false, showFinalReply: true, savedPlan: null, busy: false, error: '', saveState: null })
 
 const emit = defineEmits<{
   control: [request: AgentRunControlRequest]
@@ -30,9 +32,10 @@ const goalEditorOpen = ref(false)
 const goalDraft = ref('')
 const selectedConstraint = ref('')
 const constraintDraft = ref('')
+const cancelConfirmOpen = ref(false)
 const displayedStatus = computed(() => props.run ? statusLabel(props.run.status) : '')
-const canRevise = computed(() => !!props.run && canReviseTask(props.run))
-const canSave = computed(() => !!props.run && currentPlanCanBeSaved(props.run))
+const canRevise = computed(() => !props.readOnly && !!props.run && canReviseTask(props.run))
+const canSave = computed(() => !props.readOnly && !!props.run && currentPlanCanBeSaved(props.run))
 const verifiedSavedPlan = computed(() => {
   const run = props.run
   const plan = props.savedPlan
@@ -55,6 +58,13 @@ watch(() => props.run?.current_contract_revision, () => {
   selectedConstraint.value = ''
   constraintDraft.value = ''
   goalEditorOpen.value = false
+})
+
+watch(() => [props.run?.run_id, props.run?.status] as const, () => {
+  const run = props.run
+  if (!run || isCancellationPending(run) || ['completed', 'failed', 'cancelled', 'partial'].includes(run.status)) {
+    cancelConfirmOpen.value = false
+  }
 })
 
 function submitGoal() {
@@ -98,6 +108,13 @@ function confirmSave() {
     plan_version: run.current_plan!.plan_version,
   })
 }
+
+function confirmCancel() {
+  const run = props.run
+  if (!run || props.busy || !canCancelTask(run)) return
+  emit('control', controlRequest(run, 'cancel'))
+  cancelConfirmOpen.value = false
+}
 </script>
 
 <template>
@@ -108,7 +125,7 @@ function confirmSave() {
         <span>任务 {{ run.run_id }}</span>
       </div>
       <strong class="agent-run-control__status" role="status">{{ displayedStatus }}</strong>
-      <button class="agent-run-control__refresh" type="button" :disabled="busy" @click="emit('refresh')">
+      <button v-if="!readOnly" class="agent-run-control__refresh" type="button" :disabled="busy" @click="emit('refresh')">
         重新读取
       </button>
     </header>
@@ -117,7 +134,7 @@ function confirmSave() {
       当前任务约束第 {{ run.current_contract_revision }} 版
       <span v-if="run.current_plan">· 执行计划第 {{ run.current_plan.plan_version }} 版</span>
       <span v-if="run.pause_requested">· 已记录暂停请求</span>
-      <span v-if="run.cancel_requested">· 已记录取消请求</span>
+      <span v-if="isCancellationPending(run)">· 已记录取消请求</span>
     </p>
 
     <section v-if="run.task_contract" class="agent-run-control__section" aria-labelledby="agent-run-goal">
@@ -178,7 +195,7 @@ function confirmSave() {
       </ol>
     </section>
 
-    <section v-if="run.final_result?.reply" class="agent-run-control__section" aria-labelledby="agent-run-result">
+    <section v-if="showFinalReply && run.final_result?.reply" class="agent-run-control__section" aria-labelledby="agent-run-result">
       <h4 id="agent-run-result">当前结果</h4>
       <p class="agent-run-control__result">{{ run.final_result.reply }}</p>
       <small v-if="run.final_result_checkpoint">结果已保存为暂停检查点，恢复时会继续核对，不会重做此调用。</small>
@@ -194,7 +211,7 @@ function confirmSave() {
             <small v-if="saved.contract_revision !== run.current_contract_revision">这是较早的契约版本</small>
             <small v-if="saved.saved_at">保存时间：{{ saved.saved_at }}</small>
           </div>
-          <button type="button" @click="useSavedPlan(saved.plan_version)">读取此版本</button>
+          <button v-if="!readOnly" type="button" @click="useSavedPlan(saved.plan_version)">读取此版本</button>
         </li>
       </ul>
     </section>
@@ -231,7 +248,7 @@ function confirmSave() {
       </template>
     </section>
 
-    <footer class="agent-run-control__actions" aria-label="任务控制">
+    <footer v-if="!readOnly" class="agent-run-control__actions" aria-label="任务控制">
       <button v-if="canPauseTask(run)" type="button" :disabled="busy"
         @click="emit('control', controlRequest(run, 'pause'))">暂停任务</button>
       <button v-else-if="run.status === 'pause_requested' || run.status === 'paused'" type="button" disabled>
@@ -239,13 +256,19 @@ function confirmSave() {
       </button>
       <button v-if="canResumeTask(run)" type="button" :disabled="busy"
         @click="emit('resume', { expected_revision: run.current_contract_revision })">恢复任务</button>
-      <button v-if="run.cancel_requested || run.status === 'cancel_requested'" class="agent-run-control__cancel"
+      <button v-if="isCancellationPending(run)" class="agent-run-control__cancel"
         type="button" disabled>正在等待取消安全点</button>
-      <button v-else-if="canCancelTask(run)" class="agent-run-control__cancel" type="button" :disabled="busy"
-        @click="emit('control', controlRequest(run, 'cancel'))">取消任务</button>
+      <button v-else-if="canCancelTask(run) && !cancelConfirmOpen" class="agent-run-control__cancel" type="button" :disabled="busy"
+        @click="cancelConfirmOpen = true">取消任务</button>
       <button type="button" :disabled="busy"
         @click="emit('control', controlRequest(run, 'progress_query'))">查看最新进展</button>
     </footer>
+
+    <div v-if="!readOnly && cancelConfirmOpen && canCancelTask(run)" class="agent-run-control__cancel-confirm" role="group" aria-label="确认取消任务">
+      <p>取消会在安全节点生效，任务可能需要短暂时间才能停止。</p>
+      <button class="agent-run-control__cancel-confirm-action" type="button" :disabled="busy" @click="confirmCancel">确认取消</button>
+      <button type="button" :disabled="busy" @click="cancelConfirmOpen = false">继续任务</button>
+    </div>
 
     <p v-if="error" class="agent-run-control__error" role="alert">{{ error }}</p>
   </section>
@@ -346,6 +369,18 @@ function confirmSave() {
 .agent-run-control__save p { margin: 5px 0 10px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .agent-run-control__actions { flex-wrap: wrap; }
 .agent-run-control__cancel { color: var(--color-danger, #9a4336) !important; }
+.agent-run-control__cancel-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #9a4336) 35%, var(--color-border, #ded8ce));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-danger, #9a4336) 5%, var(--color-surface, #fffdf8));
+}
+.agent-run-control__cancel-confirm p { flex: 1 1 100%; margin: 0; font-size: 12px; line-height: 1.5; }
+.agent-run-control__cancel-confirm .agent-run-control__cancel-confirm-action { color: var(--color-danger, #9a4336); }
 .agent-run-control__error { margin: 0; color: var(--color-danger, #9a4336); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 @media (max-width: 560px) {
   .agent-run-control__section { padding: 12px; }

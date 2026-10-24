@@ -101,3 +101,11 @@ test('natural-language follow-up is owner-run revision bound and replayable by o
   assert.throws(() => api.submitAgentRunFollowup('run/5', request, ''), /Idempotency-Key/)
   assert.throws(() => api.submitAgentRunFollowup('run/6', request, 'followup-key-6'), /task_id/)
 })
+
+test('classified follow-up recovery is run-bound and never transports a client key', async () => {
+  calls.length = 0
+  await api.recoverClassifiedAgentRunFollowup('run/7')
+  assert.deepEqual(calls[0], [
+    'POST', '/api/agent/runs/run%2F7/followup/recover', {},
+  ])
+})

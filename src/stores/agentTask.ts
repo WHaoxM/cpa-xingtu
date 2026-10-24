@@ -7,20 +7,26 @@ import {
  readTaskContext,bindTaskResources,submitTaskRun,readTaskRun,readTaskEvents,
  readAgentRunPlan,controlAgentRun as postAgentRunControl,resumeAgentRun as postAgentRunResume,
  saveAgentRunArtifact as postAgentRunSave,
- submitAgentRunFollowup,
- type TaskContext,type TaskReference,type AgentRunFollowupRequest,type AgentRunFollowupResponse,
+  submitAgentRunFollowup,recoverClassifiedAgentRunFollowup,
+  type TaskContext,type TaskReference,type AgentRunFollowupRequest,type AgentRunFollowupResponse,
+  type AgentRunFollowupRecoveryResponse,
+  type AgentRunEvent,
 } from '@/api/agentTask'
-import {currentPlanCanBeSaved} from '@/components/agent/agentRunControlModel'
+import {currentPlanCanBeSaved,statusLabel} from '@/components/agent/agentRunControlModel'
 import type {AgentRunControlRequest,AgentRunControlSnapshot} from '@/components/agent/agentRunControlModel'
+import {appendContiguousAgentRunEvents} from '@/components/agent/agentRunEventModel'
 import type {MessagePart} from '@/types/ai'
 import {useChatAttachments} from '@/composables/useChatAttachments'
 import {taskCompanionEnabled} from '@/composables/taskCompanionFeature'
-
 type PendingAgentRunOperation={
  ownerId:string;sessionId:string;runId:string;kind:'control'|'save';fingerprint:string;key:string
  contractRevision?:number;planVersion?:number;planSha256?:string
 }
 type AgentRunSaveState={contract_revision:number;plan_version:number;status:'saving'|'uncertain'}
+type AgentRunTimelineState={
+ run:AgentRunControlSnapshot|null;events:AgentRunEvent[];cursor:number;latestSeq:number
+ syncState:'idle'|'loading'|'syncing'|'synced'|'stale'|'error';syncError:string;lastSyncedAt:string|null
+}
 type FollowupRecord={
  ownerId:string;sessionId:string;runId:string;key:string;request:AgentRunFollowupRequest
  userMessageId:string;assistantMessageId:string;createdAt:string
@@ -33,6 +39,28 @@ type FollowupRecord={
 const pendingAgentRunStorageKey='cpa.agentRunControl.pending.v1'
 const agentRunFollowupStorageKey='cpa.agentRunFollowup.v1'
 const activeAgentRunStatuses=new Set(['queued','planning','planned','running','steps_completed','finalizing','pause_requested','cancel_requested'])
+
+function mergeAgentRunSnapshots(known:AgentRunControlSnapshot|null,incoming:AgentRunControlSnapshot):AgentRunControlSnapshot{
+ if(!known||known.run_id!==incoming.run_id)return incoming
+ const olderTimestamp=!!(known.updated_at&&incoming.updated_at
+  &&Date.parse(incoming.updated_at)<Date.parse(known.updated_at))
+ const contractRegressed=incoming.current_contract_revision<known.current_contract_revision
+ const planRegressed=incoming.current_plan_version<known.current_plan_version
+ const merged:AgentRunControlSnapshot=olderTimestamp?{...incoming,...known}:{...known,...incoming}
+ if(contractRegressed){merged.current_contract_revision=known.current_contract_revision;merged.task_contract=known.task_contract}
+ else if(!incoming.task_contract&&known.task_contract?.revision===merged.current_contract_revision)merged.task_contract=known.task_contract
+ if(planRegressed){merged.current_plan_version=known.current_plan_version;merged.current_plan=known.current_plan}
+ else if(incoming.current_plan_version===known.current_plan_version&&!incoming.current_plan
+  &&known.current_plan?.plan_version===merged.current_plan_version
+  &&known.current_plan.metadata?.task_contract_revision===merged.current_contract_revision)
+  merged.current_plan=known.current_plan
+ if(incoming.final_result==null&&known.final_result)merged.final_result=known.final_result
+ const artifacts=new Map<string,NonNullable<AgentRunControlSnapshot['saved_artifacts']>[number]>()
+ for(const item of [...(known.saved_artifacts||[]),...(incoming.saved_artifacts||[])])
+  artifacts.set(item.confirmation_id||[item.artifact_id,item.contract_revision,item.plan_version,item.plan_sha256].join('|'),item)
+ merged.saved_artifacts=[...artifacts.values()].sort((a,b)=>a.plan_version-b.plan_version||a.contract_revision-b.contract_revision)
+ return merged
+}
 
 function readPendingAgentRunOperations():PendingAgentRunOperation[]{
  try{
@@ -106,6 +134,7 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
  const opened=ref(false),draft=ref(''),busy=ref(false),error=ref(''),progress=ref(''),context=ref<TaskContext|null>(null)
  const available=ref<boolean|null>(null),sessionId=ref(''),transfer=ref('')
  const activeRunId=ref(''),runControlSnapshot=ref<AgentRunControlSnapshot|null>(null)
+  const runTimelineById=ref<Record<string,AgentRunTimelineState>>({})
  const savedRunPlan=ref<AgentRunControlSnapshot['current_plan']>(null)
  const runControlBusy=ref(false),runControlError=ref(''),runSaveState=ref<AgentRunSaveState|null>(null)
   const followupRecords=ref<FollowupRecord[]>(readAgentRunFollowups())
@@ -118,12 +147,24 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
   return !busy.value&&!transfer.value&&last?.status==='failed'?last.message:''
  })
  let generation=0,runReadSeq=0,savedPlanReadSeq=0,pollingKey='',pollingPromise:Promise<void>|null=null,admitting=false,pending:{key:string;message:string;version:number;files:string[]}|null=null
-  const followupInFlight=new Set<string>()
+  const followupInFlight=new Set<string>(),followupRecoveryInFlight=new Set<string>()
  let retryHandoff:{session:string;key:string;refs:TaskReference[];revision:number}|null=null
  const owner=()=>user.currentUser?.id||''
  const current=(e:number,sid:string)=>e===generation&&!!owner()&&sid===sessionId.value
  const runCurrent=(e:number,sid:string,runId:string)=>current(e,sid)&&activeRunId.value===runId
+  const timelineLoadPromises=new Map<string,Promise<AgentRunTimelineState|null>>()
  const isActiveRun=(run:AgentRunControlSnapshot)=>activeAgentRunStatuses.has(run.status)
+  function ensureRunTimeline(runId:string):AgentRunTimelineState{
+   let state=runTimelineById.value[runId]
+   if(!state){
+    state={run:null,events:[],cursor:0,latestSeq:0,syncState:'idle',syncError:'',lastSyncedAt:null}
+    runTimelineById.value={...runTimelineById.value,[runId]:state}
+   }
+   return state
+  }
+  function canReadRunTimeline(runId:string):boolean{
+   return runId===activeRunId.value||!!context.value?.turns?.some(turn=>turn.run_id===runId)
+  }
   const followupIdentity=(row:Pick<FollowupRecord,'ownerId'|'sessionId'|'runId'|'key'>)=>([row.ownerId,row.sessionId,row.runId,row.key].join('|'))
   const unresolvedFollowup=computed(()=>followupRecords.value.find(row=>row.ownerId===owner()&&row.sessionId===sessionId.value
    &&row.runId===activeRunId.value&&(row.status==='pending'||row.status==='needs_reconciliation'))||null)
@@ -174,13 +215,17 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
     upsertFollowupMessage(row,'assistant',row.displayText)
    }
   }
- function clearRunControlState(){
+ function clearRunControlState(clearTimelines=false){
   runReadSeq++;savedPlanReadSeq++;activeRunId.value='';runControlSnapshot.value=null;savedRunPlan.value=null
   runControlBusy.value=false;runControlError.value='';runSaveState.value=null
+  if(clearTimelines){runTimelineById.value={};timelineLoadPromises.clear()}
  }
  function applyRunSnapshot(run:AgentRunControlSnapshot,e:number,sid:string){
   if(!runCurrent(e,sid,run.run_id))return false
-  runReadSeq++;runControlSnapshot.value=run
+   const timeline=ensureRunTimeline(run.run_id)
+   const known=runControlSnapshot.value?.run_id===run.run_id?runControlSnapshot.value:timeline.run
+   const latest=mergeAgentRunSnapshots(known,run)
+   runReadSeq++;runControlSnapshot.value=latest;timeline.run=latest
   const pendingSaves=readPendingAgentRunOperations().filter(row=>row.ownerId===owner()&&row.sessionId===sid&&row.runId===run.run_id&&row.kind==='save')
   for(const operation of pendingSaves){
    const receipt=(run.saved_artifacts||[]).find(item=>item.contract_revision===operation.contractRevision&&item.plan_version===operation.planVersion&&(!operation.planSha256||item.plan_sha256===operation.planSha256))
@@ -197,11 +242,14 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
  async function readRunSnapshot(runId:string,e:number,sid:string,showError=true){
   const requestedOwner=owner(),seq=++runReadSeq
   try{
-   const response=await readTaskRun(runId)
+  const response=await readTaskRun(runId)
    if(!runCurrent(e,sid,runId)||owner()!==requestedOwner||seq!==runReadSeq)return null
-   const run=response.data?.run
-   if(!run||run.run_id!==runId)throw Error('任务回读未返回对应的运行记录')
-   runControlSnapshot.value=run
+   const incoming=response.data?.run
+   if(!incoming||incoming.run_id!==runId)throw Error('任务回读未返回对应的运行记录')
+   const timeline=ensureRunTimeline(incoming.run_id)
+   const known=runControlSnapshot.value?.run_id===runId?runControlSnapshot.value:timeline.run
+   const run=mergeAgentRunSnapshots(known,incoming)
+   runControlSnapshot.value=run;timeline.run=run
    const saves=readPendingAgentRunOperations().filter(row=>row.ownerId===requestedOwner&&row.sessionId===sid&&row.runId===runId&&row.kind==='save')
    let receiptFound=false
    for(const operation of saves){
@@ -221,8 +269,59 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
    return null
   }
  }
+  async function syncAgentRunTimeline(runId:string,e:number,sid:string,force=true):Promise<AgentRunTimelineState|null>{
+   const requestedOwner=owner()
+   if(!runId||!current(e,sid)||!canReadRunTimeline(runId))return null
+   const state=ensureRunTimeline(runId)
+   if(!force&&state.syncState==='synced'&&state.cursor>=state.latestSeq)return state
+   const key=[requestedOwner,sid,runId].join('|')
+   const pendingRead=timelineLoadPromises.get(key)
+   if(pendingRead)return pendingRead
+   state.syncState=state.events.length?'syncing':'loading';state.syncError=''
+   const load=(async()=>{
+    while(current(e,sid)&&owner()===requestedOwner){
+     const response=await readTaskEvents(runId,state.cursor,200)
+     if(!current(e,sid)||owner()!==requestedOwner)return null
+     const page=response.data
+     if(!page||page.run?.run_id!==runId||!Number.isInteger(page.latest_seq)||!Number.isInteger(page.cursor))
+      throw Error('任务记录返回了不匹配的运行状态')
+     const appended=appendContiguousAgentRunEvents(state.events,state.cursor,page.events||[])
+     if(appended.gap||page.cursor!==appended.cursor)
+      throw Error('任务执行记录序号不连续，已停止应用后续事件')
+     if(page.cursor<state.cursor||page.latest_seq<page.cursor)
+      throw Error('任务执行记录游标无效')
+     const knownRun=runControlSnapshot.value?.run_id===runId?runControlSnapshot.value:state.run
+     const currentRun=mergeAgentRunSnapshots(knownRun,page.run)
+     state.events=appended.events;state.cursor=appended.cursor;state.latestSeq=page.latest_seq;state.run=currentRun
+     if(runId===activeRunId.value&&runCurrent(e,sid,runId))applyRunSnapshot(currentRun,e,sid)
+     if(page.has_more){
+      if(!page.events.length)throw Error('任务执行记录分页没有前进')
+      continue
+     }
+     if(state.cursor<state.latestSeq)throw Error('任务执行记录尚未完整读取')
+     state.syncState='synced';state.syncError='';state.lastSyncedAt=new Date().toISOString()
+     return state
+    }
+    return null
+   })().catch(()=>{
+    if(current(e,sid)&&owner()===requestedOwner){
+     state.syncState=state.events.length?'stale':'error'
+     state.syncError=state.events.length?'连接暂时中断，保留上次同步的记录。':'暂时无法读取这次任务记录。'
+    }
+    return state
+   })
+   let tracked:Promise<AgentRunTimelineState|null>
+   tracked=load.finally(()=>{if(timelineLoadPromises.get(key)===tracked)timelineLoadPromises.delete(key)})
+   timelineLoadPromises.set(key,tracked)
+   return tracked
+  }
+  function loadAgentRunTimeline(runId:string){
+   return syncAgentRunTimeline(runId,generation,sessionId.value,false)
+  }
  function updateRunActivity(run:AgentRunControlSnapshot,e:number,sid:string,startPolling=true){
   if(!runCurrent(e,sid,run.run_id))return
+   ensureRunTimeline(run.run_id).run=run
+   void syncAgentRunTimeline(run.run_id,e,sid,false)
   if(isActiveRun(run)){
    busy.value=true
    if(!progress.value)progress.value='正在核对执行进展'
@@ -239,12 +338,49 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
    if(!data||typeof data!=='object'||!('operation_status' in data))return null
    return data as AgentRunFollowupResponse
   }
-  function runFromFollowupResponse(response:AgentRunFollowupResponse):AgentRunControlSnapshot|null{
+  function runFromFollowupResponse(response:AgentRunFollowupResponse|AgentRunFollowupRecoveryResponse):AgentRunControlSnapshot|null{
    const envelope=response.run as unknown
    if(!envelope||typeof envelope!=='object')return null
    const run='run' in envelope?(envelope as {run?:unknown}).run:envelope
    return run&&typeof run==='object'&&'run_id' in run?run as AgentRunControlSnapshot:null
   }
+   async function recoverClassifiedFollowup(sid:string,runId:string,e:number){
+    if(!runCurrent(e,sid,runId))return null
+    const requestedOwner=owner(),identity=[requestedOwner,sid,runId].join('|')
+    if(followupRecoveryInFlight.has(identity))return null
+    followupRecoveryInFlight.add(identity)
+    try{
+     const response=await recoverClassifiedAgentRunFollowup(runId)
+     if(!runCurrent(e,sid,runId)||owner()!==requestedOwner)return null
+     const payload=response.data
+     if(!payload)return null
+     const latest=runFromFollowupResponse(payload)
+     const request=payload.request
+     if(payload.operation_status!=='completed'||payload.result?.action!=='contract_revised'
+       ||!request||request.task_id!==runId||!Number.isInteger(request.expected_revision)
+       ||typeof request.message!=='string')return null
+     if(!latest||latest.run_id!==runId)return null
+     applyRunSnapshot(latest,e,sid)
+     const existing=followupRecords.value.find(row=>row.ownerId===requestedOwner&&row.sessionId===sid&&row.runId===runId
+      &&row.request.expected_revision===request.expected_revision&&row.request.message===request.message
+      &&(row.status==='pending'||row.status==='needs_reconciliation'))
+     const fingerprint=await agentRunFingerprint({runId,expected_revision:request.expected_revision,message:request.message})
+     if(!runCurrent(e,sid,runId)||owner()!==requestedOwner)return null
+     const row:FollowupRecord=existing||{
+      ownerId:requestedOwner,sessionId:sid,runId,key:`recovered-${fingerprint}`,
+      request,userMessageId:`agent-followup-user-${runId}-recovered-${fingerprint}`,
+      assistantMessageId:`agent-followup-assistant-${runId}-recovered-${fingerprint}`,
+      createdAt:new Date().toISOString(),status:'completed',displayText:'',
+     }
+     row.status='completed';row.operationStatus='completed';row.result=payload.result
+     row.displayText=formatFollowupResult(row,latest)
+     presentFollowup(row,row.displayText)
+     return latest
+    }catch{
+     if(runCurrent(e,sid,runId))runControlError.value='上一条已分类跟进暂未恢复；没有新建请求或再次调用模型。请稍后重新读取任务。'
+     return null
+    }finally{followupRecoveryInFlight.delete(identity)}
+   }
   function followupProgressText(status:string){
    if(status==='waiting_safe_point')return '已接收这条跟进，正在等待当前任务到达安全点。'
    if(status==='classifying')return '正在核对这条跟进与当前任务约束。'
@@ -458,14 +594,14 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
   }
  watch(()=>user.currentUser?.id,()=>{
   generation++;opened.value=false;draft.value='';busy.value=false;error.value='';context.value=null;sessionId.value='';
-  pending=null;retryHandoff=null;pollingKey='';pollingPromise=null;available.value=null;transfer.value='';progress.value='';clearRunControlState()
+   pending=null;retryHandoff=null;pollingKey='';pollingPromise=null;available.value=null;transfer.value='';progress.value='';clearRunControlState(true)
    followupRecords.value=readAgentRunFollowups();followupBusy.value=false;followupInFlight.clear()
   media.clearAttachments()
   mediaMutation.value=false
  },{flush:'sync'})
  watch(()=>chat.activeSessionId,id=>{
    if(!taskCompanionEnabled)return
-   if(id&&id!==sessionId.value){generation++;media.clearAttachments();mediaMutation.value=false;sessionId.value=id;context.value=null;pending=null;draft.value='';busy.value=false;followupBusy.value=false;followupRecords.value=readAgentRunFollowups();error.value='';pollingKey='';pollingPromise=null;clearRunControlState();void restore()}
+   if(id&&id!==sessionId.value){generation++;media.clearAttachments();mediaMutation.value=false;sessionId.value=id;context.value=null;pending=null;draft.value='';busy.value=false;followupBusy.value=false;followupRecords.value=readAgentRunFollowups();error.value='';pollingKey='';pollingPromise=null;clearRunControlState(true);void restore()}
  })
  function parts(reply:string,evidence=result.value?.evidence_summary):MessagePart[]{
   const sources=(evidence||[]).filter(r=>r&&typeof r.name==='string')
@@ -505,13 +641,14 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
    }
    if(!runId){busy.value=false;progress.value='';return}
    runControlError.value=''
-   const run=typeof preferredRun==='object'&&preferredRun?preferredRun:await readRunSnapshot(runId,e,sid,true)
+    let run=typeof preferredRun==='object'&&preferredRun?preferredRun:await readRunSnapshot(runId,e,sid,true)
    if(!current(e,sid)||activeRunId.value!==runId)return
    if(run){
     if(typeof preferredRun==='object'&&preferredRun)applyRunSnapshot(run,e,sid)
+     if(run.status!=='needs_reconciliation')run=await recoverClassifiedFollowup(sid,runId,e)||run
     updateRunActivity(run,e,sid,startPolling)
     if(run.status==='needs_reconciliation')error.value='这次任务需要先核对执行结果，暂不重复提交。'
-    else if(['failed','cancelled','partial','unavailable'].includes(run.status))error.value=run.final_result?.reply||'这次执行尚未完整完成，请先核对进展。'
+    else if(['failed','cancelled','partial','unavailable'].includes(run.status))error.value='这次执行尚未完整完成，请先核对进展。'
     else if(run.status==='completed')error.value=''
      if(run.status!=='needs_reconciliation')void reconcileStoredFollowups(sid,runId,e)
    }
@@ -525,7 +662,7 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
  async function ensure(){
   await chat.bootstrap()
   const sid=await chat.ensureActiveSession()
-  if(sessionId.value!==sid){generation++;sessionId.value=sid;context.value=null;busy.value=false;pollingKey='';pollingPromise=null;clearRunControlState()}
+   if(sessionId.value!==sid){generation++;sessionId.value=sid;context.value=null;busy.value=false;pollingKey='';pollingPromise=null;clearRunControlState(true)}
   await restore()
   if(!context.value)throw Error(error.value||'任务上下文不可用')
   return sid
@@ -620,53 +757,51 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
   }catch(err){if((current(e,sid)||!sid)&&owner()===submittedOwner){error.value=err instanceof Error?err.message:'任务暂时未能执行';busy.value=false;progress.value=''}}
   finally{admitting=false}
  }
- function poll(run:string,e:number,sid:string):Promise<void>{
-  const key=JSON.stringify([e,sid,run])
-  if(pollingKey===key&&pollingPromise)return pollingPromise
-  pollingKey=key;let cursor=0
-  const loop=(async()=>{
-   try{
+  function poll(run:string,e:number,sid:string):Promise<void>{
+   const key=JSON.stringify([e,sid,run])
+   if(pollingKey===key&&pollingPromise)return pollingPromise
+   pollingKey=key;let backoff=1500
+   const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds))
+   const loop=(async()=>{
     while(runCurrent(e,sid,run)){
-     const events=await readTaskEvents(run,cursor);if(!runCurrent(e,sid,run))return
-     cursor=events.data?.cursor??cursor
-     for(const event of events.data?.events||[]){
-      if(event.event_type==='run.resource_read_started')progress.value='正在读取'+(event.payload?.label||'所需资料')
-      else if(event.event_type==='run.resource_read_completed')progress.value='已读取'+(event.payload?.label||'所需资料')
-      else if(event.event_type==='run.planning')progress.value='正在理解这次任务'
-      else if(event.event_type==='run.step_started')progress.value='正在结合资料分析'
-      else if(event.event_type==='run.business_delegated')progress.value=({resume_preparation:'正在查看这份简历',career_exploration:'正在一起比较方向',practice_review:'正在复盘这次练习',clarify:'正在整理需要你补充的问题'} as Record<string,string>)[event.payload?.agent||'']||'正在核对这次任务'
-     }
-     const runSnapshot=await readRunSnapshot(run,e,sid,true)
+     const timeline=await syncAgentRunTimeline(run,e,sid,true)
      if(!runCurrent(e,sid,run))return
-     if(!runSnapshot){await new Promise(resolve=>setTimeout(resolve,1500));continue}
+     const runSnapshot=timeline?.run||(runControlSnapshot.value?.run_id===run?runControlSnapshot.value:null)
+     if(!timeline||timeline.syncState==='stale'||timeline.syncState==='error'){
+      busy.value=!!runSnapshot&&isActiveRun(runSnapshot)
+      progress.value=busy.value?'执行记录暂不可同步，保留最近状态':''
+      await wait(backoff)
+      backoff=Math.min(backoff*2,30000)
+      continue
+     }
+     backoff=1500
+     if(!runSnapshot){
+      busy.value=true;progress.value='正在读取任务状态'
+      await wait(backoff)
+      continue
+     }
      const status=runSnapshot.status
      if(!activeAgentRunStatuses.has(status)){
       busy.value=false;progress.value=''
       if(['failed','cancelled','needs_reconciliation','partial','unavailable'].includes(status))
-       error.value=runSnapshot.final_result?.reply||'这次执行尚未完整完成，请先核对进展。'
+       error.value=status==='failed'?'任务执行失败，请查看执行记录。':'任务执行未完整结束，请查看执行记录。'
       else if(status==='completed')error.value=''
       await restore(runSnapshot);return
      }
-     if(events.data?.has_more)continue
-     await new Promise(resolve=>setTimeout(resolve,1500))
+     busy.value=true;progress.value=statusLabel(status)
+     await wait(backoff)
     }
-   }catch(err){if(runCurrent(e,sid,run)){
-    const message=err instanceof Error?err.message:'进展同步失败，原任务仍保留，请重试读取'
-    error.value=message;runControlError.value=message
-    busy.value=!!runControlSnapshot.value&&isActiveRun(runControlSnapshot.value)
-    progress.value=busy.value?'进展同步暂不可用，原任务仍在核对中':''
-   }}
-  })()
-  const tracked=loop.finally(()=>{if(pollingKey===key){pollingKey='';pollingPromise=null}})
-  pollingPromise=tracked
-  return tracked
- }
+   })()
+   const tracked=loop.finally(()=>{if(pollingKey===key){pollingKey='';pollingPromise=null}})
+   pollingPromise=tracked
+   return tracked
+  }
  async function refreshAgentRun(){
   const sid=sessionId.value,runId=activeRunId.value,e=generation
   if(!sid||!runId||!current(e,sid)){runControlError.value='当前会话还没有可读取的Agent运行记录';return}
   runControlError.value=''
   const run=await readRunSnapshot(runId,e,sid,true)
-   if(run&&runCurrent(e,sid,runId)){updateRunActivity(run,e,sid);if(run.status!=='needs_reconciliation')void reconcileStoredFollowups(sid,runId,e)}
+   if(run&&runCurrent(e,sid,runId)){updateRunActivity(run,e,sid);void syncAgentRunTimeline(runId,e,sid,true);if(run.status!=='needs_reconciliation')void reconcileStoredFollowups(sid,runId,e)}
  }
  async function controlAgentRun(request:AgentRunControlRequest){
   const sid=sessionId.value,runId=activeRunId.value,e=generation,initial=runControlSnapshot.value
@@ -789,8 +924,8 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
   if(draft.value.trim()&&draft.value.trim()!==failedQuestion.value){error.value='输入框中已有未发送内容，未覆盖；原问题仍在本任务记录中。';return}
   draft.value=failedQuestion.value
  }
-  return {opened,draft,busy,error,progress,context,available,sessionId,transfer,result,failedQuestion,recoverQuestion,restore:()=>restore(),ensure,handoff,send,open,
-   activeRunId,runControlSnapshot,savedRunPlan,runControlBusy,runControlError,runSaveState,
+   return {opened,draft,busy,error,progress,context,available,sessionId,transfer,result,failedQuestion,recoverQuestion,restore:()=>restore(),ensure,handoff,send,open,
+    activeRunId,runControlSnapshot,runTimelineById,loadAgentRunTimeline,savedRunPlan,runControlBusy,runControlError,runSaveState,
     refreshAgentRun,controlAgentRun,resumeAgentRun,saveAgentRunPlan,readSavedAgentRunPlan,
     followupBusy,canSendFollowup,retryableFollowup,retryableNewTask,pendingFollowupConfirmation,
     retryAgentRunFollowup,retryClassifiedNewTask,confirmFollowupSave,dismissFollowupSave,

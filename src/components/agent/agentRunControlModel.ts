@@ -31,6 +31,11 @@ export function canCancelTask(run: AgentRunControlSnapshot): boolean {
   return !TERMINAL.has(run.status) && !run.cancel_requested
 }
 
+export function isCancellationPending(run: AgentRunControlSnapshot): boolean {
+  return !TERMINAL.has(run.status)
+    && (run.cancel_requested || run.status === 'cancel_requested')
+}
+
 export function canResumeTask(run: AgentRunControlSnapshot): boolean {
   return run.status === 'paused' && !run.cancel_requested
 }

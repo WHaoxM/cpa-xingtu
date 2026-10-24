@@ -2,14 +2,21 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {transform} from 'esbuild'
+import {build} from 'esbuild'
+import {fileURLToPath} from 'node:url'
 import * as vue from 'vue'
 import * as pinia from 'pinia'
+const eventModelEntry=fileURLToPath(new URL('../src/components/agent/agentRunEventModel.ts',import.meta.url))
+const eventModelBuild=await build({entryPoints:[eventModelEntry],bundle:true,format:'esm',platform:'node',write:false,logLevel:'silent'})
+const eventModel=await import(`data:text/javascript;base64,${Buffer.from(eventModelBuild.outputFiles[0].contents).toString('base64')}`)
 let code=(await transform(readFileSync(new URL('../src/stores/agentTask.ts',import.meta.url),'utf8'),{loader:'ts',format:'esm'})).code
 code=code.replace(/import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"];?/g,(_m,n)=>`const {${n.replace(/\s+as\s+/g,':')}}=globalThis.__taskTest;`)
 const settle=async()=>{for(let i=0;i<12;i++){await Promise.resolve();await vue.nextTick()}}
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}}
 const runSnapshot=(runId,status='completed',extra={})=>({run_id:runId,status,current_contract_revision:0,current_plan_version:0,
  task_contract:null,current_plan:null,saved_artifacts:[],final_result:null,...extra})
+const runEvent=(event_seq,event_type)=>({event_seq,event_type,run_status:'running',payload:{},occurred_at:'2026-10-24T10:00:00Z'})
+const eventPage=(runId,status,events=[],afterSeq=0)=>{const cursor=events.at(-1)?.event_seq??afterSeq;return {data:{run:runSnapshot(runId,status),events,cursor,latest_seq:cursor,has_more:false}}}
 async function setup(overrides={}){
  pinia.setActivePinia(pinia.createPinia())
  const user=vue.reactive({currentUser:{id:'owner'}}),messages=vue.reactive([])
@@ -18,13 +25,15 @@ async function setup(overrides={}){
  const chat=vue.reactive({activeSessionId:'session_a',messages,bootstrap:async()=>{},ensureActiveSession:async()=>chat.activeSessionId,
   switchSession:async id=>{chat.activeSessionId=id},addMessage:m=>messages.push(m)})
   let submits=0,bindings=0,followupCalls=[]
- globalThis.__taskTest={...vue,...pinia,currentPlanCanBeSaved:()=>false,taskCompanionEnabled:true,useUserStore:()=>user,useAgentChatStore:()=>chat,
+ globalThis.__taskTest={...vue,...pinia,...eventModel,currentPlanCanBeSaved:()=>false,statusLabel:status=>status==='running'?'执行中':'任务处理中',taskCompanionEnabled:true,useUserStore:()=>user,useAgentChatStore:()=>chat,
   useChatAttachments:()=>({attachments:vue.ref([]),busy:vue.ref(false),restoreFiles:async()=>{},clearAttachments(){},readyFileIds:()=>[]}),
   readTaskContext:async()=>({data:{task:{revision:0,turns:[]}}}),
   bindTaskResources:async()=>{bindings++;return {data:{revision:1,turns:[]}}},
   submitTaskRun:async()=>{submits++;return {data:{run:runSnapshot('run_a','queued')}}},
    submitAgentRunFollowup:async(...args)=>{followupCalls.push(args);throw Error('unexpected follow-up call')},
-  readTaskEvents:async()=>({data:{events:[],cursor:2}}),readTaskRun:async run=>({data:{run:runSnapshot(run,'completed')}}),
+  readTaskEvents:async(run,cursor)=>eventPage(run,'completed',[],cursor),readTaskRun:async run=>({data:{run:runSnapshot(run,'completed')}}),
+  recoverClassifiedAgentRunFollowup:async run=>({data:{operation_status:'none',request:null,classification:null,result:null,
+   run:{run:runSnapshot(run,'completed')}}}),
   readAgentRunPlan:async()=>({data:null}),controlAgentRun:async()=>({data:{run:runSnapshot('run_a','completed')}}),
   resumeAgentRun:async()=>({data:{run:runSnapshot('run_a','running')}}),saveAgentRunArtifact:async()=>({data:{}}),...overrides}
  const mod=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}#${Math.random()}`)
@@ -68,6 +77,39 @@ test('switching tasks clears old context but restoring same task preserves draft
  const t=await setup();await t.task.open();t.task.draft='未发送的补充'
  await t.task.restore();assert.equal(t.task.draft,'未发送的补充')
  t.chat.activeSessionId='session_b';await settle();assert.equal(t.task.sessionId,'session_b');assert.equal(t.task.draft,'')
+})
+
+test('refresh recovers a server-classified follow-up once without resubmitting the model request',async()=>{
+ let recoveries=0
+ let recovered=false
+ const request={task_id:'run_active',expected_revision:1,message:'Add one self-test; do not save yet.'}
+ const t=await setup({
+  readTaskContext:async()=>({data:{task:currentTaskContext('run_active')}}),
+  readTaskRun:async run=>({data:{run:runSnapshot(run,'completed',{current_contract_revision:recovered?2:1,
+   task_contract:recovered?{revision:2,goal:'Study plan',deliverables:[],constraints:['Add one self-test; do not save yet.'],acceptance_criteria:[]}:null})}}),
+  recoverClassifiedAgentRunFollowup:async run=>{
+   recoveries++
+    if(recovered)return {data:{operation_status:'none',request:null,classification:null,result:null,
+     run:{run:runSnapshot(run,'completed',{current_contract_revision:2})}}}
+    recovered=true
+   return {data:{operation_status:'completed',request,classification:{intent:'supplement'},
+    result:{action:'contract_revised',intent:'supplement'},
+    run:{run:runSnapshot(run,'queued',{current_contract_revision:2,
+     task_contract:{revision:2,goal:'Study plan',deliverables:[],constraints:['Add one self-test; do not save yet.'],acceptance_criteria:[]}})}}}
+  },
+   readTaskEvents:async(run,cursor)=>eventPage(run,'completed',[],cursor),
+ })
+ await t.task.restore()
+  await settle()
+ assert.equal(recoveries,2)
+ assert.equal(t.task.runControlSnapshot.current_contract_revision,2)
+ assert.equal(t.chat.messages.filter(message=>message.content==='Add one self-test; do not save yet.').length,1)
+ assert.equal(t.followups().length,0)
+  await t.task.restore()
+  await settle()
+ assert.equal(recoveries,3)
+ assert.equal(t.chat.messages.filter(message=>message.content==='Add one self-test; do not save yet.').length,1)
+ assert.equal(t.followups().length,0)
 })
 
 test('refresh restores pending server selection; send consumes that selection without rebinding old focus',async()=>{
@@ -141,12 +183,18 @@ test('upload receipt updates task revision before ready; a new controller recove
 })
 
 test('incremental run polling uses the authoritative cursor, not a guessed field',async()=>{
- const cursors=[];let reads=0
+ const cursors=[]
  const t=await setup({
-  readTaskEvents:async(_run,cursor)=>{cursors.push(cursor);return {data:{events:[],cursor:3}}},
-  readTaskRun:async run=>({data:{run:runSnapshot(run,++reads===1?'running':'completed')}})
+  readTaskEvents:async(run,cursor)=>{
+   cursors.push(cursor)
+   return cursor===0
+    ?eventPage(run,'running',[runEvent(1,'run.submitted'),runEvent(2,'run.planning'),runEvent(3,'run.step_started')])
+    :eventPage(run,'completed',[],cursor)
+  },
  })
- await t.task.send('看看当前进展')
+ const nativeSetTimeout=globalThis.setTimeout
+ globalThis.setTimeout=(callback,_milliseconds,...args)=>{queueMicrotask(()=>callback(...args));return 0}
+ try{await t.task.send('看看当前进展')}finally{globalThis.setTimeout=nativeSetTimeout}
  assert.deepEqual(cursors,[0,3])
 })
 
@@ -172,6 +220,25 @@ test('uncertain contract control reuses its stable key and stores no patch text'
  assert.equal(calls[0].key,calls[1].key)
  assert.equal(t.task.runControlSnapshot.current_contract_revision,5)
  assert.doesNotMatch(window.sessionStorage.getItem('cpa.agentRunControl.pending.v1')||'',/new private constraint/)
+})
+
+test('refresh preserves the current plan and immutable saved receipts when a snapshot omits them',async()=>{
+ let reads=0
+ const currentPlan={plan_version:2,goal_summary:'current plan v2',plan_sha256:'a'.repeat(64),
+  metadata:{task_contract_revision:2},steps:[{step_index:0,role:'planner',goal:'current step',status:'completed'}]}
+ const savedReceipt={confirmation_id:'confirm_v1',artifact_id:'artifact_v1',contract_revision:1,plan_version:1,
+  plan_sha256:'b'.repeat(64),saved_at:'2026-10-24T09:59:14Z'}
+ const t=await setup({
+  readTaskContext:async()=>({data:{task:{revision:2,active_run_id:'run_refresh',active_run_status:'completed',turns:[]}}}),
+  readTaskRun:async run=>({data:{run:++reads===1
+   ?runSnapshot(run,'completed',{current_contract_revision:2,current_plan_version:2,current_plan:currentPlan,saved_artifacts:[savedReceipt]})
+   :runSnapshot(run,'completed',{current_contract_revision:2,current_plan_version:2,current_plan:null,saved_artifacts:[]})}}),
+ })
+ await t.task.restore();await settle()
+ await t.task.refreshAgentRun();await settle()
+ assert.equal(t.task.runControlSnapshot?.current_plan?.plan_version,2)
+ assert.equal(t.task.runControlSnapshot?.current_plan?.goal_summary,'current plan v2')
+ assert.deepEqual(t.task.runControlSnapshot?.saved_artifacts?.map(row=>row.plan_version),[1])
 })
 
 test('late control response from a previous session cannot replace the restored run',async()=>{
@@ -218,10 +285,10 @@ test('reconciliation is a visible stop, not an automatic polling loop',async()=>
  const t=await setup({
   readTaskContext:async()=>({data:{task:{revision:2,active_run_id:'run_uncertain',active_run_status:'needs_reconciliation',turns:[]}}}),
   readTaskRun:async run=>({data:{run:runSnapshot(run,'needs_reconciliation')}}),
-  readTaskEvents:async()=>{polls++;throw Error('must not poll')}
+  readTaskEvents:async run=>{polls++;return eventPage(run,'needs_reconciliation')}
  })
  await t.task.restore();await settle()
- assert.equal(polls,0);assert.equal(t.task.busy,false)
+ assert.equal(polls,1);assert.equal(t.task.busy,false)
  assert.match(t.task.error,/核对/)
 })
 
@@ -230,7 +297,8 @@ test('failed question can be recovered without a model call and without overwrit
   {run_id:'failed',message:'我原来的复盘问题',reply:'本轮调用额度不足，原材料保留',status:'failed'}
  ]}}}),readTaskRun:async run=>({data:{run:runSnapshot(run,'failed',{final_result:{reply:'本轮调用额度不足，原材料保留'}})}})})
  await t.task.restore()
- assert.match(t.task.error,/额度不足/)
+ assert.equal(t.task.error,'这次执行尚未完整完成，请先核对进展。')
+ assert.equal(t.chat.messages.find(message=>message.id==='task-reply-failed')?.content,'本轮调用额度不足，原材料保留')
  t.task.recoverQuestion();assert.equal(t.task.draft,'我原来的复盘问题')
  assert.equal(t.calls().submits,0)
  t.task.draft='我正在写的新问题';t.task.recoverQuestion()

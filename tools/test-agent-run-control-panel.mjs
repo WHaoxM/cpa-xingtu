@@ -140,12 +140,45 @@ test('pause request is bound to the displayed task id and contract revision', as
 test('cancel and refresh are explicit parent-store events', async () => {
   const snapshot = run()
   const view = await mount({ run: snapshot })
-  find(view.root, item => item.type === 'button' && textOf(item).includes('取消任务')).props.onClick()
-  find(view.root, item => item.type === 'button' && textOf(item).includes('重新读取')).props.onClick()
+  find(view.root, item => item.type === 'button' && textOf(item).includes('\u53d6\u6d88\u4efb\u52a1')).props.onClick()
+  await vue.nextTick()
+  find(view.root, item => item.type === 'button' && textOf(item).includes('\u786e\u8ba4\u53d6\u6d88')).props.onClick()
+  find(view.root, item => item.type === 'button' && textOf(item).includes('\u91cd\u65b0\u8bfb\u53d6')).props.onClick()
   assert.deepEqual(view.events, [
     ['control', { intent: 'cancel', task_id: snapshot.run_id, expected_revision: 4 }],
     ['refresh'],
   ])
+  view.app.unmount()
+})
+
+test('a terminal run does not render a stale cancellation request after refresh', async () => {
+  const latest = run({
+    status: 'cancelled',
+    cancel_requested: true,
+    current_contract_revision: 7,
+    task_contract: { ...run().task_contract, revision: 7, goal: '刷新后的第七版目标' },
+  })
+  const view = await mount({ run: latest })
+  const rendered = textOf(view.root)
+
+  assert.match(rendered, /已取消/)
+  assert.match(rendered, /当前任务约束第 7 版/)
+  assert.match(rendered, /刷新后的第七版目标/)
+  assert.doesNotMatch(rendered, /已记录取消请求/)
+  assert.equal(find(view.root, item => item.type === 'button'
+    && textOf(item).includes('正在等待取消安全点')), null)
+  view.app.unmount()
+})
+
+test('a nonterminal cancel request remains visible while awaiting a safe point', async () => {
+  const view = await mount({ run: run({ status: 'running', cancel_requested: true }) })
+  const rendered = textOf(view.root)
+
+  assert.match(rendered, /已记录取消请求/)
+  const waiting = find(view.root, item => item.type === 'button'
+    && textOf(item).includes('正在等待取消安全点'))
+  assert.ok(waiting)
+  assert.notEqual(waiting.props.disabled, undefined)
   view.app.unmount()
 })
 

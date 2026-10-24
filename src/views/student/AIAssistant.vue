@@ -14,6 +14,7 @@ import { useChatAttachments } from '@/composables/useChatAttachments'
 import { useSpeechInput } from '@/composables/useSpeechInput'
 import { isCareerResourceUri, isPipelineTaskId } from '@/composables/useAgentResourceHandoff'
 import { renderMarkdown } from '@/utils/markdown'
+import { ComposerDraftSynchronizer } from '@/utils/composerDraftSync'
 import { getApiMode } from '@/api/config'
 import { getAgentSessionId } from '@/api/agent'
 import { mountSessionResources } from '@/api/agentMedia'
@@ -24,7 +25,7 @@ import type { AIMessage, AIToolCall } from '@/types'
 import MessagePartsRenderer from '@/components/agent/MessagePartsRenderer.vue'
 import AgentMark from '@/components/agent/AgentMark.vue'
 import TaskNextActions from '@/components/agent/TaskNextActions.vue'
-import AgentRunControlPanel from '@/components/agent/AgentRunControlPanel.vue'
+import AgentRunConversationCard from '@/components/agent/AgentRunConversationCard.vue'
 import AgentAmbientFlow from '@/components/agent/AgentAmbientFlow.vue'
 import ExpertDirectory from '@/components/agent/ExpertDirectory.vue'
 import { workspaceExperts, type WorkspaceExpert } from '@/components/agent/expertCatalog'
@@ -86,6 +87,45 @@ const visibleAgentRunState = computed(() => taskCompanionEnabled && interactionM
   && (!!task.runControlSnapshot || !!task.runControlError))
 const isEmptyChat = computed(() => isInitialState.value && !visibleAgentRunState.value)
 const isHttpMode = computed(() => getApiMode() === 'http')
+function taskRunIdForMessage(message: AIMessage): string {
+  if (!taskCompanionEnabled || interactionMode.value !== 'agent') return ''
+  for (const prefix of ['task-user-', 'task-reply-']) {
+    if (message.id.startsWith(prefix)) return message.id.slice(prefix.length)
+  }
+  const outcomeRunId = message.outcome?.run_id
+  if (outcomeRunId && (task.activeRunId === outcomeRunId
+    || task.context?.turns?.some(turn => turn.run_id === outcomeRunId))) return outcomeRunId
+  return ''
+}
+function shouldShowTaskRunCard(message: AIMessage): boolean {
+  const runId = taskRunIdForMessage(message)
+  if (!runId) return false
+  if (message.id.startsWith('task-reply-')) return true
+  if (message.id.startsWith('task-user-')) {
+    return !messages.value.some(candidate => candidate.role === 'assistant'
+      && (candidate.id === `task-reply-${runId}` || candidate.outcome?.run_id === runId))
+  }
+  return message.role === 'assistant' && message.outcome?.run_id === runId
+}
+function taskRunSnapshotForMessage(message: AIMessage) {
+  const runId = taskRunIdForMessage(message)
+  const timeline = task.runTimelineById[runId]
+  return timeline?.run || (task.runControlSnapshot?.run_id === runId ? task.runControlSnapshot : null)
+}
+function taskRunTimelineForMessage(message: AIMessage) {
+  return task.runTimelineById[taskRunIdForMessage(message)]
+}
+function taskRunFallbackStatus(message: AIMessage): string {
+  const runId = taskRunIdForMessage(message)
+  return task.context?.turns?.find(turn => turn.run_id === runId)?.status || ''
+}
+function isCurrentTaskRunMessage(message: AIMessage): boolean {
+  return !!taskRunIdForMessage(message) && taskRunIdForMessage(message) === task.activeRunId
+}
+function refreshTaskRunMessage(runId: string): void {
+  if (runId === task.activeRunId) void task.refreshAgentRun()
+  else void task.loadAgentRunTimeline(runId)
+}
 const pendingTaskRef = ref<{ task_id: string; pipeline: string; status: string } | null>(null)
 const taskRefError = ref('')
 const pendingResourceUri = computed(() => isHttpMode.value && isCareerResourceUri(route.query.resource_uri)
@@ -344,23 +384,23 @@ const attachmentCards = computed(() => attachments.value.map(attachment => ({
   showDelIcon: true,
 })))
 
-let syncingComposer=false
-watch([inputMessage,composerInputRef], async ([text]) => {
-  await nextTick()
-  if(text!==inputMessage.value)return
-  const sender = composerInputRef.value
-  if (sender && sender.getModelValue().text !== text){
-    syncingComposer=true
-    sender.clear()
-    if(text)sender.setText(text)
-    await nextTick()
-    syncingComposer=false
-  }
+const composerDraftSynchronizer = new ComposerDraftSynchronizer()
+watch([inputMessage,composerInputRef], ([text]) => {
+  void composerDraftSynchronizer.schedule(
+    () => composerInputRef.value,
+    text,
+    (candidate) => candidate === inputMessage.value,
+  ).catch(() => {
+    // Keep the Vue draft intact if the editor's asynchronous write fails.
+    console.warn('AI composer draft sync failed')
+  })
 },{flush:'post'})
 
 function onSenderChange() {
-  if(syncingComposer || composerRestoring.value)return
-  inputMessage.value = composerInputRef.value?.getModelValue().text || ''
+  if (composerRestoring.value) return
+  const actualText = composerInputRef.value?.getModelValue().text || ''
+  if (composerDraftSynchronizer.shouldIgnoreChange(actualText)) return
+  inputMessage.value = actualText
 }
 
 function onSenderSubmit() {
@@ -393,6 +433,7 @@ function onAttachmentDelete(item: { uid?: string | number }) {
 async function prepareTask(prompt: string) {
   inputMessage.value = prompt
   await nextTick()
+  await composerDraftSynchronizer.flush()
   composerInputRef.value?.focus('mark')
 }
 
@@ -1076,6 +1117,28 @@ function displayThinkingParas(thinking: string): string[] {
                   <Bubble class="ai-bubble ai-bubble--user" placement="end" variant="filled" shape="corner" avatar-size="0px" avatar-gap="0px" max-width="100%">
                     <template #content><span class="msg__bubble-text">{{ displayUserContent(msg) }}</span></template>
                   </Bubble>
+                  <AgentRunConversationCard
+                    v-if="shouldShowTaskRunCard(msg)"
+                    :owner-key="resolveStudentId()"
+                    :session-id="task.sessionId || agentChat.activeSessionId || ''"
+                    :run-id="taskRunIdForMessage(msg)"
+                    :run="taskRunSnapshotForMessage(msg)"
+                    :fallback-status="taskRunFallbackStatus(msg)"
+                    :events="taskRunTimelineForMessage(msg)?.events || []"
+                    :sync-state="taskRunTimelineForMessage(msg)?.syncState || 'idle'"
+                    :sync-error="taskRunTimelineForMessage(msg)?.syncError || ''"
+                    :busy="isCurrentTaskRunMessage(msg) && task.runControlBusy"
+                    :control-error="isCurrentTaskRunMessage(msg) ? task.runControlError : ''"
+                    :save-state="isCurrentTaskRunMessage(msg) ? task.runSaveState : null"
+                    :saved-plan="isCurrentTaskRunMessage(msg) ? task.savedRunPlan : null"
+                    :interactive="isCurrentTaskRunMessage(msg) && !!taskRunSnapshotForMessage(msg)"
+                    @load-history="task.loadAgentRunTimeline"
+                    @control="task.controlAgentRun"
+                    @resume="task.resumeAgentRun"
+                    @save="task.saveAgentRunPlan"
+                    @refresh="refreshTaskRunMessage"
+                    @read-saved-plan="task.readSavedAgentRunPlan"
+                  />
                 </div>
               </div>
 
@@ -1113,6 +1176,28 @@ function displayThinkingParas(thinking: string): string[] {
                         <button v-if="task.pendingFollowupConfirmation.saveChoice !== 'confirmed'" type="button" class="agent-followup-actions__secondary"
                           @click="task.dismissFollowupSave(task.pendingFollowupConfirmation.key)">暂不保存</button>
                       </div>
+                      <AgentRunConversationCard
+                        v-if="shouldShowTaskRunCard(msg)"
+                        :owner-key="resolveStudentId()"
+                        :session-id="task.sessionId || agentChat.activeSessionId || ''"
+                        :run-id="taskRunIdForMessage(msg)"
+                        :run="taskRunSnapshotForMessage(msg)"
+                        :fallback-status="taskRunFallbackStatus(msg)"
+                        :events="taskRunTimelineForMessage(msg)?.events || []"
+                        :sync-state="taskRunTimelineForMessage(msg)?.syncState || 'idle'"
+                        :sync-error="taskRunTimelineForMessage(msg)?.syncError || ''"
+                        :busy="isCurrentTaskRunMessage(msg) && task.runControlBusy"
+                        :control-error="isCurrentTaskRunMessage(msg) ? task.runControlError : ''"
+                        :save-state="isCurrentTaskRunMessage(msg) ? task.runSaveState : null"
+                        :saved-plan="isCurrentTaskRunMessage(msg) ? task.savedRunPlan : null"
+                        :interactive="isCurrentTaskRunMessage(msg) && !!taskRunSnapshotForMessage(msg)"
+                        @load-history="task.loadAgentRunTimeline"
+                        @control="task.controlAgentRun"
+                        @resume="task.resumeAgentRun"
+                        @save="task.saveAgentRunPlan"
+                        @refresh="refreshTaskRunMessage"
+                        @read-saved-plan="task.readSavedAgentRunPlan"
+                      />
                       <span v-if="msg.id === streamingMsgId" class="cursor" aria-hidden="true" />
                     </div>
                   </template>
@@ -1135,7 +1220,7 @@ function displayThinkingParas(thinking: string): string[] {
             </div>
 
             <div v-if="isProcessing&&taskCompanionEnabled" class="msg msg--assistant" role="status">
-              <AgentMark :size="28"/><p>{{task.progress||'请求已保存，正在核对执行进展'}}</p>
+              <AgentMark :size="28"/><p>正在等待本次回复</p>
             </div>
             <!-- Legacy HTTP presentation remains available outside the staged task capability. -->
             <div v-if="isProcessing&&!taskCompanionEnabled" class="msg msg--assistant">
@@ -1156,21 +1241,11 @@ function displayThinkingParas(thinking: string): string[] {
             <TaskNextActions v-if="taskCompanionEnabled"/>
         </template>
           <template v-if="taskCompanionEnabled && interactionMode === 'agent'">
-            <AgentRunControlPanel
-              :run="task.runControlSnapshot"
-              :saved-plan="task.savedRunPlan"
-              :busy="task.runControlBusy"
-              :error="task.runControlError"
-              :save-state="task.runSaveState"
-              @control="task.controlAgentRun"
-              @resume="task.resumeAgentRun"
-              @save="task.saveAgentRunPlan"
-              @refresh="task.refreshAgentRun"
-              @read-saved-plan="task.readSavedAgentRunPlan"
-            />
-            <p v-if="task.runControlError && !task.runControlSnapshot" class="agent-run-read-error" role="alert">
+            <p v-if="task.runControlError && !task.runControlSnapshot && task.activeRunId
+              && !messages.some(message => taskRunIdForMessage(message) === task.activeRunId)"
+              class="agent-run-read-error" role="alert">
               <span>{{ task.runControlError }}</span>
-              <button type="button" :disabled="task.runControlBusy" @click="task.refreshAgentRun">重新读取任务</button>
+              <button type="button" :disabled="task.runControlBusy" @click="refreshTaskRunMessage(task.activeRunId)">重新读取任务记录</button>
             </p>
           </template>
       </div>

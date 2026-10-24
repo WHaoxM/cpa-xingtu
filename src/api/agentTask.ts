@@ -36,6 +36,21 @@ export type AgentRunControlSnapshot = {
   final_result?:{reply?:string;result_ref?:string}|null
   final_result_checkpoint?:boolean
 }
+export type AgentRunEvent = {
+  event_seq: number
+  event_type: string
+  run_status: string
+  payload: Record<string, unknown>
+  occurred_at: string
+}
+export type AgentRunEventPage = {
+  run: AgentRunControlSnapshot
+  events: AgentRunEvent[]
+  cursor: number
+  latest_seq: number
+  has_more: boolean
+  dispatch_status?: string
+}
 export type AgentRunTaskPatch = {
   goal?:string
   deliverables?:string[]
@@ -80,9 +95,13 @@ export type AgentRunFollowupClassification = {
 }
 export type AgentRunFollowupResponse = {
   operation_status:'waiting_safe_point'|'classifying'|'classified'|'completed'|'needs_reconciliation'
+  request?:AgentRunFollowupRequest|null
   classification:AgentRunFollowupClassification|null
   result:{action:string;intent?:string;question?:string;message?:string;contract_revision?:number;plan_version?:number;plan_sha256?:string;reason?:string}|null
   run:AgentRunEnvelope
+}
+export type AgentRunFollowupRecoveryResponse = AgentRunFollowupResponse|{
+  operation_status:'none';request:null;classification:null;result:null;run:AgentRunEnvelope
 }
 const session=(id:string)=>`/api/agent/session/${encodeURIComponent(id)}`
 const runPath=(id:string)=>`/api/agent/runs/${encodeURIComponent(id)}`
@@ -108,6 +127,8 @@ export const submitAgentRunFollowup = (run:string,followup:AgentRunFollowupReque
     'POST',`${runPath(run)}/followup`,followup,undefined,{'Idempotency-Key':key},
   )
 }
+export const recoverClassifiedAgentRunFollowup = (run:string)=>
+  httpSend<AgentRunFollowupRecoveryResponse>('POST',`${runPath(run)}/followup/recover`,{})
 export const resumeAgentRun = (run:string,expectedRevision:number)=>
   httpSend<AgentRunEnvelope>('POST',`${runPath(run)}/resume`,{expected_revision:expectedRevision})
 export const saveAgentRunArtifact = (run:string,contractRevision:number,planVersion:number,key:string)=>{
@@ -116,4 +137,6 @@ export const saveAgentRunArtifact = (run:string,contractRevision:number,planVers
     {contract_revision:contractRevision,plan_version:planVersion},undefined,{'Idempotency-Key':key})
 }
 export const submitTaskResume = (id:string,file_id:string,expected_revision:number)=>httpSend<{task_id:string;context:TaskContext}>('POST',`${session(id)}/resume-submissions`,{file_id,expected_revision})
-export const readTaskEvents = (run:string,after_seq:number)=>httpGet<{events:{event_type:string;payload?:{label?:string;agent?:string}}[];cursor:number;has_more?:boolean}>(`/api/agent/runs/${encodeURIComponent(run)}/events`,{after_seq})
+export const readTaskEvents = (run:string,after_seq:number,limit=200)=>httpGet<AgentRunEventPage>(
+  `/api/agent/runs/${encodeURIComponent(run)}/events`,{after_seq,limit},
+)
