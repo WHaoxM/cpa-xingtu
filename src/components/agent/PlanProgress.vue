@@ -7,6 +7,8 @@ const props = defineProps<{
   summary?: string
   progress?: Record<string, unknown>
   presentation?: 'student'
+  messageStatus?: 'streaming' | 'thinking' | 'done'
+  outcomeStatus?: 'completed' | 'needs_input' | 'running' | 'partial' | 'failed'
 }>()
 
 function visibleItems<T>(items: T[], legacyLimit: number): T[] {
@@ -38,11 +40,19 @@ const slotLabels: Record<string, string> = {
 const slotLabel = (slot: string) => slotLabels[slot] || '其他需要补充的信息'
 const missingSlots = computed(() => props.presentation === 'student'
   ? rawMissingSlots.value.map(slotLabel) : rawMissingSlots.value)
+const terminalTitle = computed(() => {
+  if (props.outcomeStatus === 'completed') return '本轮已完成'
+  if (props.outcomeStatus === 'needs_input') return '需要你回应'
+  if (props.outcomeStatus === 'partial') return '本轮部分完成'
+  if (props.outcomeStatus === 'failed') return '本轮未完成'
+  if (props.outcomeStatus === 'running') return '任务仍在处理中'
+  return props.messageStatus === 'done' ? '本轮已完成' : ''
+})
 const displayTitle = computed(() => {
   const title = props.title || '本轮进度'
   if (props.presentation !== 'student') return title
   const stage = /^当前阶段：([a-z][a-z0-9_]*)$/.exec(title)
-  if (stage) return ({ explain: '正在说明处理方式', clarify: '需要先了解的信息', run_plan: '本轮处理安排' } as Record<string, string>)[stage[1]!] || '本轮进度'
+  if (stage) return terminalTitle.value || ({ explain: '正在说明处理方式', clarify: '需要先了解的信息', run_plan: '本轮处理安排' } as Record<string, string>)[stage[1]!] || '本轮进度'
   // Only project the exact generated metadata form; keep ordinary business titles.
   if (/^执行路径：[A-Za-z][A-Za-z0-9_.:-]*$/.test(title)) return '本轮进度'
   return title

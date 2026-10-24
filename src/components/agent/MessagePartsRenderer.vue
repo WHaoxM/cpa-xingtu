@@ -165,7 +165,7 @@ function outcomeLabel(): string {
         <ol class="message-process__steps">
           <li v-for="{ part, index } in block.items" :key="`${message.id}-process-${index}`">
             <ToolCallCard v-if="part.type === 'tool_call'" :tool="part.tool_call" presentation="student" />
-            <PlanProgress v-else-if="part.type === 'progress'" :title="part.title" :summary="part.summary" :progress="part.progress" presentation="student" />
+            <PlanProgress v-else-if="part.type === 'progress'" :title="part.title" :summary="part.summary" :progress="part.progress" :message-status="message.status" :outcome-status="message.outcome?.status" presentation="student" />
           </li>
         </ol>
       </section>
@@ -231,6 +231,8 @@ function outcomeLabel(): string {
         :title="part.title"
         :summary="part.summary"
         :progress="part.progress"
+        :message-status="message.status"
+        :outcome-status="message.outcome?.status"
       />
 
       <!-- 模式升级提示 -->

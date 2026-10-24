@@ -130,6 +130,49 @@ test('refresh restores pending server selection; send consumes that selection wi
  await t.task.restore();assert.deepEqual(t.task.attachments,[])
 })
 
+test('accepted task consumes only the submitted attachment; a newer persisted selection survives',async()=>{
+ let stored={revision:3,composer_files:[{file_id:'sent_file',name:'sent.pdf',status:'ready'}],turns:[]}
+ const attachments=vue.ref([]),submitted=[]
+ const take=(ids)=>{
+  submitted.push([...ids])
+  const selected=new Set(ids)
+  const taken=attachments.value.filter(row=>row.fileId&&selected.has(row.fileId))
+  attachments.value=attachments.value.filter(row=>!row.fileId||!selected.has(row.fileId))
+  return taken
+ }
+ const restoreFiles=async refs=>{attachments.value=refs.map(ref=>({id:ref.file_id,fileId:ref.file_id,status:'ready',name:ref.name}))}
+ const t=await setup({
+  useChatAttachments:()=>({attachments,busy:vue.ref(false),restoreFiles,clearAttachments:()=>attachments.value=[],
+   takeAttachmentsByFileIds:take,restoreTakenAttachments:()=>{},readyFileIds:()=>attachments.value.map(row=>row.fileId)}),
+  readTaskContext:async()=>({data:{task:structuredClone(stored)}}),
+  submitTaskRun:async(_sid,_message,_revision,files)=>{
+   submitted.push([...files])
+   attachments.value.push({id:'new_file',fileId:'new_file',status:'ready',name:'new.pdf'})
+   stored={...stored,revision:4,composer_files:[{file_id:'new_file',name:'new.pdf',status:'ready'}]}
+   return {data:{run:runSnapshot('accepted_run','completed')}}
+  },
+ })
+ await t.task.send('看这份资料',['sent_file'])
+ assert.deepEqual(submitted,[['sent_file'],['sent_file']])
+ assert.deepEqual(t.task.attachments.map(row=>row.fileId),['new_file'])
+})
+
+test('task admission failure keeps the submitted attachment draft available',async()=>{
+ const attachments=vue.ref([])
+ const t=await setup({
+  useChatAttachments:()=>({attachments,busy:vue.ref(false),clearAttachments:()=>attachments.value=[],
+   takeAttachmentsByFileIds:ids=>{const selected=new Set(ids);const taken=attachments.value.filter(row=>selected.has(row.fileId));attachments.value=attachments.value.filter(row=>!selected.has(row.fileId));return taken},
+   restoreTakenAttachments:rows=>attachments.value.push(...rows),
+   restoreFiles:async refs=>{attachments.value=refs.map(ref=>({id:ref.file_id,fileId:ref.file_id,status:'ready',name:ref.name}))},
+   readyFileIds:()=>attachments.value.map(row=>row.fileId)}),
+  readTaskContext:async()=>({data:{task:{revision:2,composer_files:[{file_id:'retain_file',name:'retain.pdf',status:'ready'}],turns:[]}}}),
+  submitTaskRun:async()=>{throw Error('request rejected before admission')},
+ })
+ await t.task.send('看这份资料',['retain_file'])
+ assert.deepEqual(t.task.attachments.map(row=>row.fileId),['retain_file'])
+ assert.match(t.task.error,/request rejected/)
+})
+
 test('failed local upload is not erased by ensure and silently replaced with the old resume',async()=>{
  let reads=0
  const t=await setup({

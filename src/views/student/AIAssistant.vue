@@ -53,10 +53,14 @@ const {
   removeAttachment,
   clearAttachments,
   readyFileIds,
+  takeAttachmentsByFileIds,
+  restoreTakenAttachments,
 } = taskCompanionEnabled ? {
   attachments:httpMediaRefs.attachments,busy:httpMediaRefs.attachmentsBusy,
   addFiles:task.addFiles,removeAttachment:task.removeAttachment,
   clearAttachments:task.clearAttachments,readyFileIds:task.readyFileIds,
+  takeAttachmentsByFileIds:task.takeAttachmentsByFileIds,
+  restoreTakenAttachments:task.restoreTakenAttachments,
 } : useChatAttachments()
 
 const messages = computed(() => agentChat.messages)
@@ -644,7 +648,7 @@ async function sendMessage(
       sessionStartError.value=''
       if(taskRef||resourceUri)await task.handoff([taskRef?{task_id:taskRef.task_id}:{uri:resourceUri}])
       await task.send(userMsg||'请一起看看这份资料',fileIds)
-      if(!task.error){clearAttachments();pendingTaskRef.value=null}
+      if(!task.error)pendingTaskRef.value=null
       sessionStartError.value=task.error
       scrollToBottom()
     }catch(error){sessionStartError.value=error instanceof Error?error.message:'任务暂不可用'}
@@ -669,10 +673,13 @@ async function sendMessage(
     ...(actionHandoff ? [{ type: 'action_plan_handoff', handoff_id: actionHandoff.handoffId, action: actionHandoff.action }] : []),
   ]
 
+  let submittedSessionId: string | null = null
+  let submittedAttachments: ReturnType<typeof takeAttachmentsByFileIds> = []
   try {
     await agentChat.ensureActiveSession()
   } catch (e) {
     console.warn('[ai] ensure session failed', e)
+    if (userMsg && !inputMessage.value.trim()) inputMessage.value = userMsg
     sessionStartError.value = e instanceof Error ? e.message : '暂时无法开始对话，请重试。'
     return
   }
@@ -685,6 +692,12 @@ async function sendMessage(
     timestamp: now,
     attachments: readyAtts.length ? readyAtts.map(a => ({ name: a.name })) : undefined,
   })
+
+  // Keep the sent-message chips, but remove this exact selection from the
+  // composer as soon as the user message is accepted. Newer attachments are
+  // independent drafts and must survive this request's completion.
+  submittedSessionId = agentChat.activeSessionId || getAgentSessionId()
+  submittedAttachments = takeAttachmentsByFileIds(fileIds)
 
   loading.value = true
   scrollToBottom()
@@ -704,6 +717,10 @@ async function sendMessage(
             timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16),
             status: 'done',
           })
+          if (submittedSessionId && agentChat.activeSessionId === submittedSessionId) {
+            restoreTakenAttachments(submittedAttachments)
+            if (userMsg && !inputMessage.value.trim()) inputMessage.value = userMsg
+          }
           loading.value = false
           return
         }
@@ -719,7 +736,6 @@ async function sendMessage(
       })
       lastVoiceTurnId.value = null
       voiceBoundText.value = ''
-      clearAttachments()
       if (taskRef || resourceUri) {
         pendingTaskRef.value = null
         void router.replace({ query: { ...route.query, task_id: undefined, resource_uri: undefined } })
@@ -782,10 +798,13 @@ async function sendMessage(
       if (target) target.status = 'done'
     }
 
-    clearAttachments()
     selectedExpert.value = null
     void agentChat.refreshSessionList()
   } catch (e) {
+    if (submittedSessionId && agentChat.activeSessionId === submittedSessionId) {
+      restoreTakenAttachments(submittedAttachments)
+      if (userMsg && !inputMessage.value.trim()) inputMessage.value = userMsg
+    }
     stopProcessingWait()
     isThinking.value = false
     const friendly = toFriendlyApiError(e)

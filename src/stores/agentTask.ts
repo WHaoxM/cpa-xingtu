@@ -751,7 +751,9 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
    const response=await submitTaskRun(sid,pending.message,pending.version,pending.files,pending.key)
    if(!current(e,sid))return
    if(!response.data?.run?.run_id)throw Error('请求结果未确认，请保留原消息重试')
-   pending=null;draft.value='';error.value='';media.clearAttachments()
+   const submittedFiles=[...pending.files]
+   pending=null;draft.value='';error.value=''
+   media.takeAttachmentsByFileIds?.(submittedFiles)
    await restore(response.data.run,false)
    if(activeRunId.value===response.data.run.run_id&&isActiveRun(response.data.run))await poll(response.data.run.run_id,e,sid)
   }catch(err){if((current(e,sid)||!sid)&&owner()===submittedOwner){error.value=err instanceof Error?err.message:'任务暂时未能执行';busy.value=false;progress.value=''}}
@@ -930,5 +932,7 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
     followupBusy,canSendFollowup,retryableFollowup,retryableNewTask,pendingFollowupConfirmation,
     retryAgentRunFollowup,retryClassifiedNewTask,confirmFollowupSave,dismissFollowupSave,
    attachments:media.attachments,attachmentsBusy:computed(()=>media.busy.value||mediaMutation.value),addFiles,
-   removeAttachment,clearAttachments:media.clearAttachments,readyFileIds:media.readyFileIds}
+   removeAttachment,takeAttachmentsByFileIds:media.takeAttachmentsByFileIds,
+   restoreTakenAttachments:media.restoreTakenAttachments,
+   clearAttachments:media.clearAttachments,readyFileIds:media.readyFileIds}
 })

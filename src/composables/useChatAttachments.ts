@@ -144,6 +144,31 @@ export function useChatAttachments() {
     attachments.value = attachments.value.filter(a => a.id !== id)
   }
 
+  /**
+   * Move only the files accepted by this send out of the composer draft.
+   * This is local UI state only: uploaded files and session/task references
+   * remain persisted and available to the sent message.
+   */
+  function takeAttachmentsByFileIds(fileIds: string[]): ChatAttachment[] {
+    const selected = new Set(fileIds.filter(Boolean))
+    if (!selected.size) return []
+    const taken = attachments.value.filter(row => row.fileId && selected.has(row.fileId))
+    if (taken.length) {
+      const takenIds = new Set(taken.map(row => row.id))
+      attachments.value = attachments.value.filter(row => !takenIds.has(row.id))
+    }
+    return taken
+  }
+
+  /** Restore a failed send's local draft without replacing newer selections. */
+  function restoreTakenAttachments(rows: ChatAttachment[]) {
+    if (!rows.length) return
+    const currentIds = new Set(attachments.value.map(row => row.id))
+    const currentFiles = new Set(attachments.value.map(row => row.fileId).filter((id): id is string => !!id))
+    const missing = rows.filter(row => !currentIds.has(row.id) && (!row.fileId || !currentFiles.has(row.fileId)))
+    if (missing.length) attachments.value = [...attachments.value, ...missing]
+  }
+
   function clearAttachments() {
     epoch++
     attachments.value = []
@@ -196,6 +221,8 @@ export function useChatAttachments() {
     busy,
     addFiles,
     removeAttachment,
+    takeAttachmentsByFileIds,
+    restoreTakenAttachments,
     clearAttachments,
     restoreFiles,
     buildContextBlock,

@@ -5,6 +5,7 @@ import {transform} from 'esbuild'
 import * as vue from 'vue'
 
 const source=readFileSync(new URL('../src/composables/useChatAttachments.ts',import.meta.url),'utf8')
+const assistantSource=readFileSync(new URL('../src/views/student/AIAssistant.vue',import.meta.url),'utf8')
 const code=(await transform(source,{loader:'ts',format:'esm'})).code.replace(/import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"];?/g,(_m,n)=>`const {${n.replace(/\s+as\s+/g,':')}}=globalThis.__attachmentTest;`)
 test('queued file becoming ready updates rendered status and busy without another user action',async()=>{
  globalThis.__attachmentTest={...vue,getApiMode:()=> 'http',uploadAgentFile:async()=>({file_id:'owned',status:'queued'}),
@@ -71,4 +72,50 @@ test('explicit reload retries a failed metadata read without duplicate chips or 
  await ui.restoreFiles([{file_id:'owned'}]);assert.equal(ui.attachments.value[0].status,'error')
  await ui.restoreFiles([{file_id:'owned'}]);assert.equal(ui.attachments.value.length,1)
  assert.deepEqual(ui.readyFileIds(),['owned']);scope.stop()
+})
+
+test('taking a sent selection and restoring a failed send keeps newer drafts and does not duplicate chips',async()=>{
+ globalThis.__attachmentTest={...vue,getApiMode:()=> 'http',getAgentFile:async()=>{throw Error('unexpected read')}}
+ const mod=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}#take-restore`)
+ const scope=vue.effectScope();let ui
+ scope.run(()=>ui=mod.useChatAttachments())
+ const sent=vue.reactive({id:'sent-row',name:'sent.pdf',size:10,mime:'application/pdf',status:'ready',excerpt:'',fileId:'sent-file'})
+ const newer=vue.reactive({id:'new-row',name:'new.pdf',size:12,mime:'application/pdf',status:'ready',excerpt:'',fileId:'new-file'})
+ ui.attachments.value=[sent,newer]
+ const taken=ui.takeAttachmentsByFileIds(['sent-file'])
+ assert.deepEqual(taken,[sent]);assert.deepEqual(ui.readyFileIds(),['new-file'])
+ ui.restoreTakenAttachments(taken)
+ ui.restoreTakenAttachments(taken)
+ assert.deepEqual(ui.attachments.value,[newer,sent])
+ assert.deepEqual(ui.readyFileIds(),['new-file','sent-file'])
+ scope.stop()
+})
+
+test('a concurrent upload survives taking the sent file; the send epoch is not invalidated',async()=>{
+ let resolveUpload
+ const upload=new Promise(resolve=>{resolveUpload=resolve})
+ globalThis.__attachmentTest={...vue,getApiMode:()=> 'http',uploadAgentFile:()=>upload}
+ const mod=await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}#take-inflight`)
+ const scope=vue.effectScope();let ui
+ scope.run(()=>ui=mod.useChatAttachments())
+ ui.attachments.value.push(vue.reactive({id:'sent-row',name:'sent.pdf',size:10,mime:'application/pdf',status:'ready',excerpt:'',fileId:'sent-file'}))
+ const pending=ui.addFiles([{name:'new.pdf',size:12,type:'application/pdf'}])
+ const taken=ui.takeAttachmentsByFileIds(['sent-file'])
+ resolveUpload({file_id:'new-file',status:'ready',filename:'new.pdf'})
+ await pending
+ assert.deepEqual(ui.readyFileIds(),['new-file'])
+ ui.restoreTakenAttachments(taken)
+ assert.deepEqual(ui.readyFileIds(),['new-file','sent-file'])
+ scope.stop()
+})
+
+test('Ask send keeps the sent bubble attachment and restores only its draft on same-session failure',()=>{
+ const send=assistantSource.slice(assistantSource.indexOf('async function sendMessage('),assistantSource.indexOf('function startActionPlan('))
+ const messageIndex=send.indexOf('agentChat.addMessage({\n    role: \'user\'')
+ const takeIndex=send.indexOf('takeAttachmentsByFileIds(fileIds)')
+ assert.ok(messageIndex>=0&&takeIndex>messageIndex)
+ assert.match(send,/attachments: readyAtts\.length \? readyAtts\.map\(a => \(\{ name: a\.name \}\)\) : undefined/)
+ assert.match(send,/submittedSessionId && agentChat\.activeSessionId === submittedSessionId\)\s*\{\s*restoreTakenAttachments\(submittedAttachments\)/)
+ assert.match(send,/if \(userMsg && !inputMessage\.value\.trim\(\)\) inputMessage\.value = userMsg/)
+ assert.doesNotMatch(send,/clearAttachments\(\)/)
 })

@@ -36,7 +36,6 @@ async function upload(event:Event){
 }
 async function send(){
  await task.send(task.draft,task.readyFileIds())
- if(!task.error)task.clearAttachments()
 }
 async function open(){
  if(opening.value)return
