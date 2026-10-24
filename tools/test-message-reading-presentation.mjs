@@ -38,7 +38,7 @@ for (const name of ['ToolCallCard', 'EvidenceSummaryPart', 'PlanProgress']) regi
 registry.MessagePartsRenderer = await load('MessagePartsRenderer', true)
 const setup = async (name, props) => (await load(name)).setup(props, { expose() {}, emit() {} })
 const render = async (name, props) => renderToString(createSSRApp(registry[name], props))
-const message = parts => ({ id: 'm1', role: 'assistant', content: '', parts })
+const message = (parts, extra = {}) => ({ id: 'm1', role: 'assistant', content: '', parts, ...extra })
 const tool = (summary, status = 'done') => ({ type: 'tool_call', tool_call: { name: 'private_function', status, summary } })
 
 test('adjacent processing is grouped without moving or changing text, questions, citations or artifacts', async () => {
@@ -110,6 +110,61 @@ test('real Lead progress projects only generated protocol labels and distinguish
   assert.equal((actual.match(/读取简历/g) || []).length, 1)
   assert.match(actual, /拟处理步骤 · 尚未完成/)
   assert.match(actual, /核对岗位/)
+})
+
+test('generated explain progress follows the message and authoritative outcome terminal state', async () => {
+  const progress = [{ type: 'progress', title: '当前阶段：explain' }]
+  const running = await render('MessagePartsRenderer', {
+    message: message(progress, { status: 'thinking', outcome: { status: 'running' } }),
+    presentation: 'student',
+  })
+  assert.match(running, /任务仍在处理中/)
+  assert.doesNotMatch(running, /本轮已完成/)
+
+  const completed = await render('MessagePartsRenderer', {
+    message: message(progress, { status: 'done', outcome: { status: 'completed', completion_scope: 'turn' } }),
+    presentation: 'student',
+  })
+  assert.match(completed, /本轮已完成/)
+  assert.doesNotMatch(completed, /正在说明处理方式/)
+
+  for (const [status, title] of [
+    ['needs_input', '需要你回应'], ['partial', '本轮部分完成'], ['failed', '本轮未完成'],
+  ]) {
+    const html = await render('MessagePartsRenderer', {
+      message: message(progress, { status: 'done', outcome: { status, completion_scope: 'turn' } }),
+      presentation: 'student',
+    })
+    assert.match(html, new RegExp(title))
+    assert.doesNotMatch(html, /正在说明处理方式/)
+  }
+
+  const doneWithoutOutcome = await render('MessagePartsRenderer', {
+    message: message(progress, { status: 'done' }), presentation: 'student',
+  })
+  assert.match(doneWithoutOutcome, /本轮已完成/)
+  const nonGenerated = await render('MessagePartsRenderer', {
+    message: message([{ type: 'progress', title: '正在说明处理方式：请核对附件范围' }], { status: 'done' }),
+    presentation: 'student',
+  })
+  assert.match(nonGenerated, /正在说明处理方式：请核对附件范围/)
+})
+
+test('ordinary Ask HTTP replies feed outcome-bearing progress into the shared student renderer', () => {
+  const page = read('../src/views/student/AIAssistant.vue')
+  const rendererStart = page.indexOf('<MessagePartsRenderer')
+  const rendererEnd = page.indexOf('/>', rendererStart)
+  const renderer = page.slice(rendererStart, rendererEnd)
+  assert.match(renderer, /:presentation="isHttpMode \? 'student' : undefined"/)
+  assert.match(renderer, /:message="msg"/)
+
+  const sendStart = page.indexOf('async function sendMessage(')
+  const agentBranch = page.indexOf("interactionMode.value==='agent'", sendStart)
+  const askResponse = page.indexOf('learningStore.getAIResponseFromApi(apiPayload, {', agentBranch)
+  const doneMessage = page.indexOf("status: 'done'", askResponse)
+  const outcome = page.indexOf('outcome: result.outcome', doneMessage)
+  assert.ok(agentBranch >= 0 && askResponse > agentBranch, 'Ask mode must reach the ordinary response path')
+  assert.ok(doneMessage > askResponse && outcome > doneMessage, 'HTTP status and authoritative outcome must reach the rendered message')
 })
 
 test('title-only progress remains visible and entirely empty progress never creates an empty processing group', async () => {
