@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Icon } from '@iconify/vue'
+import { useRouter } from 'vue-router'
 import type { ResumeDiagnosticReport } from '@/api/report'
 import ResumeEntityReview from './ResumeEntityReview.vue'
+import ResumeImprovementPanel from './ResumeImprovementPanel.vue'
+import ReportReadingLayout from '@/components/reports/ReportReadingLayout.vue'
 
 const props = defineProps<{
   report: ResumeDiagnosticReport | null
@@ -10,10 +13,28 @@ const props = defineProps<{
   error?: string
 }>()
 const emit = defineEmits<{ refreshJobs: []; upgradeReport: [] }>()
+const router=useRouter()
+const reader = ref<InstanceType<typeof ReportReadingLayout>>()
+const readingSections = [
+  { id: 'analysis', title: '经历解读' }, { id: 'content', title: '简历内容' },
+  { id: 'improvements', title: '改进建议' }, { id: 'directions', title: '方向线索' },
+  { id: 'basis', title: '资料与依据' },
+]
+function showEvidence(id: string) {
+  const chapter = props.report?.chapters.find(item => item.items.some(entry => entry.id === id))
+  void reader.value?.open(chapter?.id === 'entity_review' ? 'basis' : 'content', `rd-item-${id}`)
+}
 
 const roleDirections = computed(() => props.report?.chapters.find(chapter => chapter.id === 'role_directions') || null)
 const reportChapters = computed(() => props.report?.chapters.filter(chapter => chapter.id !== 'role_directions') || [])
 const publishedJobs = computed(() => props.report?.job_catalog?.items || [])
+const firstReadingQuestion = computed(() => props.report?.analysis?.questions?.[0]?.text || props.report?.improvements?.[0]?.questions?.[0])
+const missingLabels: Record<string,string> = {
+  unparsed_source_pages:'部分原文件尚未读取，请补齐资料后再核对',
+  evidence_grounded_semantic_analysis:'经历解读暂未就绪，不能把它视为已完成的分析',
+  resume_based_role_directions:'岗位方向资料尚未就绪',
+  resume_expression_advice:'改进建议尚未形成，已确认的原文与可用解读仍可阅读',
+}
 
 function roleField(item: { fields: Record<string, unknown> | string | null }, key: string): string {
   if (!item.fields || typeof item.fields === 'string') return ''
@@ -55,7 +76,9 @@ function sourceHost(value?: string | null): string {
 const pageCoverage = computed(() => {
   const coverage = props.report?.coverage
   if (!coverage || coverage.page_count == null) return ''
-  return `已提取 ${coverage.observed_pages?.length ?? 0} / ${coverage.page_count} 页`
+  // The contract does not distinguish physical pages from logical text blocks.
+  // Do not present a text parser's synthetic page=1 as an original PDF locator.
+  return '原文已读取，提取准确性仍需本人核对'
 })
 
 const fieldLabel: Record<string, string> = {
@@ -88,7 +111,7 @@ function fieldsFor(fields: Record<string, unknown> | string | null | undefined) 
   const entries: [string, unknown][] = typeof fields === 'string'
     ? [['content', fields]]
     : Object.entries(fields || {})
-  return entries.map(([key, value]) => ({
+  return entries.filter(([key]) => !/(^_|(?:^|_)(?:id|sha256|hash)$|^(?:source|schema_version|evidence_refs)$)/i.test(key)).map(([key, value]) => ({
     key, label: labelFor(key),
     value: key === 'decision'
       ? ({ equivalent: '可能等价', related: '相关但不等价', unresolved: '尚未判定' }[String(value)] || displayValue(value))
@@ -173,7 +196,7 @@ function presentItem(chapterId: string, item: { label: string; fields: Record<st
       <div>
         <span class="rd-eyebrow">简历诊断 · 仅基于已确认资料</span>
         <h2>你的经历与能力证据</h2>
-        <p>逐章呈现简历证据，并给出可核验的岗位方向；在架岗位只展示已发布来源，绝不以方向推断代替真实招聘信息。</p>
+        <p>回看你的项目、技能和经历，了解值得继续探索的方向。</p>
       </div>
       <span v-if="report" class="rd-status" :class="`rd-status--${report.status}`">
         <Icon :icon="report.status === 'completed' ? 'lucide:badge-check' : 'lucide:circle-alert'" :width="14" />
@@ -193,31 +216,50 @@ function presentItem(chapterId: string, item: { label: string; fields: Record<st
       <Icon icon="lucide:file-search-2" :width="20" />
       <div><strong>报告尚未生成</strong><p>确认简历后，系统会整理简历范围内的诊断；不需要先有岗位匹配结果。</p></div>
     </div>
-    <template v-else>
-      <div class="rd-coverage" v-if="pageCoverage || report.coverage.missing_pages.length">
+    <ReportReadingLayout v-else ref="reader" :resource-key="report.report_id" :sections="readingSections" v-slot="{ section, open }">
+      <p v-if="report.analysis && report.analysis_content_status === 'legacy'" class="rd-warning" role="status">这是此前生成的解读，个人分工仍需对照原文核对；历史内容不会自动改写。</p>
+      <section v-if="section === 'overview'" class="rd-overview">
+        <p v-if="report.analysis?.summary?.text" class="rd-overview__lead">{{ report.analysis.summary.text }}</p>
+          <p v-else class="rd-overview__lead">经历解读尚未就绪；你仍可完整阅读原始资料，也可以先核对需要补清的问题。</p>
+          <div v-if="firstReadingQuestion" class="rd-overview__question"><h3>值得先讲清的问题</h3><p>{{ firstReadingQuestion }}</p><button type="button" @click="open(report.analysis?.summary?.text ? 'analysis' : 'improvements')">{{ report.analysis?.summary?.text ? '阅读完整经历解读 →' : '查看这处补充建议 →' }}</button></div>
+        <div v-if="roleDirections?.items.length" class="rd-overview__directions"><h3>可以继续了解的方向</h3><button v-for="item in roleDirections.items" :key="item.id" type="button" @click="open('directions')">{{ roleField(item, 'title') || item.label }} →</button></div>
+        <p v-if="report.coverage.missing_pages.length" class="rd-warning">部分原文件尚未读取。当前解读不代表全部经历，详见“资料与依据”。</p>
+      </section>
+      <section v-if="section === 'analysis' && report.analysis?.summary?.text" class="rd-analysis" aria-label="从已有经历看起点">
+        <span class="rd-analysis-label"><Icon icon="lucide:sparkles" :width="13" />从已有经历看起点</span>
+        <p>{{ report.analysis.summary.text }}</p>
+        <div v-if="report.analysis.strengths?.length" class="rd-analysis-list"><strong>这些经历可以怎样用起来</strong><span v-for="(item,index) in report.analysis.strengths" :key="index">{{ item.text }} <a v-for="id in item.evidence_ids || []" :key="id" :href="`#rd-item-${id}`" @click.prevent="showEvidence(id)">对照经历</a></span></div>
+        <div v-if="report.analysis.questions?.length" class="rd-analysis-list rd-analysis-list--questions"><strong>值得先讲清的事</strong><span v-for="(item,index) in report.analysis.questions" :key="index">{{ item.text }} <a v-for="id in item.evidence_ids || []" :key="id" :href="`#rd-item-${id}`" @click.prevent="showEvidence(id)">对照经历</a></span></div>
+        <details class="rd-analysis-refs"><summary>解读依据与边界</summary><p>以上是基于本人确认简历的初步解读，不是能力认证；可对照经历核对。</p><a v-for="(id,index) in report.analysis.summary.evidence_ids || []" :key="id" :href="`#rd-item-${id}`" @click.prevent="showEvidence(id)">查看依据 {{ index+1 }}</a></details>
+        <button type="button" class="rd-role-generate" @click="router.push({name:'student-career-report'})">带着这些经历，看看职业攀岩路径</button>
+      </section>
+      <p v-if="section === 'analysis' && !report.analysis?.summary?.text">经历解读尚未就绪；已确认的原有资料仍可在“简历内容”阅读。</p>
+      <ResumeImprovementPanel v-if="section === 'improvements'" expanded :report="report" @generate="emit('upgradeReport')" />
+      <div class="rd-coverage" v-if="section === 'basis' && (pageCoverage || report.coverage.missing_pages.length)">
         <span v-if="pageCoverage"><Icon icon="lucide:files" :width="14" />{{ pageCoverage }}</span>
         <span v-if="report.coverage.missing_pages.length" class="rd-warning">
           <Icon icon="lucide:scan-eye" :width="14" />第 {{ report.coverage.missing_pages.join('、') }} 页缺少可核对内容
         </span>
       </div>
 
-      <section class="rd-role-panel" aria-labelledby="rd-role-title">
+      <section v-if="section === 'directions'" class="rd-role-panel" aria-labelledby="rd-role-title">
         <div class="rd-role-head">
           <div><span class="rd-role-kicker">下一步方向</span><h3 id="rd-role-title">适合继续探索的岗位</h3></div>
           <span v-if="roleDirections?.items.length" class="rd-role-count">{{ roleDirections.items.length }} 个候选方向</span>
         </div>
-        <p class="rd-role-note">候选方向由已确认简历推断，不是岗位匹配结论；岗位目录会独立更新。简历更新后请重新确认，岗位更新无需重传简历。</p>
+        <p class="rd-role-note">这些方向来自已确认的简历，是探索线索，不是岗位匹配结论。</p>
         <div v-if="roleDirections?.items.length" class="rd-role-grid">
           <article v-for="(item, index) in roleDirections.items" :key="item.id" class="rd-role-card">
             <div class="rd-role-card__top"><span class="rd-role-index">方向 {{ String(index + 1).padStart(2, '0') }}</span><span class="rd-role-source">简历推断 · 待核验</span></div>
             <h4>{{ roleField(item, 'title') || item.label }}</h4>
-            <p v-if="roleField(item, 'rationale')" class="rd-role-rationale">{{ roleField(item, 'rationale') }}</p>
-            <div v-if="item.evidence_refs?.length" class="rd-role-evidence">
-              <strong><Icon icon="lucide:quote" :width="12" /> 方向依据</strong>
-              <blockquote v-for="(evidence, evidenceIndex) in item.evidence_refs.slice(0, 3)" :key="`${item.id}-${evidenceIndex}`">
-                <span v-if="evidence.page" class="rd-page">第 {{ evidence.page }} 页</span>{{ evidence.quote || '原文定位已记录' }}
+            <button type="button" class="rd-role-generate" @click="router.push({name:'student-career-report',query:{role:roleField(item,'title') || item.label}})">看看这个方向的起点与下一步</button>
+            <details v-if="item.evidence_refs?.length || roleField(item, 'rationale')" class="rd-role-evidence">
+              <summary>查看方向依据</summary>
+              <p v-if="roleField(item, 'rationale')" class="rd-role-rationale">{{ roleField(item, 'rationale') }}</p>
+              <blockquote v-for="(evidence, evidenceIndex) in item.evidence_refs" :key="`${item.id}-${evidenceIndex}`">
+                {{ evidence.quote || '原文定位已记录' }}
               </blockquote>
-            </div>
+            </details>
             <div v-if="roleQuestions(item).length" class="rd-role-question">
               <strong>进一步确认</strong>
               <ul><li v-for="(question, questionIndex) in roleQuestions(item)" :key="`${item.id}-question-${questionIndex}`">{{ question }}</li></ul>
@@ -248,26 +290,10 @@ function presentItem(chapterId: string, item: { label: string; fields: Record<st
         </div>
       </section>
 
-      <div v-if="reportChapters.length" class="rd-chapters">
-        <section v-if="report.analysis?.summary?.text" class="rd-analysis">
-          <span class="rd-analysis-label"><Icon icon="lucide:sparkles" :width="13" />模型语义解读 · 待核验</span>
-          <small class="rd-analysis-disclaimer">事实卡来自已确认简历；以下是模型综合，不因有引用就自动成为准确结论，请对照原文核对数量与因果判断。</small>
-          <p>{{ report.analysis.summary.text }}</p>
-          <div v-if="report.analysis.summary.evidence_ids?.length" class="rd-analysis-refs">
-            引用 {{ report.analysis.summary.evidence_ids.length }} 项事实：
-            <a v-for="(id, index) in report.analysis.summary.evidence_ids.slice(0, 3)" :key="id" :href="`#rd-item-${id}`">查看依据 {{ index + 1 }}</a>
-            <span v-if="report.analysis.summary.evidence_ids.length > 3">等</span>
-          </div>
-          <div v-if="report.analysis.strengths?.length" class="rd-analysis-list">
-            <strong>可见优势</strong><span v-for="(item, index) in report.analysis.strengths" :key="`strength-${index}`">{{ item.text }} <a v-if="item.evidence_ids?.[0]" :href="`#rd-item-${item.evidence_ids[0]}`">查看依据</a></span>
-          </div>
-          <div v-if="report.analysis.questions?.length" class="rd-analysis-list rd-analysis-list--questions">
-            <strong>值得进一步澄清</strong><span v-for="(item, index) in report.analysis.questions" :key="`question-${index}`">{{ item.text }} <a v-if="item.evidence_ids?.[0]" :href="`#rd-item-${item.evidence_ids[0]}`">查看依据</a></span>
-          </div>
-        </section>
-        <section v-for="chapter in reportChapters" :key="chapter.id" class="rd-chapter">
-          <div class="rd-chapter-heading"><span class="rd-chapter-mark"></span><h3>{{ chapterTitle[chapter.id] || chapter.title }}</h3><span class="rd-chapter-count">{{ chapter.items.length }}</span></div>
-          <p v-if="chapter.id === 'entity_review'" class="rd-entity-note">这些是语义抽取出的实体候选，尚不表示已与库内实体完成归一化。</p>
+      <div v-if="(section === 'content' || section === 'basis') && reportChapters.length" class="rd-chapters">
+        <section v-for="chapter in reportChapters.filter(item => section === 'basis' ? item.id === 'entity_review' : item.id !== 'entity_review')" :key="chapter.id" class="rd-chapter">
+          <div class="rd-chapter-heading"><span class="rd-chapter-mark"></span><h3>{{ chapter.id === 'entity_review' ? '名称与来源核对' : chapterTitle[chapter.id] || chapter.title }}</h3><span class="rd-chapter-count">{{ chapter.items.length }}</span></div>
+          <p v-if="chapter.id === 'entity_review'" class="rd-entity-note">这些名称来自简历，系统提供的相近名称仍需本人核对，不等于已确认是同一项。</p>
           <p v-if="chapter.id === 'entity_review' && chapter.status === 'not_available'" class="rd-entity-note">
             当前已确认资料没有实体对齐记录；历史简历不会被自动改写。重新解析并确认后可产生可审阅候选。
           </p>
@@ -292,14 +318,13 @@ function presentItem(chapterId: string, item: { label: string; fields: Record<st
                 <dt>{{ field.label }}</dt><dd>{{ field.value }}</dd>
               </template>
             </dl>
-            <div v-if="item.evidence_refs?.length" class="rd-evidence">
-              <span class="rd-evidence-label"><Icon icon="lucide:quote" :width="12" />原文依据</span>
+            <details v-if="item.evidence_refs?.length" class="rd-evidence">
+              <summary>查看原文依据</summary>
               <blockquote v-for="(evidence, index) in item.evidence_refs" :key="`${evidence.block_id || 'e'}-${index}`">
-                <span v-if="evidence.page" class="rd-page">第 {{ evidence.page }} 页</span>
                 <span v-if="evidence.quote">{{ evidence.quote }}</span>
                 <span v-else class="rd-no-quote">原文定位已记录</span>
               </blockquote>
-            </div>
+            </details>
             <p v-else class="rd-no-evidence">
               {{ item.evidence_status === 'confirmed_profile_only' ? '来自已确认档案；当前报告未提供逐页原文定位。' : '暂无可定位原文，请对照简历原件核验。' }}
             </p>
@@ -308,18 +333,18 @@ function presentItem(chapterId: string, item: { label: string; fields: Record<st
           </template>
         </section>
       </div>
-      <div v-else class="rd-state"><Icon icon="lucide:file-question" :width="20" /><div><strong>暂无可展示章节</strong><p>服务端报告未返回章节内容，请稍后重试或重新核验简历。</p></div></div>
+      <div v-else-if="section === 'content'" class="rd-state"><Icon icon="lucide:file-question" :width="20" /><div><strong>暂无可展示章节</strong><p>这份报告尚未提供简历内容，请稍后重试或重新核验简历。</p></div></div>
 
-      <section v-if="report.missing_sections.length" class="rd-missing">
+      <section v-if="section === 'basis' && report.missing_sections.length" class="rd-missing">
         <h3><Icon icon="lucide:list-plus" :width="14" />待补充的信息</h3>
-        <ul><li v-for="(item, index) in report.missing_sections" :key="index">{{ item }}</li></ul>
+        <ul><li v-for="(item, index) in report.missing_sections" :key="index">{{ missingLabels[item] || '部分解读尚不可用，请核对资料或稍后重试' }}</li></ul>
       </section>
-      <section v-if="report.limitations.length" class="rd-limitations">
+      <section v-if="section === 'basis' && report.limitations.length" class="rd-limitations">
         <Icon icon="lucide:info" :width="15" />
         <div><strong>阅读说明</strong><p v-for="(item, index) in report.limitations" :key="index">{{ item }}</p></div>
       </section>
-      <footer class="rd-footer">报告版本引用确认任务 {{ report.source_confirmation_task_id }} · {{ report.coverage.accuracy_verified ? '页级证据已校验' : '逐字准确性尚未验证' }}</footer>
-    </template>
+      <footer v-if="section === 'basis'" class="rd-footer">来自本人已确认的简历 · {{ report.coverage.accuracy_verified ? '证据已校验' : '内容准确性仍需本人核对' }}</footer>
+    </ReportReadingLayout>
   </section>
 </template>
 
@@ -421,6 +446,34 @@ function presentItem(chapterId: string, item: { label: string; fields: Record<st
 .rd-limitations strong { font-size: 11px; }
 .rd-limitations p { margin: 4px 0 0; color: #6f695f; font-size: 11px; line-height: 1.6; }
 .rd-footer { max-width: 1080px; margin: 18px auto 0; color: #9b958d; font-size: 10px; overflow-wrap: anywhere; }
+.resume-diagnostic > .reading-layout { max-width: 1080px; margin: 0 auto; --reading-nav-surface: #f7f5f1; }
+.rd-overview__lead { font: 400 17px/1.9 Georgia, 'Noto Serif SC', serif; margin: 0 0 30px; }
+.rd-overview h3 { font-size: 16px; margin: 0 0 8px; }
+.rd-overview__question { margin: 26px 0; padding-left: 16px; border-left: 2px solid #b35439; }
+.rd-overview__question p { margin: 8px 0; }
+.rd-overview button { min-height: 44px; border: 0; padding: 8px 0; background: none; color: #913e25; font: inherit; text-align: left; cursor: pointer; }
+.rd-overview__directions { display: grid; margin: 28px 0; }
+.rd-overview__directions button { border-bottom: 1px solid #ded6cb; }
+.rd-overview button:focus-visible { outline: 2px solid #913e25; outline-offset: 3px; }
+.rd-analysis { border: 0; padding: 0; background: none; }
+.rd-analysis-label { font-size: 13px; letter-spacing: 0; }
+.rd-analysis-list { font-size: 15px; gap: 18px; margin-top: 28px; line-height: 1.85; }
+.rd-analysis-list span { padding: 0; border: 0; background: none; line-height: inherit; }
+.rd-analysis-refs { font-size: 13px; margin-top: 24px; }
+.rd-role-panel { margin: 0; padding: 0; border: 0; background: none; box-shadow: none; }
+.rd-role-grid, .rd-job-list { grid-template-columns: 1fr; gap: 24px; }
+.rd-role-card, .rd-job-card { padding: 0 0 20px; border: 0; border-bottom: 1px solid #ded6cb; background: none; }
+.rd-role-note, .rd-role-rationale, .rd-role-question, .rd-role-evidence blockquote, .rd-role-empty p { font-size: 14px; line-height: 1.8; }
+.rd-role-card__top, .rd-job-card__meta, .rd-job-card__main span { font-size: 12px; }
+.rd-role-generate, .rd-job-refresh { min-height: 44px; font-size: 14px; }
+.rd-item { padding: 18px 0 24px; margin: 0; border: 0; border-bottom: 1px solid #ded8cf; background: none; box-shadow: none; scroll-margin-top: 160px; }
+.rd-item h4 { font-size: 17px; line-height: 1.6; }
+.rd-item-subtitle { font-size: 13px; }
+.rd-item-body, .rd-fields, .rd-evidence blockquote { font-size: 15px; line-height: 1.85; }
+.rd-fields { margin-top: 14px; }
+.rd-no-evidence, .rd-empty-chapter, .rd-entity-note, .rd-limitations p, .rd-coverage, .rd-footer { font-size: 13px; line-height: 1.8; }
+.rd-chapters { gap: 32px; }
+.rd-evidence summary { min-height: 44px; align-content: center; font-size: 13px; cursor: pointer; }
 @keyframes rd-spin { to { transform: rotate(360deg); } }
 @media (max-width: 640px) { .resume-diagnostic { padding: 22px 16px; } .rd-header { display: block; } .rd-status { margin-top: 14px; } .rd-fields { grid-template-columns: 1fr; gap: 2px; } .rd-fields dd { margin-bottom: 7px; } .rd-role-grid,.rd-job-list { grid-template-columns: 1fr; } .rd-role-head { align-items: start; flex-direction: column; } }
 @media (prefers-reduced-motion: reduce) { .rd-spin { animation-duration: 2s; } }

@@ -7,6 +7,7 @@ import ToolCallCard from './ToolCallCard.vue'
 import ArtifactCard from './ArtifactCard.vue'
 import CitationPart from './CitationPart.vue'
 import DataCardPart from './DataCardPart.vue'
+import EvidenceSummaryPart from './EvidenceSummaryPart.vue'
 import PlanProgress from './PlanProgress.vue'
 
 const props = defineProps<{
@@ -14,10 +15,13 @@ const props = defineProps<{
   streamingText?: string
   isStreaming?: boolean
   sessionId?: string | null
+  compactEvidence?: boolean
+  presentation?: 'student'
 }>()
 
 const emit = defineEmits<{
   upgrade: [to?: string]
+  actionPlanStart: [handoffId: string]
 }>()
 
 const thinkingOpen = ref(false)
@@ -51,6 +55,42 @@ const parts = computed<MessagePart[]>(() => {
   return out
 })
 
+type IndexedPart = { part: MessagePart; index: number }
+type ReadingBlock = { process: boolean; items: IndexedPart[] }
+const studentReading = computed(() => props.presentation === 'student')
+// Only adjacent execution parts share a visual sequence. Text, questions,
+// sources and artifacts retain their original positions in the message.
+const readingBlocks = computed<ReadingBlock[]>(() => {
+  const blocks: ReadingBlock[] = []
+  parts.value.forEach((part, index) => {
+    if (studentReading.value && part.type === 'progress') {
+      const progress = part.progress || {}
+      const hasVisibleDetails = ['plan_sketch', 'executed_steps', 'missing_slots', 'filenames']
+        .some(key => Array.isArray(progress[key]) && (progress[key] as unknown[]).some(item => typeof item === 'object' ? !!item : String(item).trim()))
+        || typeof progress.document_complete === 'boolean'
+      if (!part.title?.trim() && !part.summary?.trim() && !hasVisibleDetails) return
+    }
+    const process = studentReading.value && (part.type === 'tool_call' || part.type === 'progress')
+    const previous = blocks[blocks.length - 1]
+    if (process && previous?.process) previous.items.push({ part, index })
+    else blocks.push({ process, items: [{ part, index }] })
+  })
+  return blocks
+})
+
+const modeLabels: Record<string, string> = { ask: '直接回答', agent: '自动处理', experts: '协作处理' }
+function upgradeLabel(to: string) { return modeLabels[to] || '' }
+// Exact legacy UI wording only. Other reasons may carry unique business facts;
+// never replace them based on keywords such as “预算” or “模式”.
+const legacyInternalUpgradeReasons = new Set(['该请求更适合更高预算模式。'])
+function upgradeDescription(to: string, reason?: string) {
+  if (reason?.trim() && !legacyInternalUpgradeReasons.has(reason.trim())) return reason
+  return ({ ask: '适合直接讨论的问题，可以使用“直接回答”。',
+    agent: '需要结合资料继续处理时，可以选择“自动处理”。',
+    experts: '需要从不同视角继续讨论时，可以选择“协作处理”。',
+  } as Record<string, string>)[to] || '如需调整处理方式，可以在输入框旁选择模式。'
+}
+
 function displayText(part: MessagePart): string {
   if (part.type !== 'text') return ''
   if (props.isStreaming) return props.streamingText || ''
@@ -70,6 +110,19 @@ function thinkingParas(text?: string): string[] {
 function outcomeLabel(): string {
   const outcome = props.message.outcome
   if (!outcome) return ''
+  if (studentReading.value) {
+    if (outcome.status === 'running') return '正在处理中。'
+    if (outcome.status === 'needs_input') return '还需要你补充一点信息，可以在这里继续回答。'
+    if (outcome.status === 'partial') {
+      if (outcome.next_action === 'answer_in_session') return '这轮只完成了一部分，还需要你回答下面的问题。'
+      if (outcome.next_action === 'poll_run') return '这轮只完成了一部分，可继续查看处理进展。'
+      if (outcome.next_action === 'retry_new_turn') return '这轮只完成了一部分。可先阅读已有内容，再重新发起未完成的部分。'
+      return '这轮只完成了一部分，不能视为全部完成。'
+    }
+    if (outcome.status === 'failed') return outcome.next_action === 'retry_new_turn'
+      ? '这轮未能完成，可以重新发起。' : '这轮未能完成。'
+    return ''
+  }
   switch (outcome.status) {
     case 'needs_input': return '还需要一点信息，可以直接在这里继续回答。'
     case 'running': return outcome.run_id ? `任务进行中（${outcome.run_id}）。` : '任务进行中。'
@@ -81,7 +134,7 @@ function outcomeLabel(): string {
 </script>
 
 <template>
-  <div class="parts">
+  <div class="parts" :class="{ 'parts--student': studentReading }">
     <div
       v-if="outcomeLabel()"
       class="outcome-notice"
@@ -106,12 +159,22 @@ function outcomeLabel(): string {
       </div>
     </div>
 
-    <template v-for="(part, i) in parts" :key="`${message.id}-part-${i}`">
+    <template v-for="block in readingBlocks" :key="`${message.id}-block-${block.items[0]?.index}`">
+      <section v-if="block.process" class="message-process" aria-label="处理步骤">
+        <h3 class="message-process__title">处理步骤</h3>
+        <ol class="message-process__steps">
+          <li v-for="{ part, index } in block.items" :key="`${message.id}-process-${index}`">
+            <ToolCallCard v-if="part.type === 'tool_call'" :tool="part.tool_call" presentation="student" />
+            <PlanProgress v-else-if="part.type === 'progress'" :title="part.title" :summary="part.summary" :progress="part.progress" presentation="student" />
+          </li>
+        </ol>
+      </section>
+    <template v-else v-for="{ part, index: i } in block.items" :key="`${message.id}-part-${i}`">
       <!-- text -->
       <div
         v-if="part.type === 'text'"
         class="msg__body"
-        v-html="renderMarkdown(displayText(part))"
+        v-html="renderMarkdown(displayText(part), studentReading ? { studentTables: true } : undefined)"
       />
 
       <!-- 工具调用（零字段渲染） -->
@@ -140,6 +203,28 @@ function outcomeLabel(): string {
         :items="part.items"
       />
 
+      <details v-else-if="part.type === 'evidence_summary' && compactEvidence && !studentReading" class="message-evidence-disclosure">
+        <summary>{{part.title || '参考资料'}} · {{part.status==='complete'?'已读取':'读取范围有限'}}</summary>
+        <EvidenceSummaryPart :summary="part"/>
+      </details>
+      <EvidenceSummaryPart
+        v-else-if="part.type === 'evidence_summary'"
+        :summary="part"
+        :presentation="presentation"
+      />
+
+      <div v-else-if="part.type === 'action_plan_handoff' && part.stage === 'offer'" class="action-plan-offer">
+        <p>想好先从哪项差距开始了吗？可以把这次报告和简历里的依据整理成一周行动计划。</p>
+        <button type="button" @click="emit('actionPlanStart', part.handoff_id)">
+          <Icon icon="lucide:list-checks" :width="15" />
+          把这个差距变成行动计划
+        </button>
+      </div>
+      <div v-else-if="part.type === 'action_plan_handoff' && part.stage === 'awaiting_time'" class="action-plan-prompt">
+        <Icon icon="lucide:calendar-clock" :width="15" />
+        <span>回复每周大约能投入的时间，我会按这个节奏安排。</span>
+      </div>
+
       <!-- 进度 -->
       <PlanProgress
         v-else-if="part.type === 'progress'"
@@ -154,14 +239,15 @@ function outcomeLabel(): string {
         class="upgrade-hint"
       >
         <span class="upgrade-hint__text">
-          {{ part.reason || '该请求更适合更高预算模式。' }}
+          {{ studentReading ? upgradeDescription(String(part.to), part.reason) : part.reason || '该请求更适合更高预算模式。' }}
         </span>
         <button
           type="button"
+          v-if="!studentReading || upgradeLabel(String(part.to))"
           class="upgrade-hint__btn"
           @click="emit('upgrade', String(part.to))"
         >
-          切换到 {{ String(part.to).toUpperCase() }}
+          切换到 {{ studentReading ? upgradeLabel(String(part.to)) : String(part.to).toUpperCase() }}
         </button>
       </div>
 
@@ -174,6 +260,7 @@ function outcomeLabel(): string {
         {{ part.text }}
       </div>
     </template>
+    </template>
   </div>
 </template>
 
@@ -182,6 +269,39 @@ function outcomeLabel(): string {
   display: grid;
   gap: 10px;
 }
+.parts--student { gap: 20px; }
+.parts--student .msg__body { font-size: 15px; line-height: 1.85; overflow-wrap: anywhere; }
+.parts--student, .parts--student .msg__body { min-width: 0; }
+.parts--student .msg__body :deep(.md-table-scroll) { max-width: 100%; overflow-x: auto; margin: 18px 0; overscroll-behavior-x: contain; }
+.parts--student .msg__body :deep(.md-table-scroll:focus-visible) { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.parts--student .msg__body :deep(.md-table) { border-collapse: collapse; width: max-content; min-width: 100%; font-size: 14px; line-height: 1.75; }
+.parts--student .msg__body :deep(.md-table th), .parts--student .msg__body :deep(.md-table td) { min-width: 9rem; max-width: 24rem; padding: 12px 14px; border: 1px solid var(--color-border, #dce1e5); text-align: left; vertical-align: top; white-space: normal; }
+.parts--student .msg__body :deep(.md-table th) { font-weight: 600; background: var(--color-surface, #fafaf9); }
+.message-process { padding: 12px 0; border-top: 1px solid var(--color-border, #dce1e5); border-bottom: 1px solid var(--color-border, #dce1e5); }
+.message-process__title { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--color-text-muted, #64748b); }
+.message-process__steps { list-style: none; margin: 0; padding: 0; }
+.message-process__steps > li + li { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--color-border, #e3e7eb); }
+.parts--student .outcome-notice { padding: 8px 0; border-radius: 0; background: transparent; font-size: 14px; line-height: 1.7; }
+.parts--student .upgrade-hint { flex-wrap: wrap; border-radius: 0; padding: 12px 0; background: transparent; border-top: 1px solid var(--color-border, #dce1e5); }
+.parts--student .upgrade-hint__btn, .parts--student .action-plan-offer button { min-height: 44px; }
+.parts--student .upgrade-hint__btn { background: var(--color-primary, #8b351e); }
+.parts--student .upgrade-hint__btn:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.action-plan-offer {
+  display: grid;
+  gap: 9px;
+  justify-items: start;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--el-color-primary) 22%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--el-color-primary) 5%, white);
+}
+.action-plan-offer p { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; line-height: 1.55; }
+.action-plan-offer button {
+  display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px;
+  border: 0; border-radius: 10px; background: var(--el-color-primary); color: white;
+  font: inherit; font-size: 13px; font-weight: 650; cursor: pointer;
+}
+.action-plan-prompt { display: flex; align-items: center; gap: 7px; color: var(--el-text-color-secondary); font-size: 12px; }
 
 .outcome-notice {
   border-radius: 10px;

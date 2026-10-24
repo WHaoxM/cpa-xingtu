@@ -7,6 +7,7 @@ export interface TreemapCategory {
   id: string
   name: string
 }
+export interface TreemapAggregate { id: string; name: string; count: number }
 
 export interface TreemapCourse {
   id: string
@@ -19,6 +20,7 @@ export interface TreemapCourse {
 const props = defineProps<{
   categories: TreemapCategory[]
   courses: TreemapCourse[]
+  aggregates?: TreemapAggregate[]
 }>()
 
 const emit = defineEmits<{
@@ -37,6 +39,11 @@ const CHART_COLORS = [
 ]
 
 function buildHierarchy() {
+  if (props.aggregates) {
+    return { name: 'root', children: props.aggregates.filter(c => c.count > 0).map(c => ({
+      name: c.name, catId: c.id, children: [{name: c.name, catId: c.id, value: c.count}],
+    })) }
+  }
   const catMap = new Map(props.categories.map(c => [c.id, c.name]))
   const grouped = new Map<string, TreemapCourse[]>()
   for (const course of props.courses) {
@@ -72,7 +79,9 @@ function draw() {
 
   d3.select(svgEl).selectAll('*').remove()
 
-  const root = d3.hierarchy(buildHierarchy())
+  const hierarchy = buildHierarchy()
+  if (!hierarchy.children.length) return
+  const root = d3.hierarchy(hierarchy)
     .sum((d: any) => d.value ?? 0)
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
 
@@ -98,6 +107,12 @@ function draw() {
     .join('g')
     .attr('class', 'cat-group')
     .style('cursor', 'pointer')
+    .attr('tabindex', 0)
+    .attr('role', 'button')
+    .attr('aria-label', (d: any) => `筛选${d.data.name}${props.aggregates ? `，${d.value} 门课程` : ''}`)
+    .on('keydown', (evt: KeyboardEvent, d: any) => {
+      if (evt.key === 'Enter' || evt.key === ' ') { evt.preventDefault(); emit('select-category', d.data.catId) }
+    })
     .on('click', (_evt: MouseEvent, d: any) => {
       emit('select-category', d.data.catId)
     })
@@ -137,7 +152,8 @@ function draw() {
     .attr('class', 'leaf')
     .style('cursor', 'pointer')
     .on('click', (_evt: MouseEvent, d: any) => {
-      emit('select-course', d.data.courseId)
+      if (props.aggregates) emit('select-category', d.data.catId)
+      else emit('select-course', d.data.courseId)
     })
     .on('mouseenter', (evt: MouseEvent, d: any) => {
       showTooltip(evt, d.data.name, d.value ?? 0, d.data.isHighlighted)
@@ -196,7 +212,7 @@ function draw() {
 
     if (canTwoLine) {
       const dur = d.value ?? 0
-      const durText = dur >= 60 ? `${Math.round(dur / 60)}h` : `${dur}min`
+      const durText = props.aggregates ? `${dur} 门课程` : dur >= 60 ? `${Math.round(dur / 60)}h` : `${dur}min`
       g.append('text')
         .attr('x', d.x0 + padX)
         .attr('y', yBase + fontSize + 3)
@@ -227,11 +243,9 @@ function ensureTooltip() {
 function showTooltip(evt: MouseEvent, name: string, duration: number, highlighted: boolean) {
   ensureTooltip()
   if (!tooltipEl) return
-  tooltipEl.innerHTML = [
-    `<strong>${name}</strong>`,
-    `时长：${duration} 分钟`,
-    highlighted ? '<span style="color:#8B2500;font-size:10px">★ 推荐课程</span>' : '',
-  ].filter(Boolean).join('<br/>')
+  // Catalog names are server data. Never treat them as HTML in a body tooltip.
+  tooltipEl.textContent = `${name}\n${props.aggregates ? `课程数：${duration} 门` : `时长：${duration} 分钟`}${highlighted ? '\n★ 推荐课程' : ''}`
+  tooltipEl.style.whiteSpace = 'pre-line'
   tooltipEl.style.display = 'block'
   moveTooltip(evt)
 }
@@ -261,13 +275,13 @@ onBeforeUnmount(() => {
   }
 })
 
-watch([() => props.courses, () => props.categories], () => draw(), { deep: true })
+watch([() => props.courses, () => props.categories, () => props.aggregates], () => draw(), { deep: true })
 </script>
 
 <template>
   <div ref="containerRef" class="treemap-wrap">
     <svg ref="svgRef" class="treemap-svg" />
-    <div v-if="!courses.length" class="treemap-empty">暂无课程数据</div>
+    <div v-if="aggregates ? !aggregates.some(c => c.count > 0) : !courses.length" class="treemap-empty">暂无课程数据</div>
   </div>
 </template>
 

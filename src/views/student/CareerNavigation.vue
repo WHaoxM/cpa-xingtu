@@ -7,9 +7,12 @@ import { gsap } from '@/plugins/gsap'
 import { useUserStore } from '@/stores'
 import UserInfoBar from '@/components/UserInfoBar.vue'
 import { useResumeStore } from '@/stores/resume'
+import { getResumeDraft } from '@/api/resumeDraft'
 import CareerAgentDashboard from '@/components/career/CareerAgentDashboard.vue'
 import CareerNavigationIdlePreview from '@/components/career/CareerNavigationIdlePreview.vue'
+import CareerNavigationBackdrop from '@/components/career/CareerNavigationBackdrop.vue'
 import ResumeDiagnosticReport from '@/components/career/ResumeDiagnosticReport.vue'
+import BackendDevelopmentPathway from '@/components/career/BackendDevelopmentPathway.vue'
 import { usePortraitSession } from '@/composables/usePortraitSession'
 import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
 import type { AgentPortraitInput } from '@/composables/useAgentPortrait'
@@ -21,6 +24,7 @@ import {
   mapCatalogRoleToDomain,
 } from '@/composables/useCareerInsights'
 import type { CareerRole } from '@/composables/useCareerInsights'
+import { ApiError } from '@/api/types'
 import {
   uploadResumeFile,
   extractSkillsOnly,
@@ -55,8 +59,8 @@ import {
 } from '@/api/report'
 import { hybridCandidates, getMatchExplain, type MatchExplain } from '@/api/match'
 import { DEMO_STUDENT_ID, getApiMode } from '@/api/config'
-import { ApiError } from '@/api/types'
 import { splitResumeTraceAttempts } from '@/utils/resumeTraceAttempts'
+import { currentPortraitLocation, followupStatus } from '@/utils/portraitFollowup'
 
 const router = useRouter()
 const route = useRoute()
@@ -74,9 +78,19 @@ const uploadedFileName = ref('')
 const uploadedFile = ref<File | null>(null)
 const parseError = ref('')
 const parsePhase = ref<ParsePhase>('idle')
+const visualMotionPaused = ref(false)
+function updateVisualVisibility() { visualMotionPaused.value = document.hidden }
 const isHttpMode = getApiMode() === 'http'
+const portraitFollowup = computed(() => isHttpMode && route.query.from === 'my-reports'
+  && (route.query.focus === 'resume' || route.query.focus === 'self-report'))
+const followupError = ref(''), followupNotice = ref(''), followupSaved = ref(false), followupReturning = ref(false)
+const followupAnalysisTask = ref('')
+let followupEpoch = 0, workbenchRequestSeq = 0
+let followupFocusedTask = ''
 const resumeCandidate = ref<ResumeCandidate | null>(null)
 const workbenchState = ref<StudentWorkbenchState | null>(null)
+const restoringWorkbench = ref(false)
+const workbenchRestoreError = ref('')
 const portraitHistory = ref<PortraitSnapshot[]>([])
 const historicalPortrait = ref<PortraitSnapshot | null>(null)
 const portraitHistoryError = ref('')
@@ -119,8 +133,10 @@ function stopAnalysisRefresh() {
   analysisRefreshTimer = null
 }
 async function refreshWorkbenchState(taskId: string) {
+  const owner = userStore.currentUser?.id, seq = ++workbenchRequestSeq
   try {
     const response = await getStudentWorkbenchState()
+    if (seq !== workbenchRequestSeq || owner !== userStore.currentUser?.id) return
     if (response.success && response.data && resumeCandidate.value?.task_id === taskId
         && response.data.source_confirmation_task_id === taskId) {
       workbenchState.value = response.data
@@ -140,7 +156,7 @@ async function refreshWorkbenchState(taskId: string) {
       if ((portrait.state === 'ready_with_unknowns' || portrait.state === 'ready_scored')
           && portrait.task_id && (partialPortrait.value?.task_id || authoritativePortrait.value?.task_id) !== portrait.task_id) {
         const current = await getResumeCandidate(taskId)
-        if (resumeCandidate.value?.task_id !== taskId || !current.success || !current.data) return
+        if (seq !== workbenchRequestSeq || owner !== userStore.currentUser?.id || resumeCandidate.value?.task_id !== taskId || !current.success || !current.data) return
         const saved = current.data.portrait_task
         if (saved?.task_id === portrait.task_id) {
           resumeCandidate.value = current.data
@@ -148,7 +164,9 @@ async function refreshWorkbenchState(taskId: string) {
           if (saved.status === 'completed' && saved.portrait_id && saved.portrait) {
             authoritativePortrait.value = { ...saved, portrait_ready: true }
           }
-          rightRealView.value = 'portrait'
+          // An arriving portrait updates its data, not the reader's choice.
+          // The report button may have been clicked while this read waited.
+          rightRealView.value = route.query.result_view === 'pathway' ? 'pathway' : route.query.result_view === 'report' ? 'report' : rightRealView.value
           void replayTaskEvents(saved.task_id, true)
         }
       }
@@ -161,7 +179,7 @@ async function refreshWorkbenchState(taskId: string) {
   } catch {
     // The verified candidate remains readable even if the aggregate read is
     // temporarily unavailable; it must not be replaced with mock progress.
-    if (resumeCandidate.value?.task_id === taskId && confirmedProfile.value?.profile_ready
+    if (seq === workbenchRequestSeq && owner === userStore.currentUser?.id && resumeCandidate.value?.task_id === taskId && confirmedProfile.value?.profile_ready
         && analysisRefreshTimer == null) analysisRefreshTimer = window.setTimeout(() => {
       analysisRefreshTimer = null
       void refreshWorkbenchState(taskId)
@@ -174,6 +192,13 @@ const authoritativePortrait = ref<ConfirmedPipelineResult | null>(null)
 const partialPortrait = ref<ConfirmedPipelineResult | null>(null)
 const userSelfReport = ref<UserSelfReport | null>(null)
 const selfReportSaving = ref(false)
+const selfReportError = ref('')
+const selfReportErrorElement = ref<HTMLElement | null>(null)
+async function showSelfReportError(message: string) {
+  selfReportError.value = message
+  await nextTick()
+  if (selfReportError.value === message) selfReportErrorElement.value?.scrollIntoView({ block: 'nearest' })
+}
 const skillExploration = ref<SkillExploration | null>(null)
 const skillExplorationDraft = ref('')
 const skillExplorationSaving = ref(false)
@@ -192,6 +217,7 @@ const SELF_REPORT_FIELDS = [
 const selfReportDraft = ref<Record<string, { level: string; example: string }>>(
   Object.fromEntries(SELF_REPORT_FIELDS.map(field => [field.key, { level: '', example: '' }])))
 function setSelfReportDraft(report: UserSelfReport | null) {
+  selfReportError.value = ''
   userSelfReport.value = report
   selfReportDraft.value = Object.fromEntries(SELF_REPORT_FIELDS.map(({ key }) => [key, {
     level: report?.items?.[key]?.level || '',
@@ -201,7 +227,11 @@ function setSelfReportDraft(report: UserSelfReport | null) {
 const resumeDiagnosticReport = ref<ResumeDiagnosticReportData | null>(null)
 const resumeReportLoading = ref(false)
 const resumeReportError = ref('')
-const rightRealView = ref<'portrait' | 'report'>('portrait')
+const rightRealView = ref<'portrait' | 'report' | 'pathway'>('portrait')
+function selectRealView(view: 'portrait' | 'report' | 'pathway') {
+  rightRealView.value = view
+  void router.replace({ query: { ...route.query, result_view: view } })
+}
 const mobileProcessOpen = ref(false)
 const processTriggerRef = ref<HTMLButtonElement | null>(null)
 const processCloseRef = ref<HTMLButtonElement | null>(null)
@@ -224,6 +254,7 @@ const tracePartitions = computed(() => splitResumeTraceAttempts(resumeTrace.valu
 const activeResumeTaskId = ref('')
 const acceptingUpload = ref(false)
 const resumeWaitingNotice = ref(false)
+const resumeTaskReadUnavailable = ref(false)
 type StoredTaskStatus = {
   task_id: string
   pipeline: string
@@ -246,6 +277,8 @@ let traceCursor = 0
 let traceTaskId = ''
 let traceReplaySeq = 0
 let resumeTaskPollTimer: number | null = null
+let resumeStatusRetryCount = 0
+const resumeStatusRetryPaused = ref(false)
 let resumeReportRequestSeq = 0
 let pendingFirstObservedAt = 0
 function stopEventPoll() {
@@ -253,6 +286,41 @@ function stopEventPoll() {
   eventPollTimer = null
   if (resumeTaskPollTimer != null) window.clearTimeout(resumeTaskPollTimer)
   resumeTaskPollTimer = null
+}
+function isPermanentTaskReadError(error: unknown) {
+  return error instanceof ApiError && [401, 403, 404].includes(error.status)
+}
+function retryResumeTaskRead(taskId: string, seq: number, error: unknown) {
+  if (seq !== candidateLoadSeq || activeResumeTaskId.value !== taskId) return
+  resumeTaskReadUnavailable.value = true
+  resumeStatusRetryCount += 1
+  if (isPermanentTaskReadError(error)) {
+    resumeStatusRetryPaused.value = true
+    parseError.value = (error as ApiError).status === 401
+      ? '登录已失效，请重新登录后从职途导航找回这份简历任务。任务已保留，请勿重新上传。'
+      : '当前账号无法读取这份简历任务。请返回职途导航核对账号或当前资料；任务不会被重新上传或标记完成。'
+    return
+  }
+  if (resumeStatusRetryCount >= 8) {
+    resumeStatusRetryPaused.value = true
+    parseError.value = '任务进度连续多次无法读取，自动重试已暂停。任务仍保留；可手动重试读取，或稍后返回此页面。请勿重新上传。'
+    return
+  }
+  const delayMs = Math.min(1500 * (2 ** (resumeStatusRetryCount - 1)), 15000)
+  resumeTaskPollTimer = window.setTimeout(() => {
+    if (seq !== candidateLoadSeq || activeResumeTaskId.value !== taskId) return
+    void pollPendingResumeTask(taskId, seq)
+  }, delayMs)
+}
+function retryCurrentResumeTaskRead() {
+  const taskId = activeResumeTaskId.value
+  if (!taskId) return
+  if (resumeTaskPollTimer != null) window.clearTimeout(resumeTaskPollTimer)
+  resumeTaskPollTimer = null
+  resumeStatusRetryCount = 0
+  resumeStatusRetryPaused.value = false
+  parseError.value = '正在重新读取这份简历任务；不会重复上传。'
+  void pollPendingResumeTask(taskId, candidateLoadSeq)
 }
 async function replayResumeTrace(taskId: string, reset = false) {
   const replaySeq = ++traceReplaySeq
@@ -348,16 +416,11 @@ const CANDIDATE_ORDER = [
   'semantic_facts', 'internship_months', 'gpa', 'rank_percent', 'languages',
   'email', 'phone',
 ]
-const INTERNAL_CANDIDATE_KEYS = new Set([
-  'source', 'source_sha256', 'raw_text_chars', 'structure_path', 'chunk_count',
-  'failed_offsets', 'error', 'next_action', 'structure_calls', 'skill_mentions',
-  'entity_extraction_call', 'entity_extraction_status', 'entity_extraction_issues',
-  'entity_linking',
-])
 const candidateProfile = computed(() => resumeCandidate.value?.candidate_profile || {})
 const candidateFields = computed(() => Object.entries(candidateProfile.value)
-  .filter(([key, value]) => !key.startsWith('_') && !INTERNAL_CANDIDATE_KEYS.has(key)
-    && value !== null && value !== undefined && value !== '')
+  .filter(([key, value]) => CANDIDATE_ORDER.includes(key) && !!CANDIDATE_LABELS[key]
+    && value !== null && value !== undefined && value !== ''
+    && (key !== 'semantic_facts' || candidateSemanticFacts.value.length > 0))
   .sort(([left], [right]) => {
     const leftIndex = CANDIDATE_ORDER.indexOf(left)
     const rightIndex = CANDIDATE_ORDER.indexOf(right)
@@ -367,11 +430,17 @@ const candidateFields = computed(() => Object.entries(candidateProfile.value)
 const candidateSemanticFacts = computed(() => {
   const raw = candidateProfile.value.semantic_facts
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
+  const issues = candidateProfile.value.semantic_fact_issues
+  const invalid = new Set(Array.isArray(issues) ? issues.flatMap(issue => {
+    if (!issue || typeof issue !== 'object' || typeof issue.field !== 'string') return []
+    return [issue.field]
+  }) : [])
   return Object.entries(raw).flatMap(([key, value]) => {
+    if (!FACT_LABELS[key] || invalid.has(key)) return []
     if (!value || typeof value !== 'object' || Array.isArray(value)) return []
     const fact = value as Record<string, unknown>
     if (typeof fact.evidence !== 'string' || !fact.evidence.trim()) return []
-    return [{ key, label: FACT_LABELS[key] || key,
+    return [{ key, label: FACT_LABELS[key],
       value: typeof fact.value === 'boolean' ? (fact.value ? '是' : '否') : String(fact.value ?? ''),
       evidence: fact.evidence.trim() }]
   })
@@ -410,8 +479,8 @@ const candidateCompetitions = computed(() => {
 const evidencePageCount = computed(() => resumeCandidate.value?.source_evidence?.page_count)
 const observedPageCount = computed(() => resumeCandidate.value?.source_evidence?.observed_pages?.length ?? 0)
 const missingSourcePages = computed(() => resumeCandidate.value?.source_evidence?.missing_pages || [])
-const missingFactLabels = computed(() => (partialPortrait.value?.missing_fields || [])
-  .map(key => FACT_LABELS[String(key)] || String(key)))
+const missingFactLabels = computed(() => [...new Set((partialPortrait.value?.missing_fields || [])
+  .map(key => FACT_LABELS[String(key)] || '其他资料尚待核对'))])
 const missingFactKeys = computed(() => new Set(partialPortrait.value?.missing_fields || []))
 const canSupplementBehavior = computed(() => isHttpMode && !!confirmedProfile.value?.profile_ready
   && SELF_REPORT_FIELDS.some(({ key }) => (partialPortrait.value?.missing_fields || []).includes(key)
@@ -445,6 +514,7 @@ const portraitDimensions = computed(() => {
 })
 const showBackendPortrait = computed(() => isHttpMode && !!(partialPortrait.value || authoritativePortrait.value))
 const showBackendWorkspace = computed(() => isHttpMode && (!!confirmedProfile.value?.profile_ready || showBackendPortrait.value))
+const analysisStillRunning = computed(() => workbenchState.value?.analysis_run.state === 'running')
 const realPortraitData = computed(() => {
   if (!showBackendPortrait.value) return null
   const profile = candidateProfile.value
@@ -481,6 +551,7 @@ function displayCandidateValue(value: unknown): string {
 function displayCandidateArrayItem(field: string, value: unknown): string {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return displayCandidateValue(value)
   const item = value as Record<string, unknown>
+  if (field === 'skills') return resumeField(item, 'name')
   if (field === 'projects') {
     return [resumeField(item, 'name'), resumeField(item, 'role'),
       typeof item.is_team === 'boolean' ? (item.is_team ? '团队项目' : '个人项目') : '',
@@ -515,7 +586,8 @@ function applyResumeCandidate(taskId: string, candidate: ResumeCandidate) {
     if (portrait?.status === 'completed' && portrait.portrait_id && portrait.portrait) {
       authoritativePortrait.value = { ...portrait, portrait_ready: true }
     }
-    if (!portrait?.portrait && portrait?.status !== 'partial') rightRealView.value = 'report'
+    if (route.query.result_view === 'pathway') rightRealView.value = 'pathway'
+    else if (route.query.result_view === 'report' || (!portrait?.portrait && portrait?.status !== 'partial')) rightRealView.value = 'report'
     parsePhase.value = 'verified'
     void refreshWorkbenchState(taskId)
     void replayTaskEvents(portrait?.task_id || taskId, true)
@@ -532,11 +604,22 @@ async function pollPendingResumeTask(taskId: string, seq: number, reset = false)
     if (seq !== candidateLoadSeq) return
     const task = statusEnv.data as StoredTaskStatus | undefined
     if (!statusEnv.success || !task) throw new Error(statusEnv.error || '简历任务状态不可读取')
-    if (task.pipeline !== 'L0_parse_resume') return
+    if (task.pipeline !== 'L0_parse_resume') {
+      parseError.value = '这不是简历解析任务，无法在此页面继续核对。请从职途导航重新打开当前简历进度。'
+      parsePhase.value = 'failed'
+      return
+    }
     activeResumeTaskId.value = taskId
     await replayResumeTrace(taskId, reset)
     if (seq !== candidateLoadSeq) return
     if (task.status === 'pending' || task.status === 'running') {
+      // A successful pending status read is a complete useful poll. A
+      // terminal/needs_input status is not complete until its candidate read
+      // also succeeds, so do not reset the candidate-read retry budget here.
+      resumeStatusRetryCount = 0
+      resumeStatusRetryPaused.value = false
+      resumeTaskReadUnavailable.value = false
+      parseError.value = ''
       parsePhase.value = 'parsing'
       if (task.status === 'pending' && traceAttempt.value === 0 && !traceError.value) {
         if (!pendingFirstObservedAt) pendingFirstObservedAt = Date.now()
@@ -562,16 +645,81 @@ async function pollPendingResumeTask(taskId: string, seq: number, reset = false)
     const candidateEnv = await getResumeCandidate(taskId)
     if (seq !== candidateLoadSeq) return
     if (!candidateEnv.success || !candidateEnv.data) throw new Error(candidateEnv.error || '无法读取简历候选')
+    resumeStatusRetryCount = 0
+    resumeStatusRetryPaused.value = false
+    resumeTaskReadUnavailable.value = false
+    parseError.value = ''
     applyResumeCandidate(taskId, candidateEnv.data)
   } catch (error) {
     if (seq !== candidateLoadSeq) return
-    parseError.value = error instanceof Error ? error.message : '简历解析状态暂不可用'
-    parsePhase.value = 'idle'
+    // A failed status read is not evidence that the accepted task failed.
+    // Keep the task page mounted and retry; terminal failure is handled only
+    // after the server explicitly returns status=failed above.
+    parseError.value = '简历任务已接收，但当前进度暂不可读取；正在自动重试。请勿重新上传。'
+    parsePhase.value = 'parsing'
+    retryResumeTaskRead(taskId, seq, error)
   }
 }
+async function restoreWorkbenchEntry(seq = ++candidateLoadSeq) {
+  // A menu visit has no task link. Recover from the current Principal's
+  // authoritative workbench, never from another account's local draft/cache.
+  if (!isHttpMode || route.query.task_id || route.query.new_resume === '1') return
+  const owner = userStore.currentUser?.id
+  restoringWorkbench.value = true
+  workbenchRestoreError.value = ''
+  try {
+    const response = await getStudentWorkbenchState()
+    if (seq !== candidateLoadSeq || userStore.currentUser?.id !== owner) return
+    if (!response.success || !response.data) throw new Error('无法读取当前简历进度')
+    const taskId = portraitFollowup.value ? response.data.source_confirmation_task_id
+      : response.data.run.task_id || response.data.source_confirmation_task_id
+    if (portraitFollowup.value && !taskId) throw new Error('没有已确认简历')
+    if (taskId) {
+      if (!/^task_[A-Za-z0-9]+$/.test(taskId)) throw new Error('当前简历进度暂不可用')
+      await router.replace({ query: { ...route.query, task_id: taskId } })
+    }
+  } catch {
+    if (seq === candidateLoadSeq && userStore.currentUser?.id === owner) {
+      workbenchRestoreError.value = '暂时无法找回简历进度，请重试。已有资料不会因此删除，请勿重复上传。'
+    }
+  } finally {
+    // A task route has its own candidate read; it must not leave this gate open.
+    if (seq === candidateLoadSeq || route.query.task_id) restoringWorkbench.value = false
+  }
+}
+
 watch(() => route.query.task_id, async value => {
   const seq = ++candidateLoadSeq
-  if (!isHttpMode || typeof value !== 'string') return
+  if (!isHttpMode) return
+  if (portraitFollowup.value) {
+    const owner = userStore.currentUser?.id
+    restoringWorkbench.value = true; followupError.value = ''
+    try {
+      const current = await getStudentWorkbenchState()
+      if (seq !== candidateLoadSeq || owner !== userStore.currentUser?.id) return
+      if (!current.success || !current.data) throw Error('当前资料暂时无法读取，请重试。')
+      const source = current.data.source_confirmation_task_id
+      if (!source) throw Error('目前没有已确认简历。可以先返回书架；本页不会自动提交或修改资料。')
+      if (value !== source) {
+        await router.replace({ query: { ...route.query, task_id: source,
+          ...(value ? { updated: '1' } : {}) } })
+        return
+      }
+      if (route.query.updated === '1') followupNotice.value = '简历确认版本已有变化，下面显示当前资料，不会修改旧画像。'
+    } catch {
+      if (seq === candidateLoadSeq && owner === userStore.currentUser?.id) {
+        followupError.value = '当前确认资料暂不可用，请重试。没有已确认简历时需先完成确认；这里不会自动上传。'
+        restoringWorkbench.value = false
+      }
+      return
+    }
+  }
+  if (typeof value !== 'string') {
+    await restoreWorkbenchEntry(seq)
+    return
+  }
+  restoringWorkbench.value = false
+  workbenchRestoreError.value = ''
   stopEventPoll()
   stopAnalysisRefresh()
   pendingFirstObservedAt = 0
@@ -607,6 +755,9 @@ watch(() => route.query.task_id, async value => {
   }
   parsePhase.value = 'parsing'
   activeResumeTaskId.value = value
+  resumeStatusRetryCount = 0
+  resumeStatusRetryPaused.value = false
+  resumeTaskReadUnavailable.value = false
   try {
     const env = await getResumeCandidate(value)
     if (seq !== candidateLoadSeq) return
@@ -622,7 +773,7 @@ watch(() => route.query.task_id, async value => {
       if (seq !== candidateLoadSeq) return
       const task = stored.data as StoredTaskStatus | undefined
       if (stored.success && task?.pipeline === 'L0_parse_resume'
-          && (task.status === 'pending' || task.status === 'running')) {
+          && task.status !== 'failed') {
         void pollPendingResumeTask(value, seq, true)
         return
       }
@@ -647,15 +798,27 @@ watch(() => route.query.task_id, async value => {
       if (task?.pipeline === 'L0_parse_resume') void replayResumeTrace(value, true)
       if (seq !== candidateLoadSeq) return
       if (task?.pipeline === 'L0_parse_resume' && task.status === 'failed') {
-        parseError.value = '服务端未能完成简历解析；右侧保留最后完成的后端检查点。'
+        parseError.value = '简历解析未能完成；右侧保留已完成的处理进展。'
+        parsePhase.value = 'failed'
+        return
+      }
+      if (stored.success && task && task.pipeline !== 'L0_parse_resume') {
+        parseError.value = '这不是简历解析任务，无法在此页面继续核对。请从职途导航重新打开当前简历进度。'
         parsePhase.value = 'failed'
         return
       }
       parseError.value = taskSnapshot.value
         ? '这份资料目前不能作为待确认简历打开；可在下方查看任务记录。'
         : (e instanceof Error ? e.message : '无法读取简历候选')
-    } catch {
-      parseError.value = e instanceof Error ? e.message : '无法读取简历候选'
+    } catch (statusReadError) {
+      if (seq !== candidateLoadSeq) return
+      // Candidate reads may legitimately reject an in-progress L0. If the
+      // status endpoint is transiently unavailable too, retain this task
+      // route and retry instead of sending the user back to upload.
+      parseError.value = '简历任务已接收，当前进度暂不可读；正在自动重试。请勿重新上传。'
+      parsePhase.value = 'parsing'
+      retryResumeTaskRead(value, seq, statusReadError)
+      return
     }
     parsePhase.value = 'idle'
   }
@@ -1030,6 +1193,21 @@ async function resolveRoleFromSkills(
 
 async function startParse() {
   if (!pasteText.value.trim() && !uploadedFile.value) return
+  if (parsePhase.value !== 'idle' || draftChecking.value) return
+  if (isHttpMode && route.query.draft_revision) {
+    const owner = userStore.currentUser?.id
+    draftChecking.value = true
+    try {
+      const draft = await getResumeDraft()
+      if (owner !== userStore.currentUser?.id) return
+      if (!draft.success || !draft.data || String(draft.data.revision) !== route.query.draft_revision || draft.data.text !== pasteText.value || uploadedFile.value) {
+        throw new Error('草稿版本或内容已变化，请返回制作页核对后重新提交')
+      }
+    } catch (e) {
+      workbenchRestoreError.value = e instanceof Error ? e.message : '暂时无法核对草稿，请重试'
+      return
+    } finally { draftChecking.value = false }
+  }
 
   isImmersiveLayout.value = false
   dashboardBaselineWidth.value = 0
@@ -1067,7 +1245,7 @@ async function startParse() {
       activeResumeTaskId.value = env.data.task_id
       // The task ID is returned before OCR/model work; refresh can replay it.
       if (route.query.task_id !== env.data.task_id) {
-        await router.replace({ query: { ...route.query, task_id: env.data.task_id } })
+        await router.replace({ query: { ...route.query, new_resume: undefined, draft_revision: undefined, task_id: env.data.task_id } })
       } else {
         void pollPendingResumeTask(env.data.task_id, ++candidateLoadSeq, true)
       }
@@ -1176,7 +1354,7 @@ async function startParse() {
     parsePhase.value = 'done'
     collapseRightDashboard()
   } catch (e) {
-    parseError.value = e instanceof Error ? e.message : '分析失败，请检查后端是否已启动'
+    parseError.value = e instanceof Error ? e.message : '暂时未能完成分析，请稍后再试。'
     parsePhase.value = 'idle'
     isImmersiveLayout.value = false
     dashboardBaselineWidth.value = 0
@@ -1231,6 +1409,7 @@ async function loadResumeDiagnosticReport(generate = false) {
     rightRealView.value = showBackendPortrait.value ? rightRealView.value : 'report'
     if (resumeCandidate.value?.task_id) void refreshWorkbenchState(resumeCandidate.value.task_id)
   } catch (error) {
+    if (seq !== resumeReportRequestSeq) return
     const body = error instanceof ApiError && error.body && typeof error.body === 'object'
       ? error.body as { status?: string; error?: string; next_action?: string }
       : null
@@ -1283,33 +1462,39 @@ async function generateConfirmedPortrait(showParsingState = true) {
 async function submitSelfReport() {
   const taskId = resumeCandidate.value?.task_id
   if (!taskId || selfReportSaving.value) return
+  const owner = userStore.currentUser?.id, seq = candidateLoadSeq
   const items: Record<string, SelfReportItem> = {}
   for (const { key, label } of SELF_REPORT_FIELDS) {
     const draft = selfReportDraft.value[key]
     if (!draft?.level) { items[key] = null; continue }
     if (!['强', '中', '弱'].includes(draft.level) || (draft.example || '').trim().length < 12) {
-      parseError.value = `请为${label}写出至少 12 字的具体经历，或选择“暂不补充”`
+      await showSelfReportError(`请为${label}写出至少 12 字的具体经历，或选择“暂不补充”`)
       return
     }
     items[key] = { level: draft.level as '强' | '中' | '弱', example: draft.example.trim() }
   }
   if (!Object.values(items).some(Boolean) && !userSelfReport.value) {
-    parseError.value = '请至少补充一项具体经历'
+    await showSelfReportError('请至少补充一项具体经历')
     return
   }
-  parseError.value = ''
+  selfReportError.value = ''
   selfReportSaving.value = true
   try {
     const saved = await saveStudentSelfReport(taskId, userSelfReport.value?.revision || 0, items)
+    if (seq !== candidateLoadSeq || owner !== userStore.currentUser?.id) return
     if (!saved.success || !saved.data) throw new Error(saved.error || '自述补充未保存')
     setSelfReportDraft(saved.data)
+    followupSaved.value = true
+    followupAnalysisTask.value = saved.data.portrait_analysis?.task_id || ''
+    ++workbenchRequestSeq
+    workbenchState.value = null
     partialPortrait.value = null
     authoritativePortrait.value = null
     await refreshWorkbenchState(taskId)
   } catch (error) {
-    parseError.value = error instanceof Error ? error.message : '自述补充失败，请刷新后重试'
+    if (seq === candidateLoadSeq && owner === userStore.currentUser?.id) await showSelfReportError(error instanceof Error ? error.message : '补充未保存，请保留输入并重试')
   } finally {
-    selfReportSaving.value = false
+    if (seq === candidateLoadSeq && owner === userStore.currentUser?.id) selfReportSaving.value = false
   }
 }
 
@@ -1363,7 +1548,9 @@ function resetPage() {
   acceptingUpload.value = false
   candidateLoadSeq += 1
   parsePhase.value = 'idle'
-  if (route.query.task_id) void router.replace({ query: { ...route.query, task_id: undefined } })
+  workbenchRestoreError.value = ''
+  restoringWorkbench.value = false
+  if (route.query.task_id) void router.replace({ query: { ...route.query, new_resume: '1', task_id: undefined } })
   resumeCandidate.value = null
   workbenchState.value = null
   historicalPortrait.value = null
@@ -1402,18 +1589,98 @@ function toggleImmersiveLayout() {
 type Stage = { id: string; level: number; name: string; alias: string; years: string; salary: string; salaryNum: [number,number]; icon: string; skills: string[]; milestones: string[]; status: 'completed'|'current'|'locked' }
 ═══════════════════════════════════════════════════════════ */
 
+const followupCurrentState = computed(() => followupAnalysisTask.value && workbenchState.value?.portrait.task_id !== followupAnalysisTask.value ? null : workbenchState.value)
+const followupMessage = computed(() => followupStatus(followupCurrentState.value, followupSaved.value))
+const followupReady = computed(() => !!followupCurrentState.value && !!currentPortraitLocation(followupCurrentState.value).query)
+async function returnToReports() {
+  if (followupReturning.value || selfReportSaving.value) return
+  const epoch = ++followupEpoch, owner = userStore.currentUser?.id
+  followupReturning.value = true; followupError.value = ''
+  try {
+    const current = await getStudentWorkbenchState()
+    if (epoch !== followupEpoch || owner !== userStore.currentUser?.id) return
+    if (!current.success || !current.data) throw Error('当前状态暂时无法读取，请重试。')
+    const state = current.data
+    // Only a current result of this saved revision may be called the new result.
+    const location = followupAnalysisTask.value && state.portrait.task_id !== followupAnalysisTask.value
+      ? { name: 'student-my-reports' } : currentPortraitLocation(state)
+    await router.push(location)
+  } catch {
+    if (epoch === followupEpoch && owner === userStore.currentUser?.id) followupError.value = '暂时无法核对当前结果，请重试；也可以先返回书架，已保存内容不会丢失。'
+  } finally {
+    if (epoch === followupEpoch) followupReturning.value = false
+  }
+}
+async function retryFollowup() {
+  followupError.value = ''
+  // Re-enter through the server's current confirmation, not a stale query task.
+  if (route.query.task_id) await router.replace({ query: { ...route.query, task_id: undefined } })
+  else await restoreWorkbenchEntry()
+}
+watch([() => resumeCandidate.value?.task_id, canSupplementBehavior, () => route.query.focus], async () => {
+  if (!portraitFollowup.value || !confirmedProfile.value?.profile_ready || followupError.value) return
+  const task = resumeCandidate.value?.task_id
+  const key = `${task}:${route.query.focus}`
+  if (followupFocusedTask === key) return
+  const seq = candidateLoadSeq
+  await nextTick()
+  if (seq !== candidateLoadSeq) return
+  const selector = route.query.focus === 'self-report' ? '.rp-self-report' : '.rp-candidate-review'
+  const element = pageRef.value?.querySelector<HTMLElement>(selector)
+  if (!element) {
+    if (route.query.focus === 'self-report') followupNotice.value = '当前资料暂没有可补充的职业素养项，可以查看已有分析或返回书架。'
+    return
+  }
+  followupFocusedTask = key
+  element.setAttribute('tabindex', '-1')
+  element.focus({ preventScroll: true })
+  element.scrollIntoView({ block: 'start', behavior: 'auto' })
+}, { flush: 'post' })
+watch(() => userStore.currentUser?.id, () => {
+  if (!portraitFollowup.value) return
+  ++candidateLoadSeq; ++followupEpoch; ++workbenchRequestSeq
+  stopAnalysisRefresh(); stopEventPoll()
+  resumeCandidate.value = null; confirmedProfile.value = null; workbenchState.value = null
+  partialPortrait.value = null; authoritativePortrait.value = null; historicalPortrait.value = null
+  portraitHistory.value = []; ++portraitHistoryRequestSeq; ++portraitDetailRequestSeq
+  setSelfReportDraft(null); selfReportSaving.value = false
+  resumeDiagnosticReport.value = null; ++resumeReportRequestSeq; resumeReportLoading.value = false
+  followupReturning.value = false; followupError.value = ''; followupNotice.value = ''
+  followupSaved.value = false; followupAnalysisTask.value = ''; followupFocusedTask = ''
+  if (userStore.currentUser?.id) void router.replace({ query: { ...route.query, task_id: undefined } })
+}, { flush: 'sync' })
+
 onMounted(async () => {
+  updateVisualVisibility()
+  document.addEventListener('visibilitychange', updateVisualVisibility)
   await nextTick()
   setupEntrance()
   setupDashboardPaneObserver()
   if (isHttpMode) void loadPortraitHistory()
-  if (resumeStore.draftText) {
+  if (isHttpMode && route.query.draft_revision) {
+    const seq = ++candidateLoadSeq
+    const owner = userStore.currentUser?.id
+    restoringWorkbench.value = true
+    try {
+      const env = await getResumeDraft()
+      if (seq !== candidateLoadSeq || owner !== userStore.currentUser?.id) return
+      if (!env.success || !env.data || String(env.data.revision) !== route.query.draft_revision || env.data.text.trim().length < 20) throw new Error('草稿已变化或内容不足，请返回制作页核对后重新提交')
+      pasteText.value = env.data.text
+    } catch (e) {
+      if (seq === candidateLoadSeq) workbenchRestoreError.value = e instanceof Error ? e.message : '暂时无法读取本人草稿'
+    } finally {
+      if (seq === candidateLoadSeq) restoringWorkbench.value = false
+    }
+  } else if (!isHttpMode && resumeStore.draftText) {
     pasteText.value = resumeStore.draftText
     resumeStore.clearDraftText()
   }
 })
 
 onBeforeUnmount(() => {
+  ++followupEpoch; ++workbenchRequestSeq
+  document.removeEventListener('visibilitychange', updateVisualVisibility)
+  candidateLoadSeq += 1
   stopEventPoll()
   stopAnalysisRefresh()
   gsapCtx?.revert()
@@ -1427,25 +1694,34 @@ onBeforeUnmount(() => {
 const showDashboard = computed(() => !isHttpMode && parsePhase.value !== 'idle')
 const showEmbeddedPortrait = computed(() => !isHttpMode && parsePhase.value !== 'idle' && resumeStore.isParsed)
 const showUnifiedPreview = computed(() => parsePhase.value === 'idle' || (isHttpMode && !showBackendWorkspace.value))
+const draftChecking = ref(false)
 const showLiveResumeTrace = computed(() => isHttpMode && parsePhase.value !== 'idle')
 const isRightPanelActive = computed(() => showBackendWorkspace.value || (isHttpMode && parsePhase.value !== 'idle') || (!isHttpMode && parsePhase.value !== 'idle'))
 const realCurrentStage = computed(() => {
-  if (acceptingUpload.value && !activeResumeTaskId.value) return '正在提交文件，等待服务端分配任务编号'
-  if (traceError.value) return '轨迹读取中断，等待下一次读取'
+  if (acceptingUpload.value && !activeResumeTaskId.value) return '正在提交简历，请稍候'
+  if (traceError.value) return '暂时读不到解析进展，请稍后重新查看'
   const current = tracePartitions.value.current
   const last = current[current.length - 1]
-  if (!last) return '任务已建立，等待后端开始解析'
+  if (!last) return '文件已收到，正在等待解析'
   const names: Record<string, string> = {
-    file_received: '后端已接收文件', attempt_started: '后端已领取任务，开始本轮解析', source_extract: '正在提取文件原文',
-    source_extracted: '原文已提取，等待结构化', handoff_document: '文档已交给结构 Agent',
-    structure_extract: '模型正在识别简历事实', structure_model: '结构模型已返回',
-    structure_extracted: '结构化事实已生成', handoff_structure: '事实已交给实体 Agent',
-    entity_extract: '正在核验技能实体', entity_resolved: '实体处理已完成',
-    handoff_entity: '候选已交给证据 Agent', evidence_assemble: '正在整理证据',
-    evidence_assembled: '逐页证据已整理',
-    candidate_saved: '候选档案已保存', failed: '解析未完成',
+    file_received: '文件已收到', attempt_started: '开始读取这份简历', source_extract: '正在读取简历文字',
+    source_extracted: '文字已读取，正在等待整理', handoff_document: '准备整理简历内容',
+    structure_extract: '正在识别教育、技能与经历', structure_model: '已取得识别内容，继续整理',
+    structure_extracted: '简历内容已整理', handoff_structure: '准备核对简历中的名称',
+    entity_extract: '正在核对简历中的名称', entity_resolved: '名称处理已有结果',
+    handoff_entity: '准备对照简历原文', evidence_assemble: '正在对照简历原文',
+    evidence_assembled: '原文对照已整理',
+    candidate_saved: '识别结果已保存，等待你核对', failed: '解析未完成',
   }
-  return names[last.stage] || last.stage
+  return names[last.stage] || '处理记录已有更新，正在读取下一步'
+})
+const resumeMainStatus = computed(() => {
+  if (!activeResumeTaskId.value) return '正在提交简历'
+  if (resumeStatusRetryPaused.value) return '读取已暂停'
+  if (resumeTaskReadUnavailable.value) return '进度暂不可读'
+  if (traceError.value) return '进度暂时无法读取'
+  if (!tracePartitions.value.current.some(event => event.stage === 'attempt_started')) return '已保存，等待处理'
+  return '正在解析简历'
 })
 const showLayoutToggle = computed(() => !showBackendWorkspace.value && (showEmbeddedPortrait.value
   && parsePhase.value === 'done'
@@ -1460,7 +1736,8 @@ const rightShellStyle = computed(() => ({
 </script>
 
 <template>
-  <div class="rp-page" ref="pageRef">
+  <div class="rp-page" ref="pageRef" :data-motion-paused="visualMotionPaused">
+    <CareerNavigationBackdrop class="rp-page-backdrop" />
 
     <!-- HEADER -->
     <header class="rp-header">
@@ -1468,7 +1745,7 @@ const rightShellStyle = computed(() => ({
         <button class="rp-back" @click="goBack"><Icon icon="lucide:arrow-left" :width="14"/><span>返回</span></button>
         <span class="rp-brand-name">职途导航</span>
       </div>
-      <div class="rp-header__center"><div class="rp-header-tag">{{ showBackendPortrait ? '个人能力画像' : '简历导入' }}</div></div>
+      <div class="rp-header__center"><div class="rp-header-tag">{{ portraitFollowup ? (route.query.focus === 'self-report' ? '补充职业素养经历' : '核对当前简历') : showBackendWorkspace && rightRealView === 'report' ? '简历解读' : showBackendPortrait ? '个人能力画像' : '简历导入' }}</div></div>
       <div class="rp-header__right">
         <button v-if="showLiveResumeTrace && !showBackendWorkspace" ref="processTriggerRef" type="button" class="rp-process-trigger"
           aria-controls="rp-live-process-panel" :aria-expanded="mobileProcessOpen"
@@ -1484,6 +1761,14 @@ const rightShellStyle = computed(() => ({
 
       <!-- LEFT: Editorial + Upload -->
       <div class="rp-left">
+        <aside v-if="portraitFollowup" class="rp-portrait-followup" aria-label="从画像继续" aria-live="polite">
+          <p>{{ followupNotice || (route.query.focus === 'self-report' ? '补充你实际做过的经历，系统会标为本人自述，不会改写简历原文。' : '对照当前已确认的资料检查是否有遗漏；只有需要修改时才重新提交。') }}</p>
+          <p v-if="route.query.focus === 'resume' && workbenchState">{{ followupMessage }}</p>
+          <p v-if="followupError" role="alert">{{ followupError }}</p>
+          <button v-if="followupError" type="button" @click="retryFollowup">重新读取当前资料</button>
+          <button type="button" :disabled="followupReturning || selfReportSaving" @click="returnToReports">返回我的报告</button>
+          <button v-if="followupError" type="button" @click="router.push({ name: 'student-my-reports' })">先回书架</button>
+        </aside>
 
         <!-- Editorial headline -->
         <div v-if="parsePhase === 'idle'" class="rp-editorial">
@@ -1507,9 +1792,9 @@ const rightShellStyle = computed(() => ({
           </p>
         </div>
         <div v-else-if="!showBackendWorkspace" class="rp-stage-intro">
-          <span class="rp-stage-intro__eyebrow">{{ isHttpMode ? '职途导航 · 真实资料' : '职途导航 · 演示样例' }}</span>
+          <span class="rp-stage-intro__eyebrow">{{ isHttpMode ? '职途导航' : '职途导航 · 演示样例' }}</span>
           <h1>{{ isHttpMode ? (parsePhase === 'verified' ? '先看当前已知的能力信息' : '先看清简历里有什么') : '看看样例能力画像' }}</h1>
-          <p>{{ isHttpMode ? '每一步都以已上传资料和服务端记录为准，未确认的事实不会变成正式分数。' : '这是固定样例的交互演示，不代表对刚才输入的简历完成了真实解析或评分。' }}</p>
+          <p>{{ isHttpMode ? '提交简历后，先由你核对识别内容，再生成分析。' : '这是固定样例的交互演示，不代表对刚才输入的简历完成了真实解析或评分。' }}</p>
         </div>
 
         <!-- Step indicator (compact inline) -->
@@ -1530,11 +1815,11 @@ const rightShellStyle = computed(() => ({
           <div class="rp-si-step">
             <span class="rp-si-dot"></span>
             <span class="rp-si-num">03</span>
-            <span class="rp-si-name">{{ isHttpMode ? '岗位方向' : '职业路径' }}</span>
+            <span class="rp-si-name">职业路径</span>
           </div>
         </div>
         <!-- 没有简历提示入口 -->
-        <div v-if="parsePhase === 'idle'" class="rp-no-resume-hint" @click="router.push({ name: 'student-resume-builder' })">
+        <div v-if="parsePhase === 'idle' && !restoringWorkbench && !workbenchRestoreError" class="rp-no-resume-hint" role="button" tabindex="0" @keydown.enter="router.push({ name: 'student-resume-builder' })" @keydown.space.prevent="router.push({ name: 'student-resume-builder' })" @click="router.push({ name: 'student-resume-builder' })">
           <Icon icon="lucide:help-circle" :width="13" class="rp-no-resume-hint__icon"/>
           <span>没有简历</span>
           <div class="rp-no-resume-hint__tip">没有简历？点击快速制作简历吧！</div>
@@ -1542,7 +1827,13 @@ const rightShellStyle = computed(() => ({
         </div><!-- /.rp-steps-inline-row -->
 
         <!-- IDLE 态 -->
-        <div v-if="parsePhase === 'idle'" class="rp-idle-form">
+        <div v-if="followupError || restoringWorkbench || workbenchRestoreError" class="rp-confirm-wrap" role="status" aria-live="polite">
+          <h3>{{ route.query.draft_revision ? (restoringWorkbench ? '正在读取已保存的草稿' : '需要重新核对草稿') : (restoringWorkbench ? '正在找回你的简历进度' : '暂时无法读取简历进度') }}</h3>
+          <p class="rp-result-lead">{{ restoringWorkbench ? '正在读取你上次提交的资料，请稍候。' : workbenchRestoreError }}</p>
+          <button v-if="workbenchRestoreError && !route.query.draft_revision" type="button" class="rp-parse-btn" @click="restoreWorkbenchEntry()">重新读取进度</button>
+          <button v-if="workbenchRestoreError && route.query.draft_revision" type="button" class="rp-parse-btn" @click="router.push({name:'student-resume-builder'})">返回制作页核对草稿</button>
+        </div>
+        <div v-else-if="parsePhase === 'idle'" class="rp-idle-form">
           <div
             class="rp-drop-zone"
             :class="{ 'rp-drop-zone--over': isDragOver }"
@@ -1613,10 +1904,10 @@ const rightShellStyle = computed(() => ({
           </div>
 
           <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
-          <p v-if="isHttpMode" class="rp-real-note">文件或粘贴文本会进入同一条真实解析管线。偏好方向会在简历确认后参与职业方向建议，但不作为简历事实或能力评分依据；上传后请逐项核对。</p>
+          <p v-if="isHttpMode" class="rp-real-note">文件和粘贴文字都可用于解析。兴趣方向只帮助整理方向线索，不改变简历事实或评分。</p>
           <p v-else class="rp-real-note rp-demo-note">纯演示使用固定样例画像；上传或粘贴内容仅用于触发演示，不会被真实解析。</p>
           <button class="rp-parse-btn" :disabled="!pasteText.trim() && !uploadedFile" @click="startParse">
-            <span>{{ isHttpMode ? '解析并核对简历' : '查看演示能力画像' }}</span>
+            <span>{{ isHttpMode ? (draftChecking ? '正在核对草稿…' : '解析并核对简历') : '查看演示能力画像' }}</span>
             <Icon icon="lucide:arrow-right" :width="15" class="rp-parse-btn__arrow" />
           </button>
         </div>
@@ -1624,14 +1915,21 @@ const rightShellStyle = computed(() => ({
         <!-- PARSING 态 -->
         <div v-else-if="parsePhase === 'parsing'" class="rp-loading-wrap">
             <template v-if="isHttpMode">
-              <span class="rp-result-kicker">01 · 正在解析简历</span>
-              <h3 class="rp-real-loading-title">正在读懂这份简历</h3>
-              <p class="rp-loading-msg">{{ realCurrentStage }}</p>
-              <div class="rp-real-progress-head"><span>已完成的解析检查点</span><strong>{{ !activeResumeTaskId ? '待分配' : traceError ? '暂不可读' : traceAttempt === null ? '读取中' : `${traceProgress}%` }}</strong></div>
-              <div v-if="traceAttempt !== null && !traceError" class="rp-real-progress-track" role="progressbar" :aria-valuenow="traceProgress" aria-valuemin="0" aria-valuemax="100" aria-label="简历解析真实检查点进度"><span :style="{ width: traceProgress + '%' }"></span></div>
+              <span class="rp-result-kicker">01 · 简历导入</span>
+              <h3 class="rp-real-loading-title">{{ resumeMainStatus }}</h3>
+              <p class="rp-loading-msg">{{ !activeResumeTaskId ? '正在提交文件，请稍候。' : resumeTaskReadUnavailable ? '任务已保存；当前进度暂不可读取，页面会按间隔重试。恢复读取后可继续，无需重复上传。' : traceError ? '已保存的任务不会丢失；恢复读取后可以继续，无需重复上传。' : '你可以离开，回来后继续查看同一份简历。解析后仍需本人核对确认。' }}</p>
+              <details class="rp-processing-details"><summary>查看解析详情</summary>
+              <p>{{ realCurrentStage }}</p>
+              <div class="rp-real-progress-head"><span>解析进度</span><strong>{{ !activeResumeTaskId ? '提交中' : traceError ? '暂不可读' : traceAttempt === null ? '读取中' : `${traceProgress}%` }}</strong></div>
+              <div v-if="traceAttempt !== null && !traceError" class="rp-real-progress-track" role="progressbar" :aria-valuenow="traceProgress" aria-valuemin="0" aria-valuemax="100" aria-label="已完成的简历解析步骤"><span :style="{ width: traceProgress + '%' }"></span></div>
               <div v-else class="rp-real-progress-track" aria-hidden="true"></div>
-              <p class="rp-real-progress-note">{{ traceError ? '过程暂不可读取；不会把上次的百分比当作当前进度。' : activeResumeTaskId && traceAttempt !== null ? `已完成 ${Math.floor(traceProgress / 25)} / 4 个简历解析检查点。每一步可在「过程」中查看。` : '任务开始并取得执行记录后显示实际进度；此处不会预估处理时间。' }}</p>
-              <p v-if="resumeWaitingNotice" class="rp-evidence-warning" role="status">后台暂未接手这份简历。文件和任务编号已保存，可以稍后刷新本页继续查看；若一直停留在此处，请联系管理员检查解析服务，无需重复上传。</p>
+              <p class="rp-real-progress-note">{{ traceError ? '进展暂不可读，请稍后重新查看。' : activeResumeTaskId && traceAttempt !== null ? `已完成 ${Math.floor(traceProgress / 25)} / 4 个解析步骤，详细记录见「过程」。` : '开始处理后会显示已完成的步骤。' }}</p>
+              </details>
+              <div v-if="parseError" class="rp-evidence-warning" role="status" aria-live="polite">
+                <p>{{ parseError }}</p>
+                <button v-if="resumeStatusRetryPaused" type="button" class="rp-parse-btn" @click="retryCurrentResumeTaskRead">重试读取这份任务</button>
+              </div>
+              <p v-if="resumeWaitingNotice" class="rp-evidence-warning" role="status">这份简历尚未开始解析，文件已保存。可以稍后回来查看；若长时间没有变化，请联系管理员，无需重复上传。</p>
             </template>
             <template v-else>
               <div class="rp-loading-seal"><Icon icon="lucide:loader-circle" :width="34" class="rp-loading-spin" /></div>
@@ -1650,16 +1948,16 @@ const rightShellStyle = computed(() => ({
 
         <div v-else-if="parsePhase === 'failed'" class="rp-confirm-wrap">
           <span class="rp-result-kicker">01 · 简历解析中断</span>
-          <h3>这次解析没有完成</h3>
-          <p class="rp-result-lead">服务端已保留最后完成的检查点和 Agent 轨迹。请从右侧查看中断阶段，必要时重新上传清晰文件。</p>
+          <h3>{{ parseError.includes('不是简历解析任务') ? '当前任务无法用于简历核对' : '这次解析没有完成' }}</h3>
+          <p v-if="!parseError" class="rp-result-lead">已保留之前的处理进展，可在右侧查看中断位置；需要更换文件时再重新上传。</p>
           <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
           <button class="rp-result-reset" @click="resetPage">重新上传</button>
         </div>
 
         <!-- 真实后端返回的候选与证据；用户确认前不宣称画像完成。 -->
-        <div v-else-if="parsePhase === 'confirming' || parsePhase === 'needs_repair'" class="rp-confirm-wrap">
+        <div v-else-if="parsePhase === 'confirming' || parsePhase === 'needs_repair' || (portraitFollowup && route.query.focus === 'resume' && parsePhase === 'verified')" class="rp-confirm-wrap">
           <span class="rp-result-kicker">01 · 简历识别</span>
-          <h3>{{ parsePhase === 'confirming' ? '请核对提取出的资料' : '这份简历还需要补充' }}</h3>
+          <h3>{{ parsePhase === 'verified' ? '核对当前已确认的简历' : parsePhase === 'confirming' ? '请核对提取出的资料' : '这份简历还需要补充' }}</h3>
           <p v-if="evidencePageCount" class="rp-result-lead">已取得 {{ observedPageCount }} / {{ evidencePageCount }} 页的文字证据。识别出文字不等于内容逐字无误，请结合原件核对。</p>
           <p v-else class="rp-result-lead">已取得简历候选；当前文件的总页数尚未核验，请对照原件检查。</p>
           <p v-if="resumeCandidate?.source_evidence?.missing_pages?.length" class="rp-evidence-warning">第 {{ resumeCandidate.source_evidence.missing_pages.join('、') }} 页暂无可核对文字。此时不会按完整简历确认，建议重新上传清晰文件。</p>
@@ -1668,6 +1966,7 @@ const rightShellStyle = computed(() => ({
             <span>我已对照原件核对已识别内容，理解第 {{ missingSourcePages.join('、') }} 页未纳入本次分析。先生成部分诊断与候选画像；完整评分需补传清晰文件。</span>
           </label>
           <p v-if="resumeCandidate?.structure_validation?.issues?.length" class="rp-evidence-warning">部分关键资料尚未被结构化识别；请查看下方提取内容并对照原件。若原件中已有对应信息，仍需重新解析或修复识别，不能直接当作缺少经历。</p>
+          <p v-if="Array.isArray(candidateProfile.source_field_issues) && candidateProfile.source_field_issues.some((issue: { field?: string }) => issue.field === 'grade')" class="rp-evidence-warning">原文没有明确写出年级，因此未将模型推测的年级纳入资料。若需要补充，请在原简历中写明后重新上传。</p>
           <details class="rp-candidate-review" open>
             <summary>核对已提取字段（{{ candidateFields.length }} 项）</summary>
             <dl class="rp-candidate-fields">
@@ -1692,7 +1991,7 @@ const rightShellStyle = computed(() => ({
           <details v-if="resumeCandidate?.source_evidence?.blocks?.length" class="rp-evidence-blocks">
             <summary>对照逐页原文（{{ resumeCandidate.source_evidence.blocks.length }} 段）</summary>
             <article v-for="block in resumeCandidate.source_evidence.blocks" :key="block.block_id">
-              <strong>第 {{ block.page }} 页 · {{ block.block_type }}</strong>
+              <strong>原文片段</strong>
               <p>{{ block.text }}</p>
             </article>
           </details>
@@ -1702,18 +2001,22 @@ const rightShellStyle = computed(() => ({
           <button class="rp-result-reset" @click="resetPage">重新上传</button>
         </div>
 
-        <div v-else-if="parsePhase === 'verified'" class="rp-confirm-wrap">
-          <span class="rp-result-kicker">{{ showBackendWorkspace ? '下一步 · 继续探索' : '02 · 能力画像' }}</span>
-          <h3>{{ showBackendWorkspace ? '继续探索与补充' : '简历已确认' }}</h3>
-          <p v-if="resumeCandidate?.portrait_needs_refresh" class="rp-evidence-warning">旧画像曾把没有成长经历依据的项目算成零分，已停止展示。请点击下方按钮重新生成，原简历确认和自述不会丢失。</p>
-          <p v-if="partialPortrait" class="rp-result-lead">当前画像已经整理出有依据的能力信息，暂不能确认的维度会留空，不按零分处理。你可以先查看已知经历、简历诊断与职业方向参考；正式评分和岗位匹配仍需满足各自的证据条件。</p>
-          <p v-if="workbenchState?.portrait.state === 'ready_with_unknowns'" class="rp-result-lead">后端已核对这份画像对应当前确认的简历；{{ missingFactLabels.length }} 项依据尚不确定，但不妨碍先阅读现有结果。</p>
-          <p v-if="missingSourcePages.length" class="rp-evidence-warning">这份简历的第 {{ missingSourcePages.join('、') }} 页未取得文字，当前仅分析已核对的内容。补传清晰文件并再次确认后，才能尝试完整评分。</p>
-          <p v-else-if="!authoritativePortrait" class="rp-result-lead">简历事实已经确认。即使能力画像仍需补充，简历范围内的诊断报告也会继续生成；岗位匹配与市场结论需要可信岗位来源后另行展示。</p>
-          <p v-if="authoritativePortrait && !showBackendWorkspace" class="rp-result-lead">能力画像已写入服务端，可以继续查看和补充；原简历的核对入口会保留。</p>
+        <div v-else-if="parsePhase === 'verified'" class="rp-confirm-wrap rp-confirm-wrap--verified">
+          <section class="rp-result-group" aria-label="当前成果与下一步">
+          <h3>{{ analysisStillRunning ? '简历已确认，正在整理分析' : '当前成果与下一步' }}</h3>
+          <p v-if="resumeCandidate?.portrait_needs_refresh" class="rp-evidence-warning">这份旧画像需要重新分析后才能展示。已保存的简历和补充经历仍会保留。</p>
+          <p v-if="partialPortrait" class="rp-result-lead">当前画像已有可读内容；未知维度不等于零分。</p>
+          <p v-if="missingSourcePages.length" class="rp-evidence-warning">第 {{ missingSourcePages.join('、') }} 页尚未读取，当前结果只包含已核对的内容。请补传清晰文件并再次确认。</p>
+          <p v-else-if="analysisStillRunning" class="rp-result-lead">你可以离开，回来后继续查看进展；已就绪的结果仍可阅读。</p>
+          <p v-if="workbenchState?.portrait.state === 'processing' && !analysisStillRunning" class="rp-result-lead">画像正在分析，完成后会更新这里的结果。</p>
+          <section v-if="isHttpMode && confirmedProfile?.profile_ready" class="rp-path-next" aria-label="下一步职业攀岩路径">
+            <h4>继续探索职业方向</h4>
+            <p>选一个方向，看看已有经历如何用得上，以及先做什么。不必等所有维度都有分数。</p>
+            <button class="rp-parse-btn" type="button" @click="router.push({ name:'student-career-report' })">看看我的起点与下一步 <Icon icon="lucide:arrow-right" :width="15" /></button>
+          </section>
           <div v-if="confirmedProfile?.profile_ready" class="rp-report-progress">
             <div class="rp-report-progress__head">
-              <span class="rp-result-kicker">简历诊断报告</span>
+              <strong>简历解读</strong>
               <span class="rp-report-progress__state" :class="{
                 'rp-report-progress__state--done': resumeDiagnosticReport?.status === 'completed',
                 'rp-report-progress__state--partial': resumeDiagnosticReport?.status === 'partial' || resumeReportError,
@@ -1722,10 +2025,10 @@ const rightShellStyle = computed(() => ({
                 {{ resumeReportLoading ? '正在读取' : resumeDiagnosticReport?.status === 'completed' ? '简历章节已完成' : resumeDiagnosticReport?.status === 'partial' ? '部分章节待补充' : workbenchState?.resume_diagnostic.state === 'processing' ? '后台整理中 · 可离开' : resumeReportError ? '暂时不可用' : '等待报告' }}
               </span>
             </div>
-            <p>报告仅使用已确认简历及其证据，不依赖岗位匹配分；实体候选如果尚未归一化，会明确保留为待核验状态。</p>
+            <p>阅读已确认简历中的经历、表达建议和方向线索。</p>
             <p v-if="resumeReportError" class="rp-report-progress__error">{{ resumeReportError }}</p>
             <div class="rp-report-progress__actions">
-              <button type="button" :disabled="resumeReportLoading || workbenchState?.resume_diagnostic.state === 'processing'" @click="rightRealView = 'report'; loadResumeDiagnosticReport(!resumeDiagnosticReport)">
+              <button type="button" :disabled="resumeReportLoading || workbenchState?.resume_diagnostic.state === 'processing'" @click="selectRealView('report'); loadResumeDiagnosticReport(!resumeDiagnosticReport)">
                 <Icon icon="lucide:file-text" :width="13" />{{ resumeDiagnosticReport ? '查看完整简历报告' : workbenchState?.resume_diagnostic.state === 'processing' ? '报告在后台整理中' : '生成简历诊断报告' }}
               </button>
               <button v-if="resumeDiagnosticReport?.report_id" type="button" @click="handoffResumeReportToAgent(resumeDiagnosticReport.report_id)">
@@ -1734,26 +2037,30 @@ const rightShellStyle = computed(() => ({
               <button v-if="resumeReportError" type="button" :disabled="resumeReportLoading || workbenchState?.resume_diagnostic.state === 'processing'" @click="loadResumeDiagnosticReport(true)">重试</button>
             </div>
           </div>
-          <details v-if="missingFactLabels.length" class="rp-missing-facts">
-            <summary>查看尚需核对的依据 <span>{{ missingFactLabels.length }} 项</span></summary>
+          <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
+          <button v-if="confirmedProfile?.profile_ready && !partialPortrait && !authoritativePortrait && workbenchState?.portrait.state !== 'processing'" class="rp-parse-btn" @click="() => generateConfirmedPortrait()">{{ resumeCandidate?.portrait_needs_refresh || ['failed', 'stale'].includes(workbenchState?.portrait.state || '') ? '重新分析画像' : '生成能力画像' }}</button>
+          <button v-if="isHttpMode && (partialPortrait?.task_id || authoritativePortrait?.task_id || confirmedProfile?.task_id)" class="rp-result-reset" @click="handoffTaskToAgent((partialPortrait?.task_id || authoritativePortrait?.task_id || confirmedProfile?.task_id)!)">带当前资料去 AI 助手讨论</button>
+          </section>
+
+          <section class="rp-result-group" aria-label="补充与核对资料">
+          <h3>补充与核对资料</h3>
+          <section v-if="missingFactLabels.length" class="rp-missing-facts" aria-label="尚需核对的内容">
+            <h4>尚需核对的内容</h4>
             <ul><li v-for="label in missingFactLabels" :key="label">{{ label }}</li></ul>
-            <p>缺少可引用证据不等于没有这些能力；已有维度仍可查看，不会把未知项当作零分。</p>
-            <p v-if="missingFactKeys.has('source_pages')">未取得文字的页面需补传清晰文件并再次核对；自述不能消除缺页限制。</p>
-            <p v-if="missingFactKeys.has('school_tier')">学校层次不能由学校名称或个人自述推断，须等待可核验来源或管理员审核；现在仍可先看已知维度和简历诊断。</p>
-            <p v-if="missingFactKeys.has('major_category')">专业类别若原文没有明确可核对的分类，请补充能说明专业类别的材料后重新确认简历。</p>
-            <p v-if="missingFactKeys.has('growth_evidence')">简历没有呈现竞赛、科研、成绩或带队经历时，成长潜力保持待核对，不会按零分处理。若原件有遗漏，请补充原简历后重新上传；职业素养自述不会替代这些材料。</p>
-            <p v-if="missingFactKeys.has('skills')">简历未列出可核对的技能，技能维度保持待核对，不按零分处理。已有项目仍可查看；若原件有遗漏，请补充原简历后重新上传。职业偏好和自述不会替代技能原文。</p>
-            <p v-if="canSupplementBehavior">职业素养可在下方另行补充具体经历，系统会明确标成“用户自述”，不会写回简历原文。</p>
-          </details>
+            <p v-if="missingFactKeys.has('source_pages')">缺页需补传清晰文件并再次核对；补充经历不能代替未读取的原文。</p>
+            <p v-if="missingFactKeys.has('school_tier')">学校背景需要可核验资料，不能凭学校名称或本人填写确认。</p>
+            <p v-if="missingFactKeys.has('major_category')">专业类别尚待核对；如原件有明确说明，请补齐对应材料后重新确认。</p>
+            <p v-if="missingFactKeys.has('growth_evidence')">竞赛、科研、成绩或带队经历尚缺依据；如简历漏写，请补全原件后重新提交。</p>
+            <p v-if="missingFactKeys.has('skills')">技能尚缺可核对的原文；如简历漏写，请补全原件后重新提交。</p>
+          </section>
           <section v-if="canSupplementBehavior" class="rp-self-report" aria-label="补充职业素养自述">
             <div class="rp-self-report__head">
-              <span class="rp-result-kicker">03 · 补充说明</span>
-              <strong>用自己的经历补充能力信息</strong>
+              <strong>补充沟通与协作经历</strong>
             </div>
-            <p>这部分会明确标为“用户自述”，不是简历原文证据。选择自己的判断，并写一件具体做过的事；不确定的项目可暂不补充。</p>
+            <p>写一件实际做过的事，作为本人补充经历；不会改写简历原文。不确定的项目可以暂不补充。</p>
             <div class="rp-self-report__grid">
               <label v-for="field in SELF_REPORT_FIELDS" :key="field.key" class="rp-self-report__field">
-                <span>{{ field.label }} <small v-if="userSelfReport?.items?.[field.key]">已保存自述</small></span>
+                <span>{{ field.label }} <small v-if="userSelfReport?.items?.[field.key]">已保存</small></span>
                 <select v-model="selfReportDraft[field.key]!.level" :disabled="selfReportSaving">
                   <option value="">暂不补充</option>
                   <option value="强">表现突出</option>
@@ -1767,50 +2074,59 @@ const rightShellStyle = computed(() => ({
             <button type="button" class="rp-parse-btn" :disabled="selfReportSaving" @click="submitSelfReport">
               {{ selfReportSaving ? '保存并重新评估中…' : userSelfReport && !SELF_REPORT_FIELDS.some(({ key }) => selfReportDraft[key]?.level) ? '撤回全部自述并重新评估' : userSelfReport ? '更新自述并重新评估' : '保存自述并重新评估' }}
             </button>
-            <p v-if="userSelfReport" class="rp-self-report__saved">已保存第 {{ userSelfReport.revision }} 版用户自述。简历诊断报告仍只采用已确认的简历内容。</p>
+            <p v-if="selfReportError" ref="selfReportErrorElement" class="rp-self-report__error" role="alert">{{ selfReportError }}。当前输入已保留，可修改后再次保存。</p>
+            <p v-if="userSelfReport && !portraitFollowup" class="rp-self-report__saved">补充经历已保存，简历解读仍依据原确认简历。</p>
+            <div v-if="portraitFollowup && (followupSaved || userSelfReport)" class="rp-self-report__saved" role="status">
+              <p>{{ followupMessage }}</p>
+              <button type="button" class="rp-self-report__next" :disabled="followupReturning || selfReportSaving" @click="returnToReports">{{ followupReady ? '查看当前画像' : followupCurrentState?.portrait.state === 'failed' ? '返回书架' : '返回书架，稍后再看' }}</button>
+            </div>
           </section>
+          <p class="rp-result-next">需要更正已确认的内容？请修改原简历后重新上传，再由你核对确认。</p>
+          <button class="rp-result-reset" @click="resetPage">重新上传</button>
+          </section>
+
           <section class="rp-role-guide" aria-label="职业方向参考">
-            <div class="rp-role-guide__head"><span class="rp-result-kicker">职业方向参考</span><strong>把简历技能、用户自述和兴趣偏好分开看</strong></div>
+            <div class="rp-role-guide__head"><h3>职业方向参考</h3><p>下面是探索线索，不是岗位匹配或实时招聘结论；正式匹配仍需有效的岗位资料。</p></div>
             <label class="rp-role-guide__choice">本次兴趣方向
               <select v-model="selectedDirection">
                 <option value="">不限定方向</option>
                 <option v-for="domain in CAREER_DOMAINS" :key="domain.id" :value="domain.role">{{ domain.name }}</option>
               </select>
             </label>
-            <p>偏好只调整方向建议顺序，不写入简历事实、不增加能力分数；选择会保存在当前页面链接中。</p>
+            <p>兴趣只调整方向顺序，不改变简历或评分。</p>
             <div class="rp-role-guide__supplement">
-              <label class="rp-role-guide__choice" for="skill-exploration-input">另行补充技术技能 · 用户自述
+              <label class="rp-role-guide__choice" for="skill-exploration-input">补充想用于探索的技能 · 本人自述
                 <textarea id="skill-exploration-input" v-model="skillExplorationDraft" rows="2"
                   :disabled="skillExplorationSaving" placeholder="例如：Vue、TypeScript；用逗号或换行分隔，最多 12 项" />
               </label>
-              <p>只用于探索可能的职业方向，不计入技能维度、综合分或简历诊断，也不会写回简历原文。要让技能进入评分，请补充原简历后重新上传核对。</p>
+              <p>这些技能只用于探索，不进入画像评分或简历解读。若要更新正式资料，请修改原简历后重新提交。</p>
               <button type="button" :disabled="skillExplorationSaving" @click="submitSkillExploration">
                 {{ skillExplorationSaving ? '正在保存…' : skillExploration?.skills.length ? '更新自述技能并探索' : skillExploration ? '撤回技能自述' : '保存自述技能并探索' }}
               </button>
-              <p v-if="skillExploration?.skills.length" class="rp-role-guide__saved">已保存第 {{ skillExploration.revision }} 版用户自述：{{ skillExploration.skills.join('、') }}</p>
+              <p v-if="skillExploration?.skills.length" class="rp-role-guide__saved">已保存的自述技能：{{ skillExploration.skills.join('、') }}</p>
               <p v-if="skillExplorationError" class="rp-role-guide__error">{{ skillExplorationError }}</p>
             </div>
-            <strong class="rp-role-guide__subhead">已确认简历技能形成的方向</strong>
+            <strong class="rp-role-guide__subhead">来自已确认简历的方向线索</strong>
             <p v-if="roleInferenceLoading" class="rp-role-guide__state">正在分别对照技能与职业方向…</p>
             <p v-else-if="roleInferenceError" class="rp-role-guide__state">简历技能方向暂不可用：{{ roleInferenceError }} <button type="button" @click="loadRoleInference">重试</button></p>
-            <p v-else-if="!candidateSkills.length" class="rp-role-guide__state">当前简历没有可核对的技能，不会只凭兴趣偏好生成“适合岗位”。</p>
+            <p v-else-if="!candidateSkills.length" class="rp-role-guide__state">当前简历没有可用于对照方向的技能，可先阅读已有经历解读。</p>
             <template v-else-if="roleInference">
-              <p v-if="roleInference.status === 'partial' || roleInference.market_data_status === 'unverified_seed'" class="rp-role-guide__state">目前只做技能与目录线索对照；目录未核验为实时岗位市场，不能据此推断岗位热度、薪资或匹配分。</p>
+              <p v-if="roleInference.status === 'partial' || roleInference.market_data_status === 'unverified_seed'" class="rp-role-guide__state">当前资料只支持技能与方向对照，不能据此判断岗位热度、薪资或匹配程度。</p>
               <p v-if="roleInference.failed_sources?.length" class="rp-role-guide__state">部分方向数据源暂不可用，结果可能不完整，可稍后重试。</p>
               <ol v-if="roleInference.candidates?.length" class="rp-role-guide__list">
                 <li v-for="candidate in roleInference.candidates.slice(0, 3)" :key="candidate.role_name">
                   <strong>{{ candidate.role_name }}</strong>
                   <span v-if="candidate.sources?.includes('preferred')" class="rp-role-guide__preference">含你的偏好</span>
                   <small>{{ candidate.matched_skills?.length ? `简历技能线索：${candidate.matched_skills.join('、')}` : '暂无简历技能对应依据，仅供探索' }}</small>
+                  <button type="button" class="rp-result-reset" @click="router.push({name:'student-career-report',query:{role:candidate.role_name}})">在攀岩路径看看这个方向</button>
                 </li>
               </ol>
-              <p v-else class="rp-role-guide__state">目前没有足够的目录线索形成方向候选；可继续查看简历诊断，不会用演示岗位填空。</p>
+              <p v-else class="rp-role-guide__state">暂时没有足够的资料形成方向线索，可先阅读简历解读。</p>
             </template>
             <template v-if="skillExploration?.skills.length">
-              <strong class="rp-role-guide__subhead">用户自述技能的方向探索 · 不参与评分</strong>
+              <strong class="rp-role-guide__subhead">来自本人补充技能的方向线索</strong>
               <p v-if="!roleInferenceLoading && exploratoryRoleError" class="rp-role-guide__state">自述方向探索暂不可用：{{ exploratoryRoleError }} <button type="button" @click="loadRoleInference">重试</button></p>
               <template v-else-if="!roleInferenceLoading && exploratoryRoleInference">
-                <p class="rp-role-guide__state">以下仅依据你另行填写的技能作探索，不代表简历已证实这些技能，也不是岗位匹配或市场结论。</p>
                 <p v-if="exploratoryRoleInference.failed_sources?.length" class="rp-role-guide__state">部分目录来源暂不可用，方向可能不完整。</p>
                 <ol v-if="exploratoryRoleInference.candidates?.length" class="rp-role-guide__list">
                   <li v-for="candidate in exploratoryRoleInference.candidates.slice(0, 3)" :key="candidate.role_name">
@@ -1819,16 +2135,10 @@ const rightShellStyle = computed(() => ({
                     <small>{{ candidate.matched_skills?.length ? `自述技能对应的目录线索：${candidate.matched_skills.join('、')}` : '暂无对应的目录技能线索，仅供探索' }}</small>
                   </li>
                 </ol>
-                <p v-else class="rp-role-guide__state">这些自述技能暂未找到足够的目录线索，不使用演示岗位填空。</p>
+                <p v-else class="rp-role-guide__state">暂时没有找到与这些自述技能相应的方向线索。</p>
               </template>
             </template>
           </section>
-          <p v-if="parseError" class="rp-parse-error">{{ parseError }}</p>
-          <p v-if="workbenchState?.portrait.state === 'processing'" class="rp-result-lead">画像已交给后台继续分析；你可以离开页面，回来后仍能读取同一任务的结果。</p>
-          <button v-if="confirmedProfile?.profile_ready && !partialPortrait && !authoritativePortrait && workbenchState?.portrait.state !== 'processing'" class="rp-parse-btn" @click="() => generateConfirmedPortrait()">尝试生成有证据的画像</button>
-          <button v-if="isHttpMode && (partialPortrait?.task_id || authoritativePortrait?.task_id || confirmedProfile?.task_id)" class="rp-result-reset" @click="handoffTaskToAgent((partialPortrait?.task_id || authoritativePortrait?.task_id || confirmedProfile?.task_id)!)">带这份资料去 AI 助手讨论</button>
-          <p class="rp-result-next">需要更正原简历？重新上传后再次核对。AI 助手可讨论差距，但目前不能替你完成事实确认。</p>
-          <button class="rp-result-reset" @click="resetPage">重新上传</button>
         </div>
 
         <!-- DONE 态 -->
@@ -1842,7 +2152,7 @@ const rightShellStyle = computed(() => ({
           </div>
           <div class="rp-privacy">
             <Icon icon="lucide:shield-check" :width="12" class="rp-privacy__icon" />
-            <p class="rp-privacy__text">{{ isHttpMode ? '简历已上传至后端并按账号处理' : '演示数据在本地处理' }}</p>
+            <p class="rp-privacy__text">{{ isHttpMode ? '简历已保存到你的账号' : '演示数据在本地处理' }}</p>
           </div>
         </div>
 
@@ -1861,7 +2171,7 @@ const rightShellStyle = computed(() => ({
           <p v-if="workbenchState?.based_on_previous_upload">当前仍显示上一份已确认简历的结果；新导入的简历尚未确认。</p>
           <div v-if="historicalPortrait" class="rp-portrait-history__detail">
             <strong>{{ historicalPortrait.is_current ? '当前画像版本' : '历史画像版本 · 不参与当前评分' }}</strong>
-            <p>对应当时已确认的简历及第 {{ historicalPortrait.source_self_report_revision }} 版自述；缺少依据的维度保持空白。</p>
+            <p>保留当时的确认简历和补充经历，未知维度仍为空白。</p>
             <dl>
               <template v-for="(label, key) in { D1: '基础背景', D2: '职业技能', D3: '职业素养', D4: '成长潜力' }" :key="key">
                 <dt>{{ label }}</dt><dd>{{ historicalPortrait.dimensions[key as 'D1' | 'D2' | 'D3' | 'D4'] ?? '待核对' }}</dd>
@@ -1884,7 +2194,6 @@ const rightShellStyle = computed(() => ({
           :class="{ 'rp-right-idle-preview--visible': showUnifiedPreview }"
           :aria-hidden="!showUnifiedPreview"
           :live="showLiveResumeTrace"
-          :trace-only="showLiveResumeTrace && !showBackendWorkspace"
           :progress="traceProgress"
           :attempt="traceAttempt"
           :trace="tracePartitions.current"
@@ -1914,12 +2223,16 @@ const rightShellStyle = computed(() => ({
             </button>
             <nav v-if="showBackendWorkspace" class="rp-real-view-tabs" aria-label="真实成果视图">
               <button type="button" :class="{ 'rp-real-view-tab--active': rightRealView === 'portrait' }"
-                :disabled="!realPortraitData" @click="rightRealView = 'portrait'">
+                :disabled="!realPortraitData" @click="selectRealView('portrait')">
                 <Icon icon="lucide:orbit" :width="13" />能力画像
               </button>
               <button type="button" :class="{ 'rp-real-view-tab--active': rightRealView === 'report' }"
-                @click="rightRealView = 'report'">
+                @click="selectRealView('report')">
                 <Icon icon="lucide:file-text" :width="13" />简历诊断报告
+              </button>
+              <button v-if="confirmedProfile?.profile_ready" type="button" :class="{ 'rp-real-view-tab--active': rightRealView === 'pathway' }"
+                @click="selectRealView('pathway')">
+                <Icon icon="lucide:route" :width="13" />后端开发路径
               </button>
             </nav>
             <TalentPortrait
@@ -1935,6 +2248,10 @@ const rightShellStyle = computed(() => ({
               embedded
               class="rp-right-portrait"
               :real-portrait="realPortraitData"
+              :diagnostic="resumeDiagnosticReport?.source_confirmation_task_id === workbenchState?.source_confirmation_task_id ? resumeDiagnosticReport : null"
+              :diagnostic-loading="resumeReportLoading || workbenchState?.resume_diagnostic.state === 'processing'"
+              :diagnostic-error="resumeReportError"
+              @generate-diagnostic="loadResumeDiagnosticReport(true)"
             />
             <div v-else-if="showBackendWorkspace && rightRealView === 'portrait'" class="rp-portrait-pending">
               <Icon icon="lucide:chart-no-axes-combined" :width="24" />
@@ -1950,6 +2267,10 @@ const rightShellStyle = computed(() => ({
               :error="resumeReportError"
               @refresh-jobs="loadResumeDiagnosticReport(false)"
               @upgrade-report="loadResumeDiagnosticReport(true)"
+            />
+            <BackendDevelopmentPathway
+              v-else-if="showBackendWorkspace && rightRealView === 'pathway' && confirmedProfile?.profile_ready"
+              :confirmed-skills="resumeCandidate?.confirmed && resumeCandidate.task_id === confirmedProfile.task_id ? candidateSkills : []"
             />
           </div>
           <div v-if="!showBackendWorkspace" class="rp-right-dashboard-pane" ref="dashboardPaneRef">
@@ -1989,6 +2310,12 @@ const rightShellStyle = computed(() => ({
 </template>
 
 <style scoped>
+.rp-portrait-followup { margin: 0 0 18px; padding: 12px 0; border-bottom: 1px solid var(--color-border); font-size: 13px; line-height: 1.7; color: var(--color-text-muted); }
+.rp-portrait-followup p { margin: 0 0 8px; }
+.rp-portrait-followup button { margin: 0 12px 4px 0; padding: 5px 0; border: 0; background: transparent; color: var(--color-primary); font: inherit; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.rp-portrait-followup button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.rp-self-report[tabindex], .rp-candidate-review[tabindex] { scroll-margin-top: 22px; }
+.rp-self-report[tabindex]:focus-visible, .rp-candidate-review[tabindex]:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 4px; }
 .rp-real-note,
 .rp-confirm-wrap {
   font-size: 13px;
@@ -1999,6 +2326,28 @@ const rightShellStyle = computed(() => ({
 .rp-confirm-wrap { display: grid; gap: 12px; padding: 18px 4px; }
 .rp-confirm-wrap h3 { margin: 0; color: var(--color-text); font-size: 17px; }
 .rp-confirm-wrap p { margin: 0; overflow-wrap: anywhere; }
+.rp-confirm-wrap--verified { gap: 30px; }
+.rp-result-group { display: grid; gap: 12px; padding-bottom: 26px; border-bottom: 1px solid var(--color-border); }
+.rp-result-group > h3, .rp-confirm-wrap--verified .rp-role-guide__head h3 { font-size: 18px; margin: 0 0 4px; }
+.rp-path-next { display: grid; gap: 8px; margin: 8px 0; }
+.rp-path-next h4, .rp-missing-facts h4 { margin: 0; color: var(--color-text); font-size: 14px; line-height: 1.6; }
+.rp-path-next p { font-size: 13px; line-height: 1.75; }
+.rp-path-next .rp-parse-btn { justify-self: start; }
+.rp-confirm-wrap--verified .rp-report-progress { padding: 16px 0 0; border: 0; border-top: 1px solid var(--color-border); background: transparent; }
+.rp-confirm-wrap--verified .rp-report-progress__head > strong { color: var(--color-text); font-size: 14px; }
+.rp-confirm-wrap--verified .rp-report-progress p { font-size: 13px; }
+.rp-confirm-wrap--verified .rp-report-progress__actions button { min-height: 44px; font-size: 13px; }
+.rp-confirm-wrap--verified .rp-missing-facts { display: grid; gap: 8px; padding: 0; border: 0; background: none; }
+.rp-confirm-wrap--verified .rp-missing-facts ul { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 24px; margin: 0; padding-left: 18px; }
+.rp-confirm-wrap--verified .rp-missing-facts li + li { margin: 0; }
+.rp-confirm-wrap--verified .rp-self-report { margin: 6px 0 0; padding: 18px 0 0; border: 0; border-top: 1px solid var(--color-border); background: none; }
+.rp-confirm-wrap--verified .rp-self-report p { font-size: 13px; line-height: 1.75; }
+.rp-confirm-wrap--verified .rp-role-guide { margin: 0; padding: 0; border: 0; background: none; gap: 12px; }
+.rp-confirm-wrap--verified .rp-role-guide p, .rp-confirm-wrap--verified .rp-role-guide__choice { font-size: 13px; line-height: 1.75; }
+.rp-confirm-wrap--verified .rp-role-guide__supplement { padding: 16px 0; border: 0; border-top: 1px solid var(--color-border); background: none; }
+.rp-confirm-wrap--verified .rp-role-guide__choice select, .rp-confirm-wrap--verified .rp-role-guide__supplement button { min-height: 44px; font-size: 13px; }
+.rp-confirm-wrap--verified .rp-role-guide__subhead { margin-top: 12px; font-size: 14px; }
+.rp-confirm-wrap--verified .rp-result-reset { justify-self: start; }
 .rp-report-progress { display: grid; gap: 8px; margin: 4px 0; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--color-primary-dark, #8B1A00) 17%, var(--color-border) 83%); background: color-mix(in srgb, var(--color-primary-dark, #8B1A00) 3%, #fff 97%); }
 .rp-report-progress__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .rp-report-progress__state { display: inline-flex; align-items: center; gap: 5px; color: #776d60; font-size: 11px; white-space: nowrap; }
@@ -2118,6 +2467,10 @@ const rightShellStyle = computed(() => ({
 .rp-self-report__field textarea { resize: vertical; line-height: 1.5; }
 .rp-self-report__field select:focus-visible, .rp-self-report__field textarea:focus-visible { outline: 2px solid var(--color-primary-dark, #8B1A00); outline-offset: 2px; }
 .rp-self-report__saved { color: var(--color-text-muted); }
+.rp-self-report__error { padding: 10px 0; margin: 8px 0 0; color: var(--color-primary-dark, #8B1A00); font-weight: 600; }
+.rp-self-report__next { display: inline-flex; align-items: center; min-height: 44px; padding: 9px 18px; margin-top: 10px; border: 1px solid var(--color-primary-dark, #8B1A00); border-radius: 4px; background: var(--color-primary-dark, #8B1A00); color: #fff; font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+.rp-self-report__next:focus-visible { outline: 2px solid var(--color-primary-dark, #8B1A00); outline-offset: 3px; }
+.rp-self-report__next:disabled { opacity: .6; cursor: wait; }
 @media (max-width: 760px) { .rp-self-report__grid { grid-template-columns: 1fr; } }
 .rp-match-explain {
   margin-top: 12px;
@@ -2143,7 +2496,7 @@ const rightShellStyle = computed(() => ({
   padding-left: 1.1em;
 }
 /* ── CSS vars ── */
-:root {
+.rp-page {
   --rp-bg: var(--parchment-100, #F5F5F3);
   --rp-panel: var(--parchment-200, #EDEDEB);
   --rp-border: var(--parchment-400, #CBCBC8);
@@ -2160,6 +2513,7 @@ const rightShellStyle = computed(() => ({
 /* ── Page container ── */
 .rp-page {
   position: relative;
+  container: career-nav / inline-size;
   width: 100%;
   height: 100vh;
   max-height: 100vh;
@@ -2178,6 +2532,7 @@ const rightShellStyle = computed(() => ({
   background-image: radial-gradient(circle at 1px 1px, rgba(0,0,0,0.04) 1px, transparent 0);
   background-size: 4px 4px;
 }
+.rp-page[data-motion-paused="true"] :deep(*) { animation-play-state: paused !important; }
 
 /* ═══ HEADER ═══ */
 .rp-header {
@@ -2248,7 +2603,9 @@ const rightShellStyle = computed(() => ({
   gap: 12px;
   min-height: 0;
   border-right: 1px solid var(--rp-border);
-  background: var(--rp-bg);
+  background: color-mix(in srgb, var(--rp-bg) 88%, transparent);
+  background-image: radial-gradient(circle at 1px 1px, rgba(0,0,0,0.04) 1px, transparent 0);
+  background-size: 4px 4px;
   position: relative;
   z-index: 1;
   transition:
@@ -3068,14 +3425,30 @@ const rightShellStyle = computed(() => ({
   .rp-right-shell--real .rp-right-dashboard-pane { width: 100%; height: 28%; min-height: 190px; border-left: 0; border-top: 1px solid var(--rp-border); }
 }
 @media (max-width: 768px) {
+  .rp-confirm-wrap--verified .rp-missing-facts ul { grid-template-columns: minmax(0, 1fr); }
   .rp-header { grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; padding: 0 12px; }
   .rp-header__left { gap: 0; }
-  .rp-back { width: 32px; height: 32px; justify-content: center; padding: 0; }
+  .rp-back { width: 44px; height: 44px; justify-content: center; padding: 0; }
   .rp-back span, .rp-brand-name, .rp-header__right :deep(.uib__text) { display: none; }
   .rp-header__center { min-width: 0; justify-content: flex-start; }
   .rp-header-tag { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-  .rp-workspace { grid-template-columns: 1fr; grid-template-rows: max-content minmax(680px, 1fr); overflow-y: auto; }
-  .rp-left { min-height: max-content; overflow: visible; }
+  .rp-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: max-content minmax(680px, 1fr); overflow-y: auto; }
+  .rp-left { min-height: max-content; overflow: visible; padding: 18px 12px 20px; }
+  .rp-left, .rp-right, .rp-right-shell, .rp-right-idle-preview,
+  .rp-right-portrait-pane, .rp-right-dashboard-pane, .rp-idle-form,
+  .rp-done-wrap, .rp-dir-section { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .rp-left > *, .rp-idle-form > * { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .rp-steps-inline-row { flex-wrap: wrap; gap: 4px; padding: 8px 10px; }
+  .rp-steps-inline { flex-wrap: wrap; gap: 8px; width: 100%; }
+  .rp-si-line { max-width: 12px; }
+  .rp-no-resume-hint { flex-basis: 100%; min-height: 44px; font-size: 12px; color: var(--rp-sub); }
+  .rp-idle-form { padding: 12px; }
+  .rp-textarea, .rp-left input, .rp-left textarea { font-size: 16px; }
+  .rp-parse-btn { min-height: 44px; white-space: normal; line-height: 1.5; }
+  .rp-dir-domain__head { min-height: 44px; box-sizing: border-box; }
+  .rp-dir-domain__name { white-space: normal; }
+  .rp-dir-domain__jobs { padding-left: 11px; }
+  .rp-header__right :deep(.uib__msg-btn) { min-width: 44px; min-height: 44px; }
   .rp-workspace--immersive { grid-template-rows: 0 minmax(0, 1fr); overflow: hidden; }
   .rp-workspace--immersive .rp-left { min-height: 0; overflow: hidden; }
   .rp-right { min-height: 680px; }
@@ -3177,7 +3550,7 @@ const rightShellStyle = computed(() => ({
 .rp-workspace--real .rp-real-view-tabs { left: clamp(20px, 3vw, 42px); }
 .rp-workspace--real .rp-right-portrait :deep(.tp-portrait--real) { padding-top: 66px; }
 .rp-workspace--live {
-  grid-template-columns: minmax(0, 1fr) clamp(280px, 24vw, 344px);
+  grid-template-columns: minmax(0, 420px) minmax(0, 1fr);
 }
 .rp-workspace--live .rp-left { padding: 24px clamp(22px, 4vw, 56px); }
 .rp-workspace--live .rp-right { min-width: 0; }
@@ -3216,6 +3589,8 @@ const rightShellStyle = computed(() => ({
   .rp-workspace--real {
     display: flex;
     flex-direction: column;
+    /* Desktop grid centering must not vertically center overflowing readers. */
+    justify-content: flex-start;
     overflow-y: auto;
   }
   .rp-workspace--real .rp-right-portrait-pane {
@@ -3265,5 +3640,17 @@ const rightShellStyle = computed(() => ({
 }
 .rp-process-trigger:focus-visible,
 .rp-process-close:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+/* CSS zoom and embedded widths can be narrower than the viewport media query.
+   Reflow the existing panels; do not clip a central stage behind the console. */
+@container career-nav (max-width: 900px) {
+  .rp-workspace:not(.rp-workspace--real):not(.rp-workspace--immersive) {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: max-content minmax(680px, 1fr);
+    overflow-y: auto;
+  }
+  .rp-left { min-height: max-content; overflow: visible; }
+  .rp-right { min-height: 680px; }
+}
 
 </style>

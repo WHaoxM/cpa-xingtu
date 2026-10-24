@@ -41,7 +41,7 @@ router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore(pinia)
   await userStore.refreshCookieSession()
 
-  // 更新页面标题；首页使用完整品牌名，避免“职导星图 - 职导星图”重复。
+  // 更新页面标题；
   const pageTitle = getDocumentTitle(to.meta.title)
   if (pageTitle) document.title = pageTitle
 

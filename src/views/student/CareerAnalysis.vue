@@ -5,11 +5,18 @@ import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
 import { ElMessage } from 'element-plus'
 import UserInfoBar from '@/components/UserInfoBar.vue'
+import CareerExplorationWorkspace from '@/components/career/CareerExplorationWorkspace.vue'
+import { getApiMode } from '@/api/config'
 import { useAgentArtifactHandoff } from '@/composables/useAgentArtifactHandoff'
 import type { MatchPreview } from '@/types'
 import { useLearningStore } from '@/stores/learning'
 import { gsap } from '@/plugins/gsap'
-import { useCareerInsights, roleOptions, CAREER_DOMAINS, type CareerRole } from '@/composables/useCareerInsights'
+import { useCareerInsights, roleOptions, CAREER_DOMAINS as DEMO_CAREER_DOMAINS, type CareerRole } from '@/composables/useCareerInsights'
+import { resolveCareerAnalysisView, careerOverviewGroups, careerOverviewSkills, type OverviewDomain } from '@/composables/careerOverviewContract'
+import { getLandscape, type CareerInsight } from '@/api/career'
+import { httpGet } from '@/api/adapters/httpAdapter'
+const isHttpMode = getApiMode() === 'http'
+const CAREER_DOMAINS: OverviewDomain[] = DEMO_CAREER_DOMAINS.map(d=>({...d,jobs:[...d.jobs]}))
 import { hydrateCareerDomainsFromApi } from '@/api/careerHydrate'
 import * as d3 from 'd3'
 import VChart from 'vue-echarts'
@@ -200,10 +207,48 @@ const kpiDemandDetails = {
 /* ═══ 核心状态 ═══ */
 const route = useRoute()
 const router = useRouter()
+const showExploration=computed(()=>resolveCareerAnalysisView(getApiMode(),route.query)==='exploration')
+const isRealOverview=computed(()=>isHttpMode&&!artifactId.value)
+const overviewGroups=ref<OverviewDomain[]>([]),overviewPage=ref(0),overviewLoading=ref(false),overviewError=ref('')
+const overviewPartial=ref(false)
+const overviewPages=computed(()=>Math.max(1,Math.ceil(overviewGroups.value.length/5)))
+const overviewDetail=ref<CareerInsight|null>(null),overviewDetailError=ref(''),overviewDetailLoading=ref(false)
+const overviewSkills=computed(()=>careerOverviewSkills(overviewDetail.value?.core_skills))
+let overviewLive=true,overviewFlight=0,detailFlight=0,overviewReady=false
+const returnOverviewRole=ref('')
+function openExploration(){returnOverviewRole.value=selectedJob.value?.jobName||roleSearch.value;void router.push({query:{view:'exploration',...(returnOverviewRole.value?{role:returnOverviewRole.value}:{})}})}
+function closeExploration(){const role=returnOverviewRole.value||(typeof route.query.role==='string'?route.query.role:'');void router.replace({query:role?{role}:{}})}
+function setOverviewPage(page:number){
+  overviewPage.value=Math.max(0,Math.min(page,overviewPages.value-1))
+  CAREER_DOMAINS.splice(0,CAREER_DOMAINS.length,...overviewGroups.value.slice(overviewPage.value*5,overviewPage.value*5+5))
+  _flatJobs=buildFlatJobs()
+  void nextTick(()=>{if(overviewLive&&!showExploration.value)initBubbleChart()})
+}
+async function loadOverviewDetail(role:string){
+  const n=++detailFlight;overviewDetail.value=null;overviewDetailError.value='';overviewDetailLoading.value=!!role
+  if(!role)return
+  try{const response=await httpGet<CareerInsight>('/api/career/insights/'+encodeURIComponent(role));if(n!==detailFlight||!overviewLive)return;if(!response.success||!response.data)throw Error();overviewDetail.value=response.data}
+  catch{if(n===detailFlight&&overviewLive)overviewDetailError.value='这项方向资料暂时无法读取，请重试。'}
+  finally{if(n===detailFlight&&overviewLive)overviewDetailLoading.value=false}
+}
+async function initializeOverview(){
+  const n=++overviewFlight;overviewLoading.value=true;overviewError.value=''
+  try{
+    if(!overviewReady){const rows=await getLandscape();if(n!==overviewFlight||!overviewLive||showExploration.value||!isRealOverview.value)return;overviewGroups.value=careerOverviewGroups(rows);overviewPartial.value=rows.some(row=>!overviewGroups.value.some(group=>group.name===row.category&&group.jobs.length===(row.roles||[]).length));overviewReady=true}
+    setOverviewPage(overviewPage.value)
+    if(typeof route.query.role==='string'){roleSearch.value=route.query.role;handleSearchSubmit()}
+    await nextTick();if(!overviewLive||showExploration.value||!isRealOverview.value)return
+    if(selectedJob.value?.jobName)void loadOverviewDetail(selectedJob.value.jobName)
+    setupEntranceAnimation();initBubbleChart()
+    _bubbleRo?.disconnect();if(bubbleSvgRef.value){_bubbleRo=new ResizeObserver(initBubbleChart);_bubbleRo.observe(bubbleSvgRef.value)}
+  }catch{if(n===overviewFlight&&overviewLive)overviewError.value='职业方向目录暂时不可用，原岗位舆图仍保留，请重试。'}
+  finally{if(n===overviewFlight&&overviewLive)overviewLoading.value=false}
+}
 const artifactId = computed(() => {
   const value = route.query.artifact_id
   return typeof value === 'string' ? value : ''
 })
+if(isRealOverview.value)CAREER_DOMAINS.length=0
 const artifactHandoff = useAgentArtifactHandoff(() => artifactId.value)
 const matchArtifact = computed(() => {
   const artifact = artifactHandoff.artifact.value
@@ -262,7 +307,7 @@ function resetCtaTimer() {
 
 const pageRef = ref<HTMLElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
-const roleSearch = ref('前端开发')
+const roleSearch = ref(isHttpMode?'':'前端开发')
 const selectedProvince = ref<string | null>(null)
 const scrollRevealed = ref(false)
 const showSalaryTip = ref(false)
@@ -284,6 +329,7 @@ function normalizeRouteRole(roleParam: unknown): string {
 }
 
 function applyRouteRole(roleParam: unknown) {
+  if(isRealOverview.value){roleSearch.value=typeof roleParam==='string'?roleParam:'';return}
   const normalizedRole = normalizeRouteRole(roleParam)
   if (!normalizedRole) {
     roleSearch.value = '前端开发'
@@ -314,7 +360,7 @@ const aiComments = computed(() => {
 })
 const currentAiComment = computed(() => aiComments.value[aiCommentPage.value] || null)
 
-const _baseProvinceData = ref(getProvinceData(roleSearch.value))
+const _baseProvinceData = ref<ProvinceItem[]>(isHttpMode?[]:getProvinceData(roleSearch.value))
 const provinceData = computed(() => _baseProvinceData.value)
 
 type CompareColumns = {
@@ -402,6 +448,7 @@ const JOB_DEMAND: Record<string, number> = {
 
 /* ═══ KPI 数据 ═══ */
 const nationalKpi = computed(() => {
+  if(isRealOverview.value)return {avgSalary:null,demandTotal:null,growthRate:null}
   const data = provinceData.value
   const avgSalary = data.length ? +(data.reduce((s, d) => s + d.salary, 0) / data.length).toFixed(1) : 0
   const demandTotal = JOB_DEMAND[roleSearch.value] ?? Math.round(data.reduce((s, d) => s + d.value, 0) * 3)
@@ -688,7 +735,7 @@ const mapOption = computed<any>(() => {
     scaleLimit: { min: 1.0, max: 10 },
   }
 
-  return {
+  const option:any = {
     backgroundColor: 'transparent',
     animation: false,
     hoverLayerThreshold: Infinity,
@@ -770,6 +817,8 @@ const mapOption = computed<any>(() => {
       data: data, selectedMode: provinceSelectable ? 'single' : false, silent: !provinceSelectable, animation: true, animationDurationUpdate: 300
     }],
   }
+  if(isRealOverview.value){option.visualMap={show:false};option.tooltip={show:false};option.series[0].data=[]}
+  return option
 })
 
 /* ═══ 事件处理 ═══ */
@@ -794,6 +843,7 @@ function selectRankedProvince(name: string) {
 }
 
 function doSearch() {
+  if(isRealOverview.value){selectedProvince.value=null;aiCommentPage.value=0;return}
   const nextRole = roleSearch.value.trim() || '前端开发'
   roleSearch.value = nextRole
   _baseProvinceData.value = getProvinceData(nextRole)
@@ -808,6 +858,7 @@ function doSearch() {
 function handleSearchSubmit() {
   const q = roleSearch.value.trim()
   if (!q) return
+  if(isRealOverview.value){const group=overviewGroups.value.findIndex(g=>g.jobs.some(name=>name===q||name.includes(q)));if(group>=0)setOverviewPage(Math.floor(group/5))}
   // 尝试精确 / 模糊匹配气泡内的岗位
   const exact = _flatJobs.find(j => j.jobName === q)
   const fuzzy = !exact ? _flatJobs.find(j => j.jobName.includes(q) || q.includes(j.jobName)) : null
@@ -1183,12 +1234,14 @@ watch(selectedProvince, (val, oldVal) => {
 
 // 薪资排行：从左侧展开滑入
 function onSalaryEnter(el: Element, done: () => void) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { void nextTick(done); return }
   gsap.fromTo(el,
     { opacity: 0, x: -50, clipPath: 'inset(0 100% 0 0)' },
     { opacity: 1, x: 0, clipPath: 'inset(0 0% 0 0)', duration: 0.55, ease: 'power3.out', onComplete: done, clearProps: 'transform,opacity,clipPath' }
   )
 }
 function onSalaryLeave(el: Element, done: () => void) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { void nextTick(done); return }
   gsap.to(el,
     { opacity: 0, x: -40, clipPath: 'inset(0 100% 0 0)', duration: 0.35, ease: 'power3.inOut', onComplete: done }
   )
@@ -1196,6 +1249,7 @@ function onSalaryLeave(el: Element, done: () => void) {
 
 // 右面板：柔和淡入 + 上浮 + sections 依次 stagger
 function onRightEnter(el: Element, done: () => void) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { void nextTick(done); return }
   gsap.fromTo(el,
     { opacity: 0, y: 20 },
     { opacity: 1, y: 0, duration: 0.5, ease: 'power3.out',
@@ -1215,6 +1269,7 @@ function onRightEnter(el: Element, done: () => void) {
   )
 }
 function onRightLeave(el: Element, done: () => void) {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { void nextTick(done); return }
   gsap.to(el,
     { opacity: 0, y: -10, duration: 0.2, ease: 'power2.in', onComplete: done }
   )
@@ -1238,6 +1293,7 @@ function buildFlatJobs(): FlatJob[] {
 let _flatJobs: FlatJob[] = buildFlatJobs()
 
 const selectedJob = ref<{ id: string; name: string; domainColor: string; jobName?: string } | null>(null)
+watch(()=>selectedJob.value?.jobName,role=>{if(isRealOverview.value)void loadOverviewDetail(role||'')})
 const hasSelectedJob = computed(() => Boolean(selectedJob.value?.jobName))
 const hasSelectedProvince = computed(() => Boolean(selectedProvince.value))
 const analysisStage = computed<'job-pending' | 'province-pending' | 'insight-ready'>(() => {
@@ -1245,7 +1301,7 @@ const analysisStage = computed<'job-pending' | 'province-pending' | 'insight-rea
   if (!hasSelectedProvince.value) return 'province-pending'
   return 'insight-ready'
 })
-const currentAnalysisLabel = computed(() => selectedJob.value?.jobName ?? roleSearch.value ?? '前端开发')
+const currentAnalysisLabel = computed(() => selectedJob.value?.jobName || roleSearch.value || '职业方向')
 const selectedJobLabel = computed(() => selectedJob.value?.jobName ?? '未选择岗位')
 const selectedJobDomainLabel = computed(() => selectedJob.value?.name ?? '岗位方向')
 const selectedProvinceLabel = computed(() => selectedProvince.value ?? '未选择省份')
@@ -1263,6 +1319,8 @@ const bubbleSvgRef = ref<SVGSVGElement | null>(null)
 let _outerSim: d3.Simulation<any, undefined> | null = null
 let _innerSims: d3.Simulation<any, undefined>[] = []
 let _bubbleRo: ResizeObserver | null = null
+const reducedBubbleMotion = window.matchMedia('(prefers-reduced-motion: reduce)')
+const refreshBubbleMotion = () => initBubbleChart()
 
 // ── 节点类型 ──
 interface DomainNode extends d3.SimulationNodeDatum {
@@ -1307,9 +1365,11 @@ function initBubbleChart() {
 
   const W = svg.clientWidth || 500
   const H = svg.clientHeight || 300
+  const mobile = window.matchMedia('(max-width: 767px)').matches
+  const still = mobile || reducedBubbleMotion.matches
   const scale = Math.min(W, H)
-  const JOB_R = Math.min(32, Math.max(20, scale / 13))
-  const DOMAIN_R = JOB_R * 2.6 + 4
+  const JOB_R = mobile ? 24 : Math.min(32, Math.max(20, scale / 13))
+  const DOMAIN_R = mobile ? 70 : JOB_R * 2.6 + 4
   const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
   const LABEL_PADDING = 10
   const DOMAIN_LABEL_Y = -DOMAIN_R - 7
@@ -1366,9 +1426,10 @@ function initBubbleChart() {
 
   const domainNodes: DomainNode[] = CAREER_DOMAINS.map((d, i) => ({
     id: d.id, name: d.name, color: d.color, r: DOMAIN_R, domainIdx: i,
-    x: W / 2 + Math.cos(angleStep * i - Math.PI / 2) * spread,
-    y: H / 2 + Math.sin(angleStep * i - Math.PI / 2) * spread,
+    x: mobile ? W * (i % 2 === 0 ? 0.25 : 0.75) : W / 2 + Math.cos(angleStep * i - Math.PI / 2) * spread,
+    y: mobile ? 100 + Math.floor(i / 2) * 180 : H / 2 + Math.sin(angleStep * i - Math.PI / 2) * spread,
   }))
+  if (mobile) domainNodes.forEach(d => { d.fx = d.x; d.fy = d.y })
 
   // ── 每个领域的内层 job 节点 ──
   const jobNodesByDomain: JobNode[][] = CAREER_DOMAINS.map((domain, di) =>
@@ -1376,8 +1437,8 @@ function initBubbleChart() {
       id: `${domain.id}-${ji}`, jobName, domainId: domain.id,
       domainName: domain.name, domainColor: domain.color,
       r: JOB_R, domainIdx: di, jobIdx: ji,
-      x: (Math.random() - 0.5) * JOB_R * 0.6,
-      y: (Math.random() - 0.5) * JOB_R * 0.6,
+      x: mobile ? Math.cos(ji * 2 * Math.PI / domain.jobs.length) * 44 : (Math.random() - 0.5) * JOB_R * 0.6,
+      y: mobile ? Math.sin(ji * 2 * Math.PI / domain.jobs.length) * 44 : (Math.random() - 0.5) * JOB_R * 0.6,
     })),
   )
 
@@ -1418,8 +1479,19 @@ function initBubbleChart() {
       .data(jobs)
       .enter().append('g')
       .attr('class', 'job-node')
+      .attr('role', 'button')
+      .attr('tabindex', artifactId.value ? -1 : 0)
+      .attr('aria-disabled', artifactId.value ? 'true' : 'false')
+      .attr('aria-label', d => `${d.jobName} · ${d.domainName}`)
       .style('cursor', 'pointer')
+      .on('keydown', function (ev: KeyboardEvent) {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault()
+          d3.select(this).dispatch('click')
+        }
+      })
       .on('click', (_ev, d) => {
+        if (artifactId.value) return
         selectedJob.value = { id: d.domainId, name: d.domainName, domainColor: d.domainColor, jobName: d.jobName }
         roleSearch.value = d.jobName
         doSearch()
@@ -1440,7 +1512,7 @@ function initBubbleChart() {
       .attr('text-anchor', 'middle')
       .attr('dominant-baseline', 'central')
       .attr('fill', d => getBubbleTextColor(d.domainColor))
-      .attr('font-size', Math.max(8, JOB_R * 0.36))
+      .attr('font-size', mobile ? 12 : Math.max(8, JOB_R * 0.36))
       .attr('font-family', FONT)
       .attr('font-weight', '600')
       .attr('letter-spacing', '0.02em')
@@ -1448,6 +1520,19 @@ function initBubbleChart() {
       .each(function (d) {
         const txt = d3.select(this)
         const name = d.jobName
+        if (mobile) {
+          // A short visible label stays inside the touch target; selection and aria-label retain the full name.
+          const compact = name.replace(/工程师$/, '').replace(/\s+/g, '')
+          const latin = compact.match(/^([A-Za-z]+)(.*)$/)
+          const split = Math.ceil(compact.length / 2)
+          const lines = latin ? [latin[1]!, latin[2]!].filter(Boolean)
+            : compact.length <= 3 ? [compact] : [compact.slice(0, split), compact.slice(split)]
+          txt.text('')
+          lines.slice(0, 2).forEach((line, i) => txt.append('tspan').attr('x', 0)
+            .attr('dy', i === 0 ? (lines.length > 1 ? '-0.45em' : '0') : '1.15em')
+            .text(i === 1 && lines.length > 2 ? line.slice(0, 2) + '…' : line))
+          return
+        }
         const maxW = d.r * 1.65
         const spaceIdx = name.indexOf(' ')
         let line1 = '', line2 = ''
@@ -1471,6 +1556,7 @@ function initBubbleChart() {
 
     // tooltip
     nodeG.append('title').text(d => {
+      if(isHttpMode)return `${d.jobName}\n${d.domainName}\n职业目录线索，暂无经核验的薪资统计。`
       const sal = getJobSalaryData(d.jobName)
       return `${d.jobName}\n${d.domainName}\n初级 ${sal.junior}K · 中级 ${sal.mid}K · 高级 ${sal.senior}K`
     })
@@ -1530,6 +1616,7 @@ function initBubbleChart() {
       .force('elasticCollide', makeElasticCollideForce(jobs, 0.65))
       .force('center', d3.forceCenter(0, 0).strength(0.02))
       .force('wander', () => {
+        if (still) return
         jobs.forEach(j => {
           j._phaseX = (j._phaseX ?? 0) + 0.009 + Math.random() * 0.004
           j._phaseY = (j._phaseY ?? 0) + 0.009 + Math.random() * 0.004
@@ -1557,6 +1644,10 @@ function initBubbleChart() {
         innerNodeG.attr('transform', d => `translate(${d.x ?? 0},${d.y ?? 0})`)
       })
     _innerSims.push(sim)
+    if (still) {
+      sim.stop().tick(100)
+      sim.on('tick')?.call(sim)
+    }
   })
 
   // ── 外层 simulation（弹性反射边界 + 正弦波平滑 wander）──
@@ -1572,6 +1663,7 @@ function initBubbleChart() {
     .force('elasticCollide', makeElasticCollideForce(domainNodes, 0.70))
     .force('center', d3.forceCenter(W / 2, H / 2).strength(0.01))
     .force('wander', () => {
+      if (still) return
       domainNodes.forEach(d => {
         d._phaseX = (d._phaseX ?? 0) + 0.007 + Math.random() * 0.003
         d._phaseY = (d._phaseY ?? 0) + 0.007 + Math.random() * 0.003
@@ -1617,6 +1709,10 @@ function initBubbleChart() {
         })
     })
 
+  if (still) {
+    _outerSim.stop().tick(100)
+    _outerSim.on('tick')?.call(_outerSim)
+  }
   updateBubbleSelection()
 }
 
@@ -1632,7 +1728,7 @@ function updateBubbleSelection() {
     const isSelected = d.jobName === selJobName && d.domainId === selDomainId
     g.select('.job-circle')
       .classed('job-circle--selected', isSelected)
-      .attr('r', isSelected ? d.r + 3 : d.r)
+      .attr('r', isSelected && !window.matchMedia('(max-width: 767px)').matches ? d.r + 3 : d.r)
       .attr('filter', isSelected ? 'url(#f-ink-sel)' : 'url(#f-ink-bleed)')
     g.select('.job-text')
       .attr('font-weight', isSelected ? '700' : '600')
@@ -1724,9 +1820,12 @@ const salaryChartOption = computed(() => {
 })
 
 async function initializeAnalysis() {
+  if(showExploration.value)return
+  if(isRealOverview.value){await initializeOverview();return}
   applyRouteRole(route.query.role)
   try {
     await hydrateCareerDomainsFromApi()
+    CAREER_DOMAINS.splice(0,CAREER_DOMAINS.length,...DEMO_CAREER_DOMAINS.map(d=>({...d,jobs:[...d.jobs]})))
     _flatJobs = buildFlatJobs()
   } catch (e) {
     console.warn('[career-analysis] landscape hydrate failed', e)
@@ -1745,6 +1844,7 @@ async function initializeAnalysis() {
 }
 
 onMounted(() => {
+  reducedBubbleMotion.addEventListener('change', refreshBubbleMotion)
   if (!artifactId.value) void initializeAnalysis()
 })
 
@@ -1769,14 +1869,18 @@ watch(matchArtifact, async result => {
 }, { immediate: true })
 
 watch(artifactId, (current, previous) => {
+  if(current){overviewFlight++;detailFlight++;CAREER_DOMAINS.splice(0,CAREER_DOMAINS.length,...DEMO_CAREER_DOMAINS.map(d=>({...d,jobs:[...d.jobs]})));_flatJobs=buildFlatJobs()}
   if (!current && previous) void initializeAnalysis()
 })
+watch(showExploration,show=>{overviewFlight++;overviewLoading.value=false;stopAllSimulations();_bubbleRo?.disconnect();_bubbleRo=null;if(!show)void initializeAnalysis()})
 
 watch(() => route.query.role, (val) => {
   applyRouteRole(val)
 })
 
 onBeforeUnmount(() => {
+  overviewLive=false;overviewFlight++;detailFlight++
+  reducedBubbleMotion.removeEventListener('change', refreshBubbleMotion)
   gsapCtx?.revert()
   if (_ctaTimer) clearTimeout(_ctaTimer)
   stopAllSimulations()
@@ -1785,7 +1889,8 @@ onBeforeUnmount(() => {
 })
 </script>
 <template>
-  <div class="da-page" :class="{ 'da-page--artifact': artifactId }" ref="pageRef">
+  <CareerExplorationWorkspace v-if="showExploration" @back="closeExploration" />
+  <div v-else class="da-page" :class="{ 'da-page--artifact': artifactId }" ref="pageRef">
     <!-- ═══ 顶部标题栏 ═══ -->
     <header class="da-header">
       <div class="da-header__left">
@@ -1808,12 +1913,13 @@ onBeforeUnmount(() => {
             @focus="searchFocused = true"
             @blur="searchFocused = false"
           />
-          <button class="da-header-search__btn" @click="handleSearchSubmit">
+          <button class="da-header-search__btn" aria-label="搜索岗位" @click="handleSearchSubmit">
             <Icon icon="lucide:arrow-right" :width="14" />
           </button>
         </div>
       </div>
       <div class="da-header__right">
+        <button v-if="isRealOverview" class="da-back overview-trial-entry" @click="openExploration"><Icon icon="lucide:compass" :width="15"/><span>探索与实践</span></button>
         <UserInfoBar />
       </div>
     </header>
@@ -1840,31 +1946,35 @@ onBeforeUnmount(() => {
         </div>
         <template v-else>
         <!-- #8 KPI 卡片 (带 tooltip 增强可信度) -->
-        <div class="da-section">
+        <div class="da-section da-section--overview">
           <div class="da-section__title"><Icon icon="lucide:activity" :width="14" />方向概览 · {{ currentAnalysisLabel }}</div>
-          <div class="kpi-card" @mouseenter="showDemandTip = true" @mouseleave="showDemandTip = false">
-            <div class="kpi-label">岗位需求总量 <Icon icon="lucide:info" :width="11" class="kpi-info-icon" /></div>
-            <div class="kpi-val"><span class="kpi-num">{{ nationalKpi.demandTotal.toLocaleString() }}</span></div>
+          <div class="kpi-card">
+            <button class="kpi-label kpi-info-button" :aria-expanded="showDemandTip" @click="showDemandTip = !showDemandTip">岗位需求总量 <Icon icon="lucide:info" :width="14" class="kpi-info-icon" /></button>
+            <div class="kpi-val"><span class="kpi-num">{{ nationalKpi.demandTotal?.toLocaleString() ?? '—' }}</span></div>
+            <p v-if="isRealOverview" class="overview-muted">尚无可核验的需求统计</p>
             <div class="kpi-tooltip kpi-tooltip--right" v-show="showDemandTip">
               <div class="tooltip-header">需求趋势说明</div>
-              <div class="tooltip-body">
+              <div v-if="isRealOverview" class="tooltip-body">当前只有方向目录，没有可追溯的招聘需求统计；此处不使用演示数字补齐。</div>
+              <div v-else class="tooltip-body">
                 <p>• 当前指数基于演示岗位样本的热度、活跃度和地区分布综合估算。</p>
                 <p>• 主要用于展示不同岗位和不同省份的相对差异。</p>
               </div>
-              <div class="tooltip-footer">演示模式 · 非真实招聘平台统计</div>
+              <div class="tooltip-footer">{{ isRealOverview?'等待可信统计来源':'演示模式 · 非真实招聘平台统计' }}</div>
             </div>
           </div>
-          <div class="kpi-card" @mouseenter="showSalaryTip = true" @mouseleave="showSalaryTip = false">
-            <div class="kpi-label">平均中位薪资 <Icon icon="lucide:info" :width="11" class="kpi-info-icon" /></div>
-            <div class="kpi-val"><span class="kpi-num">{{ nationalKpi.avgSalary }}</span><span class="kpi-unit">K</span></div>
+          <div class="kpi-card">
+            <button class="kpi-label kpi-info-button" :aria-expanded="showSalaryTip" @click="showSalaryTip = !showSalaryTip">平均中位薪资 <Icon icon="lucide:info" :width="14" class="kpi-info-icon" /></button>
+            <div class="kpi-val"><span class="kpi-num">{{ nationalKpi.avgSalary ?? '—' }}</span><span v-if="!isRealOverview" class="kpi-unit">K</span></div>
+            <p v-if="isRealOverview" class="overview-muted">尚无可核验的薪资统计</p>
             <div class="kpi-tooltip kpi-tooltip--right" v-show="showSalaryTip">
               <div class="tooltip-header">演示样本说明</div>
-              <div class="tooltip-body">
+              <div v-if="isRealOverview" class="tooltip-body">方向目录没有提供可核验的薪资样本，未知不显示为零，也不套用演示薪资。</div>
+              <div v-else class="tooltip-body">
                 <p>• 当前结果基于演示岗位样本的趋势估算，用于展示职业分析路径。</p>
                 <p>• 数值会随岗位方向与后续省份选择联动变化。</p>
                 <p>• 适合用来比较方向差异，不代表真实招聘数据库结论。</p>
               </div>
-              <div class="tooltip-footer">演示模式 · 用于展示分析流程</div>
+              <div class="tooltip-footer">{{ isRealOverview?'等待可信统计来源':'演示模式 · 用于展示分析流程' }}</div>
             </div>
           </div>
         </div>
@@ -1873,16 +1983,21 @@ onBeforeUnmount(() => {
         <div class="da-section da-section--ranking">
           <div class="da-section__title">
             <Icon icon="lucide:trophy" :width="14" />
-            <span>TOP 10</span>
-            <span class="rank-mode-label">{{ rankModeLabel }}</span>
+            <span>{{ isRealOverview?'地区排行':'TOP 10' }}</span>
+            <span class="rank-mode-label">{{ isRealOverview?'待可信数据':rankModeLabel }}</span>
           </div>
           <div class="rank-list">
+            <p v-if="isRealOverview" class="overview-muted">暂无可信地区排行。可以在原地图中选择想了解的地区，不代表当地需求或薪资。</p>
             <div
               v-for="p in provinceRanking" :key="p.name"
               class="rank-item"
               :class="{ 'rank-item--active': hasSelectedProvince && selectedProvince === p.name, 'rank-item--disabled': !hasSelectedJob }"
               :aria-disabled="!hasSelectedJob"
+              role="button"
+              :tabindex="hasSelectedJob ? 0 : -1"
               @click="selectRankedProvince(p.name)"
+              @keydown.enter="selectRankedProvince(p.name)"
+              @keydown.space.prevent="selectRankedProvince(p.name)"
             >
               <span class="rank-badge" :class="{ 'rank-badge--top': p.rank <= 3 }">{{ p.rank }}</span>
               <span class="rank-name">{{ p.shortName }}</span>
@@ -1914,6 +2029,7 @@ onBeforeUnmount(() => {
             </template>
           </div>
           <svg ref="bubbleSvgRef" class="da-bubble-svg"></svg>
+          <div v-if="isRealOverview" class="overview-directory-state"><span v-if="overviewLoading">正在读取方向目录…</span><span v-else-if="overviewError" role="alert">{{ overviewError }} <button @click="initializeOverview">重试</button></span><span v-else-if="!overviewGroups.length">当前没有可用的方向资料</span><template v-else><button :disabled="overviewPage===0" aria-label="上一组职业方向" @click="setOverviewPage(overviewPage-1)">←</button><span>{{ overviewPage+1 }} / {{ overviewPages }} 组 · 目录线索，不是匹配度{{ overviewPartial?' · 部分条目待核对':'' }}</span><button :disabled="overviewPage+1>=overviewPages" aria-label="下一组职业方向" @click="setOverviewPage(overviewPage+1)">→</button></template></div>
         </div>
 
         <!-- 下半：薪资柱状图 + 地图 -->
@@ -1927,9 +2043,10 @@ onBeforeUnmount(() => {
           <Transition :css="false" @enter="onSalaryEnter" @leave="onSalaryLeave">
             <div v-if="hasSelectedProvince" class="da-salary-chart">
               <div class="da-section__title da-section__title--sm">
-                <Icon icon="lucide:list-ordered" :width="12" />{{ selectedProvinceLabel }} · 中位薪资排行（K/月）
+                <Icon icon="lucide:list-ordered" :width="12" />{{ selectedProvinceLabel }} · {{ isRealOverview?'薪资对照':'中位薪资排行（K/月）' }}
               </div>
-              <VChart class="da-salary-vchart" :option="salaryChartOption" autoresize />
+              <p v-if="isRealOverview" class="overview-muted">此处保留原薪资图位置，当前没有可信样本，暂不绘制数值。</p>
+              <VChart v-else class="da-salary-vchart" :option="salaryChartOption" autoresize />
             </div>
           </Transition>
 
@@ -1947,7 +2064,7 @@ onBeforeUnmount(() => {
             />
             <div class="da-map-inner__vignette"></div>
             <!-- 图钉图例（缩小版） -->
-            <div class="da-pin-legend da-pin-legend--sm" :class="{ 'da-pin-legend--muted': !hasSelectedJob }">
+            <div v-if="!isRealOverview" class="da-pin-legend da-pin-legend--sm" :class="{ 'da-pin-legend--muted': !hasSelectedJob }">
               <div class="pin-legend__list">
                 <div class="pin-item" :class="{ active: activeLevel === 4 }" @click="highlightMapLevel(4)">
                   <div class="pin pin--sm" style="--pin-color:#8B5E14"><div class="pin__head"></div><div class="pin__needle"></div></div>
@@ -1967,7 +2084,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
-            <div v-if="analysisStage === 'job-pending'" class="da-map-overlay">
+            <div v-if="!isRealOverview && analysisStage === 'job-pending'" class="da-map-overlay">
               <span class="da-map-overlay__badge">待选择岗位</span>
               <strong class="da-map-overlay__title">先从上方气泡图中选择岗位</strong>
               <p class="da-map-overlay__desc">当前先展示 {{ currentAnalysisLabel }} 方向概览，选中岗位后再查看各省份差异。</p>
@@ -1976,6 +2093,7 @@ onBeforeUnmount(() => {
               <span class="da-map__hint-dot"></span>
               <span><b>{{ selectedProvinceLabel }}</b> · {{ selectedJobLabel }}</span>
             </div>
+            <div v-if="isRealOverview" class="overview-map-note">{{ hasSelectedJob?'可选择地区偏好':'先从上方选择一个方向' }} · 暂无需求热力统计</div>
           </div>
 
         </div>
@@ -1992,6 +2110,14 @@ onBeforeUnmount(() => {
           <p v-else>这份匹配产物没有列出具体能力差距。</p>
           <p class="da-artifact-gaps__note">本页只展示当前产物已提供的指标与差距；不会将通用演示岗位统计当作你的个人匹配结果。</p>
           <button type="button" @click="returnToAgent"><Icon icon="lucide:arrow-left" :width="14" />返回原对话</button>
+        </div>
+        <div v-else-if="isRealOverview" class="da-right-content overview-live-detail">
+          <template v-if="hasSelectedJob"><section class="da-section"><div class="da-section__title"><Icon icon="lucide:briefcase" :width="14"/>{{ selectedJobLabel }}</div><p class="overview-muted">来自职业方向目录，不是当前招聘公告，也不是你的胜任结论。</p><p v-if="overviewDetailLoading" role="status">正在读取这项方向资料…</p><p v-else-if="overviewDetailError" role="alert">{{ overviewDetailError }} <button class="da-back" @click="loadOverviewDetail(selectedJobLabel)">重试</button></p><template v-else><h3>目录列出的技能线索</h3><div class="overview-skill-tags"><span v-for="skill in overviewSkills" :key="skill">{{ skill }}</span></div><p v-if="!overviewSkills.length" class="overview-muted">暂未列出技能依据，不补造要求。</p></template></section>
+          <section class="da-section da-section--chart"><div class="da-section__title"><Icon icon="lucide:git-compare" :width="14"/>{{ selectedProvince?selectedProvinceLabel+' · ':'' }}薪资水平对标</div><div class="overview-chart-unavailable"><Icon icon="lucide:chart-no-axes-combined" :width="24"/><p>暂缺可核验的薪资分布样本</p><small>暂时无法比较不同地区。</small></div><p v-if="selectedProvince" class="overview-muted">地区是你选定的了解范围，不代表这里更适合你。</p></section>
+          <section class="da-section da-section--ai"><div class="da-section__title"><Icon icon="lucide:sparkles" :width="14"/>AI 市场洞察</div><div class="ai-card"><p class="ai-card__content">当前只有方向目录线索，尚不足以判断地区行情。待有可信来源后，再在这里提供市场分析。</p></div></section>
+          <section class="da-section"><button class="da-link-btn" @click="goToCareerCenter"><Icon icon="lucide:cpu" :width="14"/>查看「{{ selectedJobLabel }}」能力图谱</button></section>
+          <section class="da-section"><button class="da-link-btn" @click="openExploration"><Icon icon="lucide:compass" :width="14"/>把这个方向变成一次尝试</button><p class="overview-muted">先试一件小事，再看看自己是否愿意继续。</p></section></template>
+          <div v-else class="da-right-empty"><Icon icon="lucide:mouse-pointer-click" :width="36"/><span class="da-right-empty__badge">第 1 步</span><p class="da-right-empty__title">先从气泡图选择方向</p><p class="da-right-empty__desc">看看目录列出了什么，再决定要不要亲自试试。</p></div>
         </div>
         <Transition v-else :css="false" mode="out-in" @enter="onRightEnter" @leave="onRightLeave">
           <div v-if="analysisStage === 'insight-ready'" key="insight" class="da-right-content">
@@ -2058,7 +2184,7 @@ onBeforeUnmount(() => {
             <span class="da-right-empty__badge">{{ analysisStage === 'job-pending' ? '第 1 步' : '第 2 步' }}</span>
             <p class="da-right-empty__title">{{ analysisStage === 'job-pending' ? '先从气泡图选择岗位' : '继续选择目标省份' }}</p>
             <p class="da-right-empty__desc" v-if="analysisStage === 'job-pending'">当前先展示 {{ currentAnalysisLabel }} 方向概览，选中岗位后这里会展开省份分析。</p>
-            <p class="da-right-empty__desc" v-else>已选岗位：{{ selectedJobLabel }}。点击地图或左侧 TOP 10 列表后，再查看完整洞察。</p>
+            <p class="da-right-empty__desc" v-else>已选岗位：{{ selectedJobLabel }}。选择地区排行或地图中的省份，再查看完整洞察。</p>
           </div>
         </Transition>
       </aside>
@@ -2066,7 +2192,7 @@ onBeforeUnmount(() => {
 
     <!-- 底部 CTA：已关注方向时出现 -->
     <Transition name="cta-slide">
-      <div v-if="!artifactId && analysisStage === 'insight-ready' && learningStore.targetRoles.length > 0 && ctaVisible" class="da-bottom-cta">
+      <div v-if="!isRealOverview && !artifactId && analysisStage === 'insight-ready' && learningStore.targetRoles.length > 0 && ctaVisible" class="da-bottom-cta">
         <span class="da-bottom-cta__text">
           已关注
           <strong>{{ learningStore.targetRoles.map(r => r.role).join(' / ') }}</strong>
@@ -2085,7 +2211,7 @@ onBeforeUnmount(() => {
       v-model="showAiDrawer"
       title=""
       direction="rtl"
-      size="380px"
+      size="min(380px, 100vw)"
       :with-header="false"
       class="ai-drawer"
     >
@@ -2192,1006 +2318,13 @@ onBeforeUnmount(() => {
     </el-drawer>
   </div>
 </template>
+<style scoped src="./careerAnalysis.css"></style>
 <style scoped>
-/* ═══ 大屏根容器 ═══ */
-.da-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-100);
-  color: var(--text-100);
-  font-family: var(--font-ui, sans-serif);
-  overflow: hidden;
-  position: relative;
-}
-
-/* ═══ 顶部标题栏 ═══ */
-.da-header {
-  position: relative;
-  z-index: 10;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 24px;
-  background: var(--bg-200);
-  border-bottom: 1px solid var(--bg-300);
-  flex-shrink: 0;
-}
-.da-header__left { display: flex; align-items: center; gap: 14px; z-index: 1; }
-.da-header__center {
-  position: absolute; left: 50%; top: 50%;
-  transform: translate(-50%, -50%);
-  display: flex; align-items: center; justify-content: center;
-}
-.da-header__right { display: flex; align-items: center; gap: 16px; margin-left: auto; z-index: 1; }
-
-.da-back {
-  display: inline-flex; align-items: center; gap: 4px;
-  background: transparent; border: 1px solid var(--bg-300);
-  color: var(--primary-100, #8B2500); padding: 6px 12px; font-family: inherit; font-size: 14px;
-  cursor: pointer; transition: all 0.3s ease; border-radius: var(--radius-sm);
-}
-.da-back:hover { border-color: var(--primary-100); background: rgba(139,37,0,0.06); }
-
-.da-brand { display: flex; align-items: center; }
-.da-brand__title {
-  font-size: 16px; font-weight: 600; letter-spacing: 0.04em; color: var(--text-100);
-  white-space: nowrap;
-}
-
-/* 头部搜索栏 */
-.da-header-search {
-  display: flex; align-items: center; gap: 0;
-  background: rgba(245,245,243,0.7); backdrop-filter: blur(8px);
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 22px; padding: 2px 4px 2px 12px;
-  min-width: 220px; max-width: 360px; width: 100%;
-  transition: all 0.25s ease;
-}
-.da-header-search:focus-within {
-  border-color: rgba(0,0,0,0.25);
-  background: rgba(245,245,243,0.92);
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08);
-}
-.da-header-search__icon { color: rgba(0,0,0,0.35); flex-shrink: 0; }
-.da-header-search:focus-within .da-header-search__icon { color: rgba(0,0,0,0.55); }
-.da-header-search__input {
-  flex: 1; background: transparent; border: none; padding: 6px 10px;
-  font-family: inherit; font-size: 13px; color: var(--text-100); outline: none;
-  min-width: 0; letter-spacing: 0.01em;
-}
-.da-header-search__input::placeholder { color: rgba(0,0,0,0.35); font-style: italic; }
-.da-header-search__btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(0,0,0,0.08); border: none; color: #666;
-  width: 30px; height: 30px; cursor: pointer; border-radius: 50%;
-  transition: all 0.3s;
-}
-.da-header-search__btn:hover { background: rgba(0,0,0,0.15); color: #333; }
-
-/* 气泡图内岗位标签（左上角） */
-.da-bubble-job-tag {
-  position: absolute; top: 12px; left: 14px; z-index: 5;
-  display: flex; align-items: center; gap: 8px;
-  background: rgba(255,255,255,0.92); backdrop-filter: blur(10px);
-  border: 1px solid rgba(0,0,0,0.08);
-  border-radius: 999px; padding: 6px 14px 6px 12px;
-  font-size: 12px; font-family: var(--font-ui, sans-serif);
-  color: var(--text-200); letter-spacing: 0.01em;
-  box-shadow: 0 8px 24px rgba(17,24,39,0.08);
-  pointer-events: none;
-}
-.da-bubble-job-tag__step {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 2px 8px; border-radius: 999px;
-  background: rgba(17,17,17,0.06); color: var(--text-200);
-  font-size: 11px; font-weight: 600;
-}
-.da-bubble-job-tag b { font-size: 13px; font-weight: 600; }
-.da-bubble-job-tag__domain { font-size: 11px; color: var(--text-300); margin-left: 1px; }
-.da-bubble-job-tag__domain::before { content: '('; }
-.da-bubble-job-tag__domain::after { content: ')'; }
-.da-bubble-job-tag--empty {
-  color: var(--text-200); font-style: normal; font-size: 12px;
-  opacity: 1;
-}
-
-.da-map-search-wrap {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  display: flex; flex-direction: column; align-items: center;
-  width: min(440px, 50%);
-  z-index: 1;
-}
-.da-map-search {
-  display: flex; align-items: center; gap: 0; width: 100%;
-  background: rgba(245,245,243,0.85); backdrop-filter: blur(10px) saturate(1.2);
-  border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 28px; padding: 4px 6px 4px 16px;
-  box-shadow: 0 2px 12px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.4);
-  transition: all 0.3s ease;
-}
-.da-map-search:focus-within {
-  border-color: rgba(0,0,0,0.25);
-  box-shadow: 0 4px 20px rgba(0,0,0,0.12), inset 0 1px 0 rgba(255,255,255,0.4);
-  background: rgba(245,245,243,0.94);
-}
-.da-map-search__guide {
-  position: absolute; top: calc(100% + 4px); left: 0; right: 0;
-  margin: 0; font-size: 12px; color: rgba(0,0,0,0.45);
-  font-family: var(--font-title), sans-serif; font-style: italic;
-  letter-spacing: 0.04em; text-align: center;
-  background: rgba(245,245,243,0.88); padding: 3px 14px; border-radius: 12px;
-  backdrop-filter: blur(4px); white-space: nowrap;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-  z-index: 20;
-}
-.da-map-search__icon { color: rgba(0,0,0,0.4); flex-shrink: 0; transition: color 0.3s; }
-.da-map-search:focus-within .da-map-search__icon { color: rgba(0,0,0,0.65); }
-.da-map-search__input {
-  flex: 1; background: transparent; border: none; padding: 8px 12px;
-  font-family: inherit; font-size: 14px; color: var(--text-100); outline: none;
-  min-width: 0; letter-spacing: 0.01em;
-}
-.da-map-search__input::placeholder { color: rgba(0,0,0,0.35); font-style: italic; }
-.da-map-search__btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: rgba(0,0,0,0.08); border: none; color: #666;
-  padding: 7px 18px; font-family: inherit; font-size: 13px; font-weight: 600;
-  cursor: pointer; letter-spacing: 0.02em; transition: all 0.3s;
-  border-radius: 22px;
-}
-.da-map-search__btn:hover { background: rgba(0,0,0,0.15); color: #333; }
-
-
-/* ═══ 主体三栏布局 ═══ */
-.da-body {
-  position: relative; z-index: 1;
-  flex: 1; min-height: 0;
-  display: flex; overflow-y: hidden; overflow-x: visible;
-}
-
-/* ═══ 左面板 ═══ */
-.da-left {
-  width: 240px; flex-shrink: 0;
-  display: flex; flex-direction: column; gap: 4px;
-  background: var(--bg-200);
-  border-right: 1px solid var(--bg-300);
-  padding: 16px;
-  position: relative; z-index: 30;
-}
-
-.da-section { margin-bottom: 12px; position: relative; }
-.da-section__title {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 14px; font-weight: 600; color: var(--primary-100);
-  letter-spacing: 0.02em; margin-bottom: 10px;
-  padding-bottom: 6px; border-bottom: 1px solid var(--bg-300);
-}
-
-/* KPI */
-.kpi-card {
-  position: relative;
-  background: var(--bg-100);
-  border: 1px solid var(--bg-300);
-  padding: 12px 16px; margin-bottom: 8px;
-  border-radius: var(--radius-sm);
-  z-index: 40;
-}
-.kpi-label { font-size: 13px; color: var(--text-200); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
-.kpi-info-icon { color: var(--text-300); cursor: help; width: 14px; height: 14px; }
-.kpi-val {
-  display: flex; align-items: baseline; gap: 4px;
-  color: var(--primary-100); font-weight: 600;
-}
-.kpi-num { font-size: 32px; font-variant-numeric: tabular-nums; }
-.kpi-unit { font-size: 15px; color: var(--text-200); }
-.kpi-tag {
-  display: inline-block; font-size: 13px; margin-top: 6px;
-  padding: 2px 8px; border-radius: 2px;
-}
-.kpi-tag--up { color: #5B7744; background: rgba(91,119,68,0.1); }
-
-/* KPI tooltip */
-.kpi-tooltip {
-  position: absolute; top: 100%; left: 0; margin-top: 8px;
-  width: 280px; background: rgba(255,255,255,0.96); backdrop-filter: blur(4px);
-  border: 1px solid var(--primary-100); border-radius: var(--radius-md);
-  padding: 16px; z-index: 80; color: var(--text-200); font-size: 13px;
-  box-shadow: 0 4px 12px rgba(139,37,0,0.1); text-align: left;
-  line-height: 1.6; pointer-events: auto;
-  animation: fadeIn 0.2s ease-out;
-}
-.kpi-tooltip--right {
-  top: 50%; left: 100%; margin-top: 0; margin-left: 16px; transform: translateY(-50%);
-}
-.kpi-tip p { margin: 0 0 8px; }
-.kpi-tip__title { font-weight: 600; color: var(--text-100); margin-bottom: 6px; margin-top: 8px; }
-.kpi-tip__title:first-child { margin-top: 0; }
-.kpi-tip__row { display: flex; justify-content: space-between; padding: 4px 0; }
-.kpi-tip__date { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--bg-300); color: var(--text-300); font-size: 12px; }
-
-/* 排行榜 */
-.da-section--ranking { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-.rank-mode-label {
-  margin-left: auto; font-size: 11px; color: var(--text-300);
-  padding: 3px 8px; border: 1px solid var(--bg-300); border-radius: var(--radius-sm);
-  background: var(--bg-100);
-}
-.rank-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; padding-right: 4px; }
-.rank-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 8px; cursor: pointer; font-size: 14px;
-  transition: background 0.15s; border-radius: var(--radius-sm);
-}
-.rank-item:hover { background: rgba(139,37,0,0.06); }
-.rank-item--active { background: rgba(139,37,0,0.1); }
-.rank-item--disabled { opacity: 0.56; cursor: default; }
-.rank-item--disabled:hover { background: transparent; }
-.rank-item--disabled .rank-bar { opacity: 0.52; }
-.rank-badge {
-  width: 22px; height: 22px; display: grid; place-items: center;
-  font-size: 12px; font-weight: 600; color: var(--text-300);
-  border: 1px solid var(--bg-300); flex-shrink: 0; border-radius: var(--radius-sm);
-}
-.rank-badge--top { color: var(--primary-100); border-color: var(--primary-100); background: rgba(139,37,0,0.06); }
-.rank-name { width: 48px; flex-shrink: 0; color: var(--text-100); font-size: 13px; }
-.rank-bar-wrap {
-  flex: 1; height: 6px; background: var(--bg-300); overflow: hidden; border-radius: 3px;
-}
-.rank-bar {
-  height: 100%; display: block;
-  background: linear-gradient(90deg, var(--primary-100), #C97B5A);
-  transition: width 0.3s ease; border-radius: 3px;
-}
-.rank-val { width: 36px; text-align: right; font-size: 13px; color: var(--text-200); font-variant-numeric: tabular-nums; }
-
-
-/* ═══ 中央区域（气泡图 + 地图 + 薪资图） ═══ */
-.da-map {
-  flex: 3; min-width: 0; position: relative;
-  display: flex; flex-direction: column;
-  background: var(--bg-300);
-  z-index: 1; overflow: hidden;
-}
-
-/* 上半：气泡图区域 */
-.da-bubble-wrap {
-  position: relative;
-  flex: 0 0 50%; min-height: 0;
-  display: flex; align-items: center; justify-content: center;
-  background: linear-gradient(180deg, #F7F5F0, #F0EDE6);
-  border-bottom: 1px solid var(--bg-300);
-  padding: 12px 14px 0;
-  overflow: hidden;
-}
-/* 背景纹理层 */
-.da-bubble-wrap::before {
-  content: '';
-  position: absolute; inset: 0; z-index: 0;
-  pointer-events: none;
-  opacity: 0.38;
-  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.04' numOctaves='5' seed='3'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='1.5'%3E%3CfeDistantLight azimuth='45' elevation='55'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
-  background-size: cover;
-}
-.da-bubble-svg {
-  position: relative; z-index: 1;
-  width: 100%; height: 100%;
-  display: block;
-}
-/* D3 气泡 */
-.da-bubble-svg .job-circle {
-  transition: r 0.25s ease;
-}
-.da-bubble-svg .job-circle--selected {
-  animation: ink-pulse 2s ease-in-out infinite;
-}
-@keyframes ink-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.78; }
-}
-/* 水渍圈 */
-.da-bubble-svg .domain-bg {
-  transition: stroke-opacity 0.3s, stroke-width 0.3s;
-}
-.da-bubble-svg .domain-label {
-  pointer-events: none;
-  user-select: none;
-}
-.da-bubble-svg .job-text {
-  user-select: none;
-}
-
-/* 下半：地图 + 薪资图 */
-.da-bottom {
-  flex: 0 0 50%; min-height: 0;
-  display: flex; overflow: hidden;
-}
-.da-bottom--focus-map .da-map-inner {
-  flex: 1;
-  border-left: none;
-}
-
-/* 下半左：地图容器 */
-.da-map-inner {
-  flex: 1.18; min-width: 0; position: relative;
-  border-left: 1px solid var(--bg-300);
-  background: var(--bg-100);
-  overflow: hidden;
-}
-/* 左右装饰边（用伪元素模拟，不影响 ECharts DOM） */
-.da-map-inner::before,
-.da-map-inner::after {
-  content: ''; position: absolute; top: 0; bottom: 0; width: 10px; z-index: 5; pointer-events: none;
-}
-.da-map-inner::before {
-  left: 0;
-  background: linear-gradient(90deg, #8B6914 0%, #A68A4B 40%, #C4A86C 100%);
-  border-radius: 4px 0 0 4px;
-  box-shadow: inset -3px 0 8px rgba(62,48,32,0.25);
-}
-.da-map-inner::after {
-  right: 0;
-  background: linear-gradient(270deg, #8B6914 0%, #A68A4B 40%, #C4A86C 100%);
-  border-radius: 0 4px 4px 0;
-  box-shadow: inset 3px 0 8px rgba(62,48,32,0.25);
-}
-/* 羊皮纸底图 */
-.da-map-inner__base {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  object-fit: cover; z-index: 0; pointer-events: none;
-  filter: saturate(0.42) brightness(1.08) contrast(0.96);
-}
-/* 四角暗角 */
-.da-map-inner__vignette {
-  position: absolute; inset: 0; z-index: 4; pointer-events: none;
-  background: radial-gradient(ellipse at center, transparent 45%, rgba(62,48,32,0.15) 100%);
-}
-.da-map-inner .da-map__chart {
-  position: absolute; inset: 0; z-index: 1; mix-blend-mode: multiply;
-  transition: opacity 0.25s ease, filter 0.25s ease;
-}
-.da-map-inner--locked .da-map__chart {
-  opacity: 0.38;
-  filter: saturate(0.9);
-}
-.da-map-inner--locked .da-map-inner__base {
-  filter: saturate(0.28) brightness(1.06) contrast(0.94);
-}
-.da-map-overlay {
-  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  width: min(420px, calc(100% - 40px));
-  display: flex; flex-direction: column; align-items: center; gap: 10px;
-  padding: 18px 20px; border-radius: 20px;
-  background: rgba(255,255,255,0.9); backdrop-filter: blur(10px);
-  border: 1px solid rgba(0,0,0,0.08);
-  box-shadow: 0 18px 40px rgba(17,24,39,0.12);
-  text-align: center; z-index: 7; pointer-events: none;
-}
-.da-map-overlay__badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 4px 10px; border-radius: 999px;
-  background: rgba(17,17,17,0.06); color: var(--text-200);
-  font-size: 11px; font-weight: 600;
-}
-.da-map-overlay__title {
-  font-size: 18px; line-height: 1.35; color: var(--text-100);
-}
-.da-map-overlay__desc {
-  margin: 0; font-size: 13px; line-height: 1.6; color: var(--text-200);
-}
-
-/* 下半右：薪资柱状图 */
-.da-salary-chart {
-  flex: 0.82; min-width: 0;
-  display: flex; flex-direction: column;
-  background: var(--bg-100);
-  padding: 8px 10px 6px;
-  overflow: hidden;
-}
-.da-salary-vchart {
-  flex: 1; min-height: 0; width: 100%;
-}
-.da-section__title--sm {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 600; color: var(--primary-100);
-  letter-spacing: 0.02em; margin-bottom: 6px; padding-bottom: 4px;
-  border-bottom: 1px solid var(--bg-300); flex-shrink: 0;
-}
-
-/* 图钉式图例 */
-.da-pin-legend {
-  position: absolute; left: 14px; top: 38%; transform: translateY(-50%); z-index: 6;
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  pointer-events: none;
-}
-.da-pin-legend--sm {
-  left: auto; right: 8px; top: 42%; gap: 3px;
-}
-.da-pin-legend--muted { opacity: 0.35; pointer-events: none; }
-.pin-legend__title {
-  font-size: 11px; font-weight: 600; color: var(--text-100); letter-spacing: 0.02em;
-  background: rgba(245,245,243,0.88); padding: 3px 10px; border-radius: 10px;
-  backdrop-filter: blur(4px); border: 1px solid rgba(0,0,0,0.1);
-  text-align: center; pointer-events: auto; white-space: nowrap;
-}
-.pin-legend__list {
-  display: flex; flex-direction: column; gap: 4px; align-items: center;
-  pointer-events: auto;
-}
-.pin-item {
-  display: flex; align-items: center; gap: 6px;
-  cursor: pointer; position: relative; padding: 3px 4px;
-  border-radius: 6px; transition: background 0.3s;
-}
-.pin-item:hover { background: rgba(245,245,243,0.6); }
-.pin-item.active { background: rgba(245,245,243,0.85); }
-
-/* 图钉 */
-.pin {
-  display: flex; flex-direction: column; align-items: center; flex-shrink: 0;
-  width: 16px;
-}
-.pin__head {
-  width: 14px; height: 14px; border-radius: 50%;
-  background: var(--pin-color);
-  border: 2px solid rgba(255,255,255,0.6);
-  box-shadow: 0 1px 3px rgba(0,0,0,0.25), inset 0 -2px 3px rgba(0,0,0,0.15);
-  transition: transform 0.2s, box-shadow 0.2s;
-}
-.pin__needle {
-  width: 2px; height: 8px; margin-top: -1px;
-  background: linear-gradient(180deg, rgba(80,60,40,0.6), rgba(80,60,40,0.15));
-  border-radius: 0 0 1px 1px;
-}
-.pin-item:hover .pin__head {
-  transform: scale(1.2);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.35), inset 0 -2px 3px rgba(0,0,0,0.15);
-}
-.pin-item.active .pin__head {
-  transform: scale(1.3);
-  box-shadow: 0 2px 8px rgba(0,0,0,0.4), inset 0 -2px 3px rgba(0,0,0,0.15);
-  border-color: rgba(255,255,255,0.9);
-}
-
-.pin-label {
-  font-size: 10px; color: rgba(0,0,0,0.5); white-space: nowrap;
-  opacity: 0; transform: translateX(-3px);
-  transition: opacity 0.2s, transform 0.2s;
-  pointer-events: none;
-}
-.pin-item:hover .pin-label { opacity: 1; transform: translateX(0); color: #444; }
-.pin-item.active .pin-label { opacity: 1; transform: translateX(0); color: var(--primary-100, #8B2500); font-weight: 600; }
-.da-map__chart { width: 100%; height: 100%; position: relative; z-index: 1; mix-blend-mode: multiply; }
-.da-map__hint {
-  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; gap: 8px; z-index: 6;
-  font-size: 12px; color: var(--text-100); padding: 6px 14px;
-  background: rgba(245,245,243,0.88); border: 1px solid rgba(0,0,0,0.12);
-  border-radius: 20px; backdrop-filter: blur(4px); white-space: nowrap;
-}
-.da-map__hint--sm {
-  font-size: 10px; padding: 4px 10px; bottom: 6px;
-}
-.da-map__hint--muted {
-  background: rgba(255,255,255,0.92);
-  color: var(--text-200);
-}
-.da-map__hint--muted .da-map__hint-dot {
-  background: var(--text-300);
-  animation: none;
-}
-.da-map__hint b { color: var(--primary-100, #8B2500); }
-.da-map__hint-dot {
-  width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
-  background: #8B5E14; animation: hintPulse 2s ease-in-out infinite;
-}
-
-/* 缩小版图钉 */
-.pin--sm .pin__head {
-  width: 10px; height: 10px;
-}
-.pin--sm .pin__needle {
-  height: 6px;
-}
-@keyframes hintPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.7); }
-}
-
-
-/* ═══ 右面板 ═══ */
-.da-right {
-  flex: 1; min-width: 300px;
-  display: flex; flex-direction: column; gap: 8px;
-  background: var(--bg-200);
-  border-left: 1px solid var(--bg-300);
-  overflow-y: auto; overflow-x: hidden; padding: 16px 14px;
-  position: relative;
-}
-.da-right::before {
-  content: '';
-  position: absolute; inset: 0; z-index: 0;
-  pointer-events: none;
-  opacity: 0.18;
-  background-image: v-bind(parchmentBgUrl);
-  background-size: cover;
-  background-position: center;
-}
-.da-right > * { position: relative; z-index: 1; }
-.da-right-content { display: flex; flex-direction: column; gap: 12px; height: 100%; overflow-y: auto; }
-.da-right-content > .da-section { margin-bottom: 0; }
-.da-right-empty {
-  flex: 0 0 auto; margin: auto 0;
-  display: flex; flex-direction: column;
-  align-items: center; justify-content: center; gap: 10px;
-  position: relative; overflow: hidden;
-  color: var(--text-200); text-align: center;
-  background: var(--bg-100); border: 1px solid var(--bg-300);
-  border-radius: var(--radius-md); padding: 28px 20px;
-}
-.da-right-empty::before {
-  content: '';
-  position: absolute; inset: 0; z-index: 0;
-  pointer-events: none;
-  opacity: 0.25;
-  background-image: v-bind(parchmentBgUrl);
-  background-size: cover;
-  background-position: center;
-  border-radius: inherit;
-}
-.da-right-empty::after {
-  content: '';
-  position: absolute;
-  right: -20px; bottom: -20px;
-  width: 100px; height: 100px;
-  border-radius: 50%;
-  background: radial-gradient(circle, transparent 40%, rgba(190,42,0,0.06) 60%, rgba(190,42,0,0.03) 80%, transparent 100%);
-  pointer-events: none; z-index: 0;
-}
-.da-right-empty > * { position: relative; z-index: 1; }
-.da-right-empty :deep(svg) { color: var(--primary-100); opacity: 0.85; }
-.da-right-empty--pending { border-color: color-mix(in srgb, var(--primary-100) 18%, var(--bg-300) 82%); }
-.da-right-empty__badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  padding: 3px 10px; border-radius: 999px;
-  background: rgba(17,17,17,0.06); color: var(--text-200);
-  font-size: 11px; font-weight: 600;
-}
-.da-right-empty__title {
-  margin: 0; font-size: 16px; font-weight: 600; color: var(--text-100);
-}
-.da-right-empty__desc {
-  margin: 0; font-size: 13px; line-height: 1.7; color: var(--text-200);
-}
-
-/* #3 趋势图 — 固定高度，留空间给 AI 模块 */
-.da-section--chart { flex: 0 0 auto; display: flex; flex-direction: column; }
-.da-trend-chart { width: 100%; height: 240px; }
-
-/* 趋势图标题内嵌省份样式 */
-.da-trend-province { font-weight: 600; color: var(--primary-100); }
-.da-trend-sep { color: var(--text-300); margin: 0 2px; font-weight: 400; }
-
-/* #4 AI评价卡片 — flex:1 充分利用剩余空间 */
-.da-section--ai { flex: 1 1 0; min-height: 100px; display: flex; flex-direction: column; }
-.da-section--ai .ai-card { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
-.da-section--ai .ai-card__content { flex: 1; min-height: 0; max-height: none; overflow-y: auto; }
-.ai-card {
-  background: var(--bg-100);
-  border: 1px solid var(--bg-300);
-  border-radius: var(--radius-sm);
-  padding: 12px 14px; display: flex; flex-direction: column;
-}
-.ai-card__tabs {
-  display: flex; gap: 0; margin-bottom: 10px;
-  border-bottom: 1px solid var(--bg-300);
-}
-.ai-card__tab {
-  flex: 1; padding: 6px 4px; text-align: center;
-  font-size: 12px; font-weight: 500; color: var(--text-300);
-  background: none; border: none; border-bottom: 2px solid transparent;
-  cursor: pointer; transition: all 0.2s; font-family: inherit;
-  white-space: nowrap;
-}
-.ai-card__tab:hover { color: var(--text-100); }
-.ai-card__tab--active {
-  color: var(--primary-100); font-weight: 600;
-  border-bottom-color: var(--primary-100);
-}
-.ai-card__content {
-  margin: 0; font-size: 14px; line-height: 1.6; color: var(--text-200);
-  max-height: 80px; overflow-y: auto;
-}
-
-/* #7 查看图谱按钮 + 引导 */
-.da-link-btn {
-  display: flex; align-items: center; justify-content: center; gap: 8px;
-  width: 100%; padding: 12px 0;
-  background: var(--primary-100); border: none; color: #fff;
-  font-family: inherit; font-size: 14px; font-weight: 600;
-  letter-spacing: 0.02em; cursor: pointer; transition: all 0.3s;
-  border-radius: var(--radius-sm);
-}
-.da-link-btn:hover { background: var(--primary-300, #5C1A00); }
-.da-link-hint {
-  margin: 6px 0 0; font-size: 12px; color: var(--text-300);
-  text-align: center; line-height: 1.5;
-}
-
-.da-follow-btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  width: auto; margin: 0 auto; padding: 6px 0;
-  background: transparent; border: none; border-bottom: 1px dashed var(--bg-300);
-  color: var(--text-300); font-family: inherit; font-size: 13px; font-weight: 500;
-  letter-spacing: 0.01em; cursor: pointer; transition: all 0.2s;
-}
-.da-follow-btn:hover { border-bottom-color: var(--primary-100); color: var(--primary-100); }
-.da-follow-btn--active {
-  background: transparent;
-  border-bottom-color: var(--primary-100);
-  color: var(--primary-100);
-}
-.da-follow-btn--disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  border-bottom-style: dotted;
-}
-.da-follow-btn--disabled:hover {
-  color: var(--text-300);
-  border-bottom-color: var(--bg-300);
-}
-
-/* 底部 CTA */
-.da-bottom-cta {
-  position: fixed;
-  bottom: 1.5rem;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  background: rgba(0, 0, 0, 0.88);
-  backdrop-filter: blur(10px);
-  color: #fff;
-  padding: 0.75rem 1.25rem;
-  border-radius: 999px;
-  border: 1px solid rgba(196, 150, 30, 0.4);
-  box-shadow: 0 8px 32px rgba(0,0,0,0.25);
-  z-index: 200;
-  white-space: nowrap;
-}
-.da-bottom-cta__text { font-size: 13px; }
-.da-bottom-cta__text strong { color: #C4961E; }
-.da-bottom-cta__btn {
-  display: flex; align-items: center; gap: 6px;
-  background: var(--primary-100, #BB3418); color: #fff;
-  border: none; border-radius: 999px;
-  padding: 0.4rem 1rem; font-size: 13px; font-weight: 600;
-  cursor: pointer; transition: opacity 0.15s;
-}
-.da-bottom-cta__btn:hover { opacity: 0.88; }
-
-.cta-slide-enter-active, .cta-slide-leave-active { transition: all 0.3s ease; }
-.cta-slide-enter-from, .cta-slide-leave-to { opacity: 0; transform: translateX(-50%) translateY(1rem); }
-
-/* ═══ 三图切换过渡（GSAP 驱动，GPU 加速提示） ═══ */
-.da-salary-chart {
-  will-change: transform, opacity, clip-path;
-}
-.da-right-content,
-.da-right-empty {
-  will-change: transform, opacity;
-}
-
-/* ═══ 响应式 ═══ */
-@media (max-width: 1199px) {
-  .da-left { width: 208px; padding: 10px; }
-  .da-right { min-width: 260px; padding: 10px; }
-  .da-brand__title { font-size: 12px; }
-}
-
-@media (max-width: 1023px) {
-  .da-left { display: none; }
-  .da-right { min-width: 240px; }
-}
-
-@media (max-width: 767px) {
-  .da-header { padding: 8px 12px; }
-  .da-brand__title { font-size: 11px; letter-spacing: 0.06em; }
-  .da-map-search-wrap { width: min(320px, 85%); top: 10px; }
-  .da-map-search { padding: 3px 4px 3px 12px; }
-  .da-map-search__input { font-size: 13px; padding: 6px 8px; }
-  .da-map-search__btn { padding: 6px 12px; font-size: 12px; }
-  .da-map-search__guide { display: none; }
-
-  .da-body { flex-direction: column; }
-  .da-map { flex: 1; }
-  .da-bubble-wrap { flex-basis: 50%; padding: 8px 10px 0; }
-  .da-bottom { flex-basis: 50%; flex-direction: column; }
-  .da-salary-chart {
-    flex: 0 0 180px;
-    border-top: 1px solid var(--bg-300);
-  }
-  .da-map-inner {
-    border-left: none;
-    min-height: 220px;
-  }
-  .da-bottom--focus-map .da-map-inner {
-    min-height: 260px;
-  }
-  .da-map-overlay {
-    width: calc(100% - 24px);
-    padding: 16px;
-  }
-  .da-bubble-job-tag {
-    top: 10px; left: 10px; right: 10px; width: auto;
-  }
-  .da-right {
-    width: 100%; height: auto; max-height: 45vh;
-    border-left: none; border-top: 1px solid var(--bg-300);
-    flex-shrink: 0;
-  }
-  .da-right-empty { padding: 20px 12px; margin: auto 0; }
-  .da-trend-chart { height: 200px; }
-}
-
-/* ═══ AI 洞察标题行 ═══ */
-.da-section__title--with-action {
-  display: flex; align-items: center; justify-content: space-between;
-}
-.da-section__title-text {
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.da-ask-ai-btn {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 10px; border-radius: 999px;
-  background: var(--primary-100); border: none;
-  color: #fff; font-size: 11px; font-weight: 600;
-  font-family: inherit; cursor: pointer;
-  transition: background 0.2s, transform 0.15s;
-}
-.da-ask-ai-btn:hover { background: var(--primary-300, #5C1A00); transform: scale(1.04); }
-
-/* ═══ AI Drawer ═══ */
-.ai-drawer :deep(.el-drawer) { background: var(--bg-100); }
-.ai-drawer :deep(.el-drawer__body) { padding: 0; height: 100%; overflow: hidden; }
-.ai-drawer__wrap {
-  display: flex; flex-direction: column; height: 100%;
-  background: var(--bg-100);
-}
-.ai-drawer__header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 20px 12px;
-  border-bottom: 1px solid var(--bg-300);
-  flex-shrink: 0;
-}
-.ai-drawer__header-info { display: flex; align-items: center; gap: 10px; }
-.ai-drawer__avatar {
-  width: 32px; height: 32px; border-radius: 50%;
-  background: var(--primary-100); color: #fff;
-  display: grid; place-items: center; flex-shrink: 0;
-}
-.ai-drawer__title { margin: 0; font-size: 14px; font-weight: 700; color: var(--text-100); }
-.ai-drawer__sub { margin: 2px 0 0; font-size: 11px; color: var(--text-300); }
-.ai-drawer__close {
-  background: none; border: none; cursor: pointer;
-  color: var(--text-300); display: grid; place-items: center;
-  padding: 4px; border-radius: var(--radius-sm);
-  transition: color 0.15s, background 0.15s;
-}
-.ai-drawer__close:hover { color: var(--text-100); background: var(--bg-300); }
-
-.ai-drawer__messages {
-  flex: 1; overflow-y: auto; padding: 16px 20px;
-  display: flex; flex-direction: column; gap: 14px;
-  scroll-behavior: smooth;
-}
-.ai-drawer__msg {
-  display: flex; flex-direction: column; gap: 4px;
-}
-.ai-drawer__msg--user { align-items: flex-end; }
-.ai-drawer__msg--ai  { align-items: flex-start; }
-.ai-drawer__bubble {
-  max-width: 82%;
-  padding: 10px 14px; border-radius: 12px;
-  font-size: 13px; line-height: 1.65; color: var(--text-100);
-  word-break: break-word;
-}
-.ai-drawer__bubble :deep(strong) { font-weight: 700; color: var(--text-100); }
-.ai-drawer__bubble :deep(code) {
-  font-family: 'Menlo', 'Consolas', monospace;
-  font-size: 12px; background: rgba(0,0,0,0.06);
-  padding: 1px 5px; border-radius: 3px;
-}
-.ai-drawer__msg--user .ai-drawer__bubble {
-  background: var(--primary-100); color: #fff;
-  border-bottom-right-radius: 4px;
-}
-.ai-drawer__msg--ai .ai-drawer__bubble {
-  background: var(--bg-200); border: 1px solid var(--bg-300);
-  border-bottom-left-radius: 4px;
-}
-.ai-drawer__bubble--typing {
-  display: flex; align-items: center; gap: 5px; padding: 12px 16px;
-}
-.ai-drawer__bubble--typing span {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: var(--text-300);
-  animation: typing-dot 1.2s ease-in-out infinite;
-}
-.ai-drawer__bubble--typing span:nth-child(2) { animation-delay: 0.2s; }
-.ai-drawer__bubble--typing span:nth-child(3) { animation-delay: 0.4s; }
-@keyframes typing-dot {
-  0%, 80%, 100% { opacity: 0.25; transform: scale(0.8); }
-  40% { opacity: 1; transform: scale(1); }
-}
-.ai-drawer__time {
-  font-size: 10px; color: var(--text-300); margin-top: 2px;
-}
-
-.ai-drawer__quick {
-  padding: 0 20px 12px;
-  display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
-}
-.ai-drawer__quick-btn {
-  text-align: left; background: var(--bg-200);
-  border: 1px solid var(--bg-300); border-radius: var(--radius-sm);
-  padding: 8px 12px; font-size: 12px; color: var(--text-200);
-  font-family: inherit; cursor: pointer; transition: all 0.15s;
-}
-.ai-drawer__quick-btn:hover {
-  border-color: var(--primary-100); color: var(--primary-100); background: rgba(139,37,0,0.04);
-}
-
-.ai-drawer__input-row {
-  display: flex; align-items: center; gap: 8px;
-  padding: 12px 20px 16px;
-  border-top: 1px solid var(--bg-300); flex-shrink: 0;
-}
-.ai-drawer__input {
-  flex: 1; padding: 9px 14px;
-  background: var(--bg-200); border: 1px solid var(--bg-300);
-  border-radius: var(--radius-sm); font-family: inherit; font-size: 13px;
-  color: var(--text-100); outline: none; transition: border-color 0.2s;
-  min-width: 0;
-}
-.ai-drawer__input:focus { border-color: var(--primary-100); }
-.ai-drawer__input::placeholder { color: var(--text-300); }
-.ai-drawer__input:disabled { opacity: 0.6; cursor: not-allowed; }
-.ai-drawer__send {
-  width: 36px; height: 36px; border-radius: var(--radius-sm);
-  background: var(--primary-100); border: none; color: #fff;
-  display: grid; place-items: center; cursor: pointer;
-  transition: background 0.2s, opacity 0.2s; flex-shrink: 0;
-}
-.ai-drawer__send:hover:not(:disabled) { background: var(--primary-300, #5C1A00); }
-.ai-drawer__send:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* ═══ Drawer 思考动画 ═══ */
-.ai-drawer__thinking {
-  max-width: 82%;
-  padding: 12px 14px;
-  background: var(--bg-200);
-  border: 1px solid var(--bg-300);
-  border-radius: 12px;
-  border-bottom-left-radius: 4px;
-}
-.ai-drawer__thinking-head {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 12px; font-weight: 600; color: var(--text-200);
-  margin-bottom: 8px;
-}
-.ai-drawer__thinking-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--primary-100);
-  animation: thinking-pulse 1.2s ease-in-out infinite;
-  flex-shrink: 0;
-}
-@keyframes thinking-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.4; transform: scale(0.7); }
-}
-.ai-drawer__thinking-time {
-  margin-left: auto; font-size: 11px; font-weight: 400;
-  color: var(--text-300); font-variant-numeric: tabular-nums;
-}
-.ai-drawer__thinking-steps {
-  display: flex; flex-direction: column; gap: 4px;
-  padding-left: 10px;
-  border-left: 2px solid var(--bg-300);
-}
-.ai-drawer__thinking-step {
-  font-size: 12px; color: var(--text-300);
-  transition: color 0.3s, opacity 0.3s;
-  line-height: 1.5;
-}
-.ai-drawer__thinking-step.is-current {
-  color: var(--primary-100); font-weight: 600;
-}
-.ai-drawer__thinking-step.is-past {
-  color: var(--text-200); opacity: 0.7;
-}
-.ai-drawer__thinking-step.is-future {
-  opacity: 0.35;
-}
-
-/* ═══ Drawer 流式光标 ═══ */
-.ai-drawer__cursor {
-  display: inline-block;
-  width: 2px; height: 14px;
-  background: var(--primary-100);
-  margin-left: 2px;
-  animation: drawer-cursor-blink 0.8s steps(2) infinite;
-  vertical-align: text-bottom;
-}
-@keyframes drawer-cursor-blink {
-  0% { opacity: 1; }
-  50% { opacity: 0; }
-  100% { opacity: 1; }
-}
-
-/* ═══ Drawer 推理过程折叠 ═══ */
-.ai-drawer__reasoning-toggle {
-  display: inline-flex; align-items: center; gap: 5px;
-  background: none; border: 1px solid var(--bg-300);
-  border-radius: 999px; padding: 3px 10px;
-  font-size: 11px; color: var(--text-300);
-  font-family: inherit; cursor: pointer;
-  transition: all 0.15s;
-  margin-bottom: 4px;
-}
-.ai-drawer__reasoning-toggle:hover {
-  border-color: var(--primary-100);
-  color: var(--primary-100);
-}
-.ai-drawer__reasoning-dur {
-  font-variant-numeric: tabular-nums;
-  opacity: 0.7;
-}
-.ai-drawer__reasoning-detail {
-  max-width: 82%;
-  font-size: 11px; line-height: 1.5;
-  color: var(--text-300);
-  padding: 6px 10px;
-  background: rgba(0,0,0,0.03);
-  border-radius: var(--radius-sm);
-  margin-bottom: 4px;
-}
-
-/* ═══ 滚动条 ═══ */
-.da-left::-webkit-scrollbar, .da-right::-webkit-scrollbar, .rank-list::-webkit-scrollbar { width: 3px; }
-.da-left::-webkit-scrollbar-thumb, .da-right::-webkit-scrollbar-thumb, .rank-list::-webkit-scrollbar-thumb {
-  background: rgba(139,37,0,0.12); border-radius: 2px;
-}
-.da-left::-webkit-scrollbar-track, .da-right::-webkit-scrollbar-track, .rank-list::-webkit-scrollbar-track { background: transparent; }
-
-/* Agent 产物直接进入职业分析原有三栏与图表，不混用市场演示 KPI。 */
-.da-artifact-state { flex: 1; display: grid; place-content: center; justify-items: center; gap: 14px; padding: 30px; text-align: center; color: var(--text-200); }
-.da-artifact-state p { max-width: 480px; margin: 0; line-height: 1.6; }
-.da-artifact-state button, .da-artifact-gaps button { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--bg-300); border-radius: 8px; background: var(--bg-100); padding: 9px 12px; color: var(--text-100); cursor: pointer; }
-.da-artifact-result__eyebrow { display: block; color: var(--primary-100); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
-.da-artifact-result h1 { margin: 12px 0 8px; font-size: 19px; line-height: 1.35; }
-.da-artifact-result p { margin: 0 0 20px; color: var(--text-200); font-size: 12px; line-height: 1.6; }
-.da-artifact-result__metric { display: flex; align-items: baseline; gap: 7px; border-top: 1px solid var(--bg-300); padding: 13px 0; }
-.da-artifact-result__metric span { flex: 1; font-size: 12px; color: var(--text-200); }
-.da-artifact-result__metric strong { font-size: 30px; color: var(--primary-100); font-variant-numeric: tabular-nums; }
-.da-artifact-result__metric small { color: var(--text-300); }
-.da-artifact-result__candidates { display: grid; gap: 8px; padding-top: 14px; border-top: 1px solid var(--bg-300); }
-.da-artifact-result__candidate { display: flex; justify-content: space-between; gap: 10px; color: var(--text-200); font-size: 12px; }
-.da-artifact-result__candidate strong { color: var(--primary-100); font-variant-numeric: tabular-nums; }
-.da-artifact-result__note, .da-artifact-gaps__note { display: block; margin-top: 20px; color: var(--text-300); font-size: 11px; line-height: 1.6; }
-.da-page--artifact .da-bubble-svg { pointer-events: none; }
-.da-artifact-chart-wrap { flex: 1; min-height: 0; padding: 19px 22px; background: #f7f5f0; }
-.da-artifact-chart { width: 100%; height: calc(100% - 63px); min-height: 190px; }
-.da-artifact-chart-wrap p { margin: 0; color: var(--text-300); font-size: 11px; }
-.da-artifact-gaps h2 { margin: 12px 0 18px; font-size: 18px; }
-.da-artifact-gaps__list { display: flex; flex-wrap: wrap; gap: 8px; }
-.da-artifact-gaps__list span { padding: 9px 11px; border: 1px solid var(--bg-300); border-radius: 8px; background: var(--bg-100); font-size: 12px; }
-.da-artifact-gaps button { margin-top: 22px; }
-@media (max-width: 850px) {
-  .da-page--artifact .da-body { overflow-y: auto; flex-wrap: wrap; }
-  .da-page--artifact .da-left, .da-page--artifact .da-right { width: 100%; flex: 1 1 100%; min-width: 0; }
-  .da-page--artifact .da-map { flex: 1 1 100%; min-height: 550px; }
-}
-
+.overview-muted{font-size:12px;line-height:1.85;color:var(--text-300);margin:10px 0;overflow-wrap:anywhere}
+.overview-directory-state{position:absolute;bottom:6px;left:16px;z-index:4;display:flex;gap:8px;align-items:center;background:#fff9;border-radius:18px;padding:0 8px;font-size:11px;color:var(--text-200);max-width:calc(100% - 32px)}
+.overview-directory-state button{border:0;background:transparent;min-height:36px;min-width:32px;font:inherit;color:var(--primary-100);cursor:pointer}.overview-directory-state button:disabled{opacity:.4}
+.overview-live-detail h3{font-size:14px;font-weight:500;margin:20px 0 12px}.overview-skill-tags{display:flex;flex-wrap:wrap;gap:8px}.overview-skill-tags span{font-size:12px;border:1px solid #c5b39366;background:#f6efe2;padding:6px 10px;border-radius:3px}
+.overview-chart-unavailable{min-height:110px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;border:1px solid #c5b39344;background:#f5f0e6a6;color:var(--text-300);text-align:center;font-size:12px}.overview-chart-unavailable p{margin:0}.overview-chart-unavailable small{font-size:11px}
+.overview-map-note{position:absolute;bottom:14px;left:20px;z-index:5;background:#f8f3e8db;border:1px solid #c5b39366;padding:7px 12px;font-size:11px;color:#6d5c43;pointer-events:none}
+@media(max-width:767px){.overview-trial-entry{font-size:12px}.overview-directory-state{max-width:calc(100% - 20px);left:10px}.overview-map-note{left:12px;right:12px;font-size:10px}}
 </style>

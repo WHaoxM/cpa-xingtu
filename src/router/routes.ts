@@ -69,6 +69,12 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: '职业分析', requiresAuth: true, roles: [UserRole.STUDENT], immersive: true },
       },
       {
+        path: 'student/job-catalog',
+        name: 'student-job-catalog',
+        component: () => import('@/views/student/JobCatalog.vue'),
+        meta: { title: '岗位目录', requiresAuth: true, roles: [UserRole.STUDENT] },
+      },
+      {
         path: 'student/career-navigation',
         name: 'student-career-navigation',
         component: () => import('@/views/student/CareerNavigation.vue'),
@@ -140,7 +146,7 @@ export const routes: RouteRecordRaw[] = [
         path: 'admin/job-dataset',
         name: 'admin-job-dataset',
         component: () => import('@/views/admin/JobDataset.vue'),
-        meta: { title: '岗位数据集', requiresAuth: true, role: UserRole.ADMIN },
+        meta: { title: '岗位管理中心', requiresAuth: true, role: UserRole.ADMIN },
       },
       {
         path: 'admin/knowledge-base',

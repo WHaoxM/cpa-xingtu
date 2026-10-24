@@ -7,6 +7,10 @@ import { roleOptions, DEFAULT_CAREER_ROLE, type CareerRole } from '@/composables
 import { submitAssessment } from '@/api/career'
 import { DEMO_STUDENT_ID } from '@/api/config'
 import { useUserStore } from '@/stores'
+import { getApiMode } from '@/api/config'
+import HttpSelfReflection from '@/components/learning/HttpSelfReflection.vue'
+
+const httpReflection = getApiMode() === 'http'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -479,7 +483,8 @@ function goToNavigation() {
 </script>
 
 <template>
-  <div class="exams-page">
+  <HttpSelfReflection v-if="httpReflection" />
+  <div v-else class="exams-page">
 
     <!-- ══ 阶段一：选择方向 ══ -->
     <div v-if="phase === 'select'" class="phase phase--select">

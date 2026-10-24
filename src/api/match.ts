@@ -3,6 +3,9 @@ import { mockGet } from './adapters/mockAdapter'
 import { httpGet, httpPost } from './adapters/httpAdapter'
 
 export type MatchResult = {
+  match_id?: string
+  source_match_task_id?: string
+  sources?: Record<string, unknown>
   student_id: string
   job_portrait_id: string
   position_name?: string
@@ -11,6 +14,28 @@ export type MatchResult = {
   is_matched?: boolean
   match_level?: string
   dimensions?: Record<string, unknown>
+  status?: string
+  score_kind?: string
+  quality_status?: string
+}
+
+export type DecisionOutcome = {
+  task_id?: string
+  status?: string
+  match_id?: string | null
+  report_id?: string | null
+  reason?: string
+  next_action?: string
+  sources?: Record<string, unknown>
+  result?: DecisionOutcome
+}
+
+export type DecisionEnvelope = { success: boolean; status?: string; data?: DecisionOutcome }
+
+/** A partial outcome with a persisted match is distinct from a blocked run. */
+export async function runJobComparison(jobId: string): Promise<DecisionEnvelope> {
+  if (getApiMode() !== 'http') throw new Error('岗位对照需要连接真实服务端')
+  return httpPost('/api/match/run', { job_portrait_id: jobId }) as Promise<DecisionEnvelope>
 }
 
 export type MatchExplain = {

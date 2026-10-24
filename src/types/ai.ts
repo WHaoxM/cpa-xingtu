@@ -136,6 +136,8 @@ export type MessagePart =
   | { type: 'artifact_ref'; artifact: ArtifactRef }
   | { type: 'citation'; source: string; quote: string; page?: number | null; section?: string | null; url?: string | null; relevance?: number | null }
   | { type: 'data_card'; title: string; card_type: DataCardType; items: DataCardItem[] }
+  | { type: 'evidence_summary'; title: string; status: 'complete' | 'partial' | 'unavailable'; sources: Array<{ label: string; status: 'read' | 'partial' | 'unavailable' }>; scope_note?: 'resume_not_cross_checked' | 'resume_partially_cross_checked' | 'student_submitted_unverified' }
+  | { type: 'action_plan_handoff'; handoff_id: string; stage: 'offer' | 'awaiting_time' }
   | { type: 'upgrade_hint'; to: InteractionMode | string; reason?: string }
   | { type: 'notice'; level?: 'info' | 'warning' | 'error' | string; text: string }
 

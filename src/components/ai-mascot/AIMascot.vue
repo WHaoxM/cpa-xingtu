@@ -15,10 +15,12 @@ const props = defineProps<{
   reportRecords: ReportRecord[]
   userId?: string
   targetRoles?: TargetRole[]
+  reportGuide?: boolean
 }>()
 
 const emit = defineEmits<{
   'analysis-ready': [result: AIAnalysisResult]
+  'choose-report': []
 }>()
 
 // ─── 状态 ───────────────────────────────────────────────────────────────────
@@ -116,6 +118,7 @@ const TIPS: Record<string, string[]> = {
 const DEFAULT_TIPS: string[] = ['我是你的 AI 学习助手~', '点我可以分析你的学习数据！']
 
 function getCurrentTips(): string[] {
+  if (props.reportGuide) return ['选一份岗位报告，我陪你读懂其中的依据。']
   const name = String(route.name ?? '')
   return TIPS[name] ?? DEFAULT_TIPS
 }
@@ -149,13 +152,14 @@ function initAnim() {
     container: lottieContainer.value,
     animationData: RobotIdleData as object,
     renderer: 'svg',
-    loop: true,
-    autoplay: true,
+    loop: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+    autoplay: !window.matchMedia('(prefers-reduced-motion: reduce)').matches,
   })
 }
 
 // ─── 点击分析 ────────────────────────────────────────────────────────────────
 async function handleClick() {
+  if (props.reportGuide) { dismissTip(); emit('choose-report'); return }
   if (state.value === 'thinking') return
   dismissTip()
 
@@ -208,6 +212,11 @@ onBeforeUnmount(() => {
   <div
     ref="rootEl"
     class="mascot-root"
+    role="button"
+    tabindex="0"
+    :aria-label="reportGuide ? '选择岗位报告进行解读' : '打开学习助手'"
+    @keydown.enter.prevent="handleClick"
+    @keydown.space.prevent="handleClick"
     :style="{ left: pos.x + 'px', top: pos.y + 'px' }"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"

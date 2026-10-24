@@ -4,6 +4,7 @@ export type LayoutMode = 'single' | 'split' | 'workspace'
 // 心仪岗位（收藏的岗位）
 export interface SavedJob {
   id: string
+  savedJobId?: string
   jobTitle: string
   company: string
   industry: string
@@ -14,6 +15,12 @@ export interface SavedJob {
   savedAt: string
   notes?: string           // 用户备注
   role?: string            // 对应的 CareerRole 方向
+  jobPortraitId?: string
+  publicationVersion?: string
+  publicationStatus?: 'current' | 'revoked' | 'superseded' | 'unavailable' | 'legacy_unverified' | string
+  contentSha256?: string
+  vacancyValidity?: 'unknown' | string
+  publicationSnapshot?: Record<string, unknown> | null
 }
 
 // 从职业分析收藏的职业方向（与 savedJobs 的具体职位严格区分）

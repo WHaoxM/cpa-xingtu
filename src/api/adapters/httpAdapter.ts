@@ -68,6 +68,7 @@ export async function httpSend<T = unknown>(
   path: string,
   body?: unknown,
   query?: Query,
+  extraHeaders?: Record<string, string>,
 ): Promise<ApiEnvelope<T>> {
   const csrfToken = await getAccountCsrfToken()
   const res = await fetchJson(buildUrl(path, query), {
@@ -76,6 +77,7 @@ export async function httpSend<T = unknown>(
       Accept: 'application/json',
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       ...(csrfToken ? { 'X-CSRFToken': csrfToken } : {}),
+      ...extraHeaders,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })

@@ -1,6 +1,6 @@
 ﻿<!-- 页面：职业生涯发展报告；路由：student/career-report；角色：STUDENT -->
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import * as d3 from 'd3'
 import { useRoute, useRouter } from 'vue-router'
 import { Icon } from '@iconify/vue'
@@ -25,6 +25,11 @@ import { getApiMode } from '@/api/config'
 import { getReportList } from '@/api/report'
 import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
 import { hasServerReportCollection } from '@/composables/agentResourceHandoffContract'
+import { useCareerClimbing } from '@/composables/useCareerClimbing'
+import { personalClimbLayout } from '@/composables/careerClimbingContract'
+import CareerStartingPoint from '@/components/career/CareerStartingPoint.vue'
+import ServerPortraitDetail from '@/components/reports/ServerPortraitDetail.vue'
+import { followupLocation } from '@/utils/portraitFollowup'
 const parchmentBg = `url("${parchmentBaseUrl}")`
 
 const route = useRoute()
@@ -32,6 +37,55 @@ const router = useRouter()
 const hasArtifactQuery = computed(() => Object.prototype.hasOwnProperty.call(route.query, 'artifact_id'))
 const artifactId = computed(() => typeof route.query.artifact_id === 'string' ? route.query.artifact_id.trim() : '')
 const handoff = useAgentArtifactHandoff(() => artifactId.value)
+const isRealPath = computed(() => getApiMode() === 'http' && !hasArtifactQuery.value)
+const climb = reactive(useCareerClimbing(() => isRealPath.value))
+const hasClimbTarget = computed(() => isRealPath.value ? !!climb.selected : !!selectedJob.value)
+const selectedClimbId = computed(() => isRealPath.value ? 'personal-start' : selectedJobId.value)
+const selectedPathNode = ref('personal-start')
+const wallNoteOpen = ref(false)
+const diagnosticFacts = computed(() => climb.report?.chapters.filter(c => ['projects','experience','achievements'].includes(c.id)).flatMap(c => c.items) || [])
+function diagnosticFactParts(fields:Record<string,unknown>|string|null){
+  if(typeof fields==='string')return fields ? [{label:'经历记录',text:fields}] : []
+  const parts:{label:string;text:string}[]=[]
+  for(const key of ['role','desc','description']){
+    const text=fields?.[key]
+    if(typeof text!=='string'||!text.trim())continue
+    if(key==='description'&&parts.some(part=>part.label==='经历记录'&&part.text===text))continue
+    parts.push({label:key==='role'?'参与角色':'经历记录',text})
+  }
+  return parts
+}
+const personalQuestion=computed(()=>{
+  const question=climb.latest?.result?.question
+  if(!question)return ''
+  const value=climb.positioning
+  const alreadyShown=value?[value.starting_point,value.next_action.text,...value.connections.map(item=>item.text),...value.uncertainties.map(item=>item.text)]:[]
+  return alreadyShown.some(text=>text.trim()===question.trim())?'':question
+})
+function wallReadingTarget(id:string){
+  if(id==='personal-start')return climb.positioning?'career-personal-start':'career-path-evidence'
+  if(id==='personal-next')return climb.positioning?'career-personal-next':'career-path-position'
+  return 'career-path-direction'
+}
+function focusPathPart(id:string){
+  const target=document.getElementById(id)
+  target?.scrollIntoView({block:'start',behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'})
+  target?.focus({preventScroll:true})
+}
+function respondToNextStep(){
+  if(climb.positioning?.next_action.kind==='practice'){climb.discuss();return}
+  focusPathPart('career-path-response')
+  document.querySelector<HTMLTextAreaElement>('#career-path-response textarea')?.focus({preventScroll:true})
+}
+watch(()=>climb.latest?.status,(status,previous)=>{
+  if(status==='completed'&&previous&&previous!=='completed')void nextTick(()=>{
+    const panel=document.getElementById('career-path-position');if(panel)panel.scrollTop=0
+    focusPathPart('career-path-position')
+  })
+})
+function followCurrentPortrait(focus?:'resume'|'self-report') {
+  if(climb.workbench){const location=followupLocation(climb.workbench,focus||'resume');if(location)void router.push(location)}
+}
 type ReportArtifactPreview = { type?: string; markdown?: string; chapters?: string[]; word_count?: number }
 const artifactReady = computed(() => handoff.ready.value && handoff.artifact.value?.kind === 'career_report')
 const reportPreview = computed<ReportArtifactPreview | null>(() => artifactReady.value
@@ -64,6 +118,7 @@ const reportSaved = ref(false)
 
 /* 关注方向：targetRoles 优先，如果为空则 fallback 到 predictedRole 或默认 */
 const effectiveTargetRoles = computed<string[]>(() => {
+  if (isRealPath.value) return climb.role ? [climb.role] : []
   if (learningStore.targetRoles.length > 0) return learningStore.targetRoles.map(r => r.role)
   const predicted = resumeStore.insights?.predictedRole
   if (predicted) return [predicted]
@@ -71,6 +126,7 @@ const effectiveTargetRoles = computed<string[]>(() => {
 })
 
 function saveCareerReport() {
+  if(isRealPath.value)return
   const today = new Date().toISOString().slice(0, 10)
   if (artifactReady.value && handoff.artifact.value) {
     reportStore.addRecord({
@@ -206,6 +262,7 @@ const effectiveMatchScore = computed(() => {
 
 /* ══ 学生七维 ══ */
 const studentDim = computed(() => {
+  if (isRealPath.value) return {} as ReturnType<typeof deriveStudentSevenDim>
   const stored = resumeStore.portraitDimensions
   if (stored) return stored
   const skills = resumeStore.parsedSkills
@@ -217,7 +274,7 @@ const studentDim = computed(() => {
 const growthPlan = computed(() => selectedJobId.value ? getGrowthPlan(selectedJobId.value) : [])
 
 /* ══ 分组气泡图 ══ */
-type ReportBubbleJob = JobPortrait & {
+type ReportBubbleJob = Pick<JobPortrait, 'id'|'title'|'salaryRange'> & {
   domainId: string
   domainName: string
   domainColor: string
@@ -256,6 +313,9 @@ interface ReportBubbleJobNode extends d3.SimulationNodeDatum {
 }
 
 const bubbleSvgRef = ref<SVGSVGElement | null>(null)
+const analysisMainRef = ref<HTMLElement | null>(null)
+const bubblePanelRef = ref<HTMLElement | null>(null)
+let motionQuery: MediaQueryList | null = null
 let bubbleResizeObserver: ResizeObserver | null = null
 let bubbleOuterSim: d3.Simulation<ReportBubbleDomainNode, undefined> | null = null
 let bubbleInnerSims: Array<d3.Simulation<ReportBubbleJobNode, undefined>> = []
@@ -354,6 +414,8 @@ function getReportBubbleScoreOffset(r: number, lineCount: number): number {
 }
 
 const bubbleJobs = computed<ReportBubbleJob[]>(() => {
+  if(isRealPath.value) return climb.visible.map(c=>({id:c.role,title:c.role,salaryRange:'',displayMatchScore:0,
+    domainId:'live-'+strHash(c.category),domainName:c.category,domainColor:['#C4622D','#5B7E91','#B8962E'][strHash(c.category)%3]!}))
   const weighted = [...JOB_PORTRAITS]
     .filter(job => CLIMB_JOB_IDS.has(job.id))
     .sort((a, b) => getDisplayMatchScore(b) - getDisplayMatchScore(a))
@@ -487,6 +549,8 @@ function makeElasticCollideForce<N extends d3.SimulationNodeDatum & { r: number 
 function initBubbleChart() {
   const svg = bubbleSvgRef.value
   if (!svg) return
+  const focusedJob = svg.contains(document.activeElement)
+    ? document.activeElement?.closest('.job-node')?.getAttribute('data-job-id') : null
 
   stopBubbleChart()
 
@@ -497,6 +561,8 @@ function initBubbleChart() {
 
   const width = svg.clientWidth || 360
   const height = svg.clientHeight || 300
+  if (svg.clientWidth === 0 || svg.clientHeight === 0) return
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
   const minSide = Math.min(width, height)
   const baseJobR = Math.min(30, Math.max(18, minSide / 15))
   const labelPadding = 12
@@ -511,9 +577,9 @@ function initBubbleChart() {
     .attr('type', 'fractalNoise').attr('baseFrequency', 0.045)
     .attr('numOctaves', 3).attr('seed', 7).attr('result', 'noise')
   inkBleedFilter.append('feDisplacementMap')
-    .attr('in', 'SourceGraphic').attr('in2', 'noise').attr('scale', 3).attr('result', 'displaced')
+    .attr('in', 'SourceGraphic').attr('in2', 'noise').attr('scale', 0.8).attr('result', 'displaced')
   inkBleedFilter.append('feGaussianBlur')
-    .attr('in', 'displaced').attr('stdDeviation', 0.6)
+    .attr('in', 'displaced').attr('stdDeviation', 0.15)
 
   const selectedFilter = defs.append('filter')
     .attr('id', 'cr-bubble-ink-selected')
@@ -534,8 +600,8 @@ function initBubbleChart() {
       .attr('cx', '50%').attr('cy', '50%').attr('r', '50%')
     jobGradient.append('stop').attr('offset', '0%').attr('stop-color', group.domainColor).attr('stop-opacity', 0.92)
     jobGradient.append('stop').attr('offset', '52%').attr('stop-color', group.domainColor).attr('stop-opacity', 0.8)
-    jobGradient.append('stop').attr('offset', '80%').attr('stop-color', group.domainColor).attr('stop-opacity', 0.36)
-    jobGradient.append('stop').attr('offset', '100%').attr('stop-color', group.domainColor).attr('stop-opacity', 0.06)
+    jobGradient.append('stop').attr('offset', '80%').attr('stop-color', group.domainColor).attr('stop-opacity', 0.72)
+    jobGradient.append('stop').attr('offset', '100%').attr('stop-color', group.domainColor).attr('stop-opacity', 0.5)
 
     const domainGradient = defs.append('radialGradient')
       .attr('id', `cr-domain-${group.domainId}`)
@@ -559,7 +625,7 @@ function initBubbleChart() {
       domainId: group.domainId,
       domainName: group.domainName,
       domainColor: group.domainColor,
-      r: Math.max(16, Math.round(12 + job.displayMatchScore * 18)),
+      r: isRealPath.value ? 32 : Math.max(24, Math.round(18 + job.displayMatchScore * 18)),
       x: (Math.random() - 0.5) * 20,
       y: (Math.random() - 0.5) * 20,
     }))
@@ -588,6 +654,16 @@ function initBubbleChart() {
       x,
       y,
     }
+  })
+
+  // Keep nested groups inside a narrow panel without changing jobs or scores.
+  const totalDiameter = d3.sum(domainNodes, domain => domain.r * 2)
+  const fit = Math.min(1, (width - 36) / Math.max(1, totalDiameter + 12),
+    (height - 48) / Math.max(1, d3.max(domainNodes, domain => domain.r * 2) ?? 1))
+  domainNodes.forEach(domain => {
+    domain.r *= fit
+    domain.labelY = -domain.r - 8
+    domain.jobs.forEach(job => { job.r *= fit })
   })
 
   const domainGroups = root.selectAll<SVGGElement, ReportBubbleDomainNode>('g.cr-domain-group')
@@ -628,9 +704,19 @@ function initBubbleChart() {
       .enter()
       .append('g')
       .attr('class', 'job-node')
+      .attr('data-job-id', job => job.id)
+      .attr('role', 'button')
+      .attr('tabindex', 0)
+      .attr('aria-label', job => isRealPath.value ? `选择方向：${job.title}` : `${job.title}，匹配度 ${Math.round(job.matchScore * 100)}%`)
+      .attr('data-direction', job => isRealPath.value ? job.title : null)
       .style('cursor', 'pointer')
       .on('click', (_event, job) => {
-        selectJob(job.id)
+        selectJob(job.id, true)
+      })
+      .on('keydown', (event: KeyboardEvent, job) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        event.preventDefault()
+        selectJob(job.id, true)
       })
 
     jobGroups.append('circle')
@@ -645,7 +731,7 @@ function initBubbleChart() {
       .attr('text-anchor', 'middle')
       .attr('dominant-baseline', 'central')
       .attr('fill', job => getReportBubbleTextColor(job.domainColor))
-      .attr('font-size', job => Math.max(8, job.r * 0.34))
+      .attr('font-size', job => Math.max(11, job.r * 0.34))
       .attr('font-family', fontFamily)
       .attr('font-weight', '600')
       .attr('letter-spacing', '0.02em')
@@ -671,7 +757,7 @@ function initBubbleChart() {
       .attr('y', job => getReportBubbleScoreOffset(job.r, getReportBubbleLines(job.title, job.r).length))
       .attr('fill', job => getReportBubbleTextColor(job.domainColor))
       .attr('fill-opacity', 0.92)
-      .attr('font-size', job => Math.max(8.5, job.r * 0.32))
+      .attr('font-size', job => Math.max(11, job.r * 0.32))
       .attr('font-family', '"Inter", "DIN Alternate", "PingFang SC", "Microsoft YaHei", sans-serif')
       .attr('font-weight', '700')
       .attr('letter-spacing', '0.01em')
@@ -680,9 +766,9 @@ function initBubbleChart() {
       .attr('stroke-width', 1)
       .attr('pointer-events', 'none')
       .style('font-variant-numeric', 'tabular-nums')
-      .text(job => `${Math.round(job.matchScore * 100)}%`)
+      .text(job => isRealPath.value ? '' : `${Math.round(job.matchScore * 100)}%`)
 
-    jobGroups.append('title').text(job => `${job.title}\n匹配度 ${Math.round(job.matchScore * 100)}%\n${job.salaryRange}`)
+    jobGroups.append('title').text(job => isRealPath.value ? job.title : `${job.title}\n匹配度 ${Math.round(job.matchScore * 100)}%\n${job.salaryRange}`)
 
     const innerBound = Math.max(20, domainNode.r - (d3.max(jobNodes, job => job.r) ?? 0) - 6)
     jobNodes.forEach(job => {
@@ -724,6 +810,10 @@ function initBubbleChart() {
       })
 
     bubbleInnerSims.push(innerSimulation)
+    if (reducedMotion) {
+      innerSimulation.stop().force('wander', null).tick(160)
+      jobGroups.attr('transform', job => `translate(${job.x ?? 0},${job.y ?? 0})`)
+    }
   })
 
   domainNodes.forEach(domain => {
@@ -795,17 +885,26 @@ function initBubbleChart() {
     })
 
   updateBubbleSelection()
+  if(focusedJob){
+    Array.from(svg.querySelectorAll<SVGGElement>('.job-node'))
+      .find(node=>node.getAttribute('data-job-id')===focusedJob)?.focus({preventScroll:true})
+  }
+  if (reducedMotion && bubbleOuterSim) {
+    bubbleOuterSim.stop().force('wander', null).tick(160)
+    domainGroups.attr('transform', domain => `translate(${domain.x ?? width / 2},${domain.y ?? height / 2})`)
+  }
 }
 
 function updateBubbleSelection() {
   const svg = bubbleSvgRef.value
   if (!svg) return
 
-  const selectedDomainId = selectedJob.value ? getReportBubbleDomainMeta(selectedJob.value).domainId : ''
+  const selectedId=isRealPath.value?climb.role:selectedJobId.value
+  const selectedDomainId = isRealPath.value ? bubbleJobs.value.find(j=>j.id===selectedId)?.domainId : selectedJob.value ? getReportBubbleDomainMeta(selectedJob.value).domainId : ''
 
   d3.select(svg).selectAll<SVGGElement, ReportBubbleJobNode>('g.job-node').each(function (job) {
     const group = d3.select(this)
-    const isSelected = job.id === selectedJobId.value
+    const isSelected = job.id === selectedId
     group.select('.job-circle')
       .classed('job-circle--selected', isSelected)
       .attr('r', isSelected ? job.r + 3 : job.r)
@@ -839,7 +938,7 @@ watch(
 watch(selectedJobId, () => updateBubbleSelection())
 
 /* ══ 攀岩墙布局 ══ */
-type ClimbNode = { id: string; title: string; level: JobLevel; lineId: string; salaryRange: string; x: number; y: number }
+type ClimbNode = { id: string; title: string; level: JobLevel|'evidence'; lineId: string; salaryRange: string; x: number; y: number }
 type ClimbHold = { x: number; y: number; label: string; mastered: boolean; edgeType: 'promote' | 'transfer' }
 type ClimbRope = { path: string; type: 'promote' | 'transfer'; fromId: string; toId: string; holds: ClimbHold[]; allSkills: string[]; omittedCount: number }
 
@@ -876,6 +975,7 @@ const masteredSkillNames = computed(() => {
 })
 
 function isSkillMastered(skill: string): boolean {
+  if (isRealPath.value) return false
   const lower = skill.toLowerCase()
   for (const s of masteredSkillNames.value) {
     if (lower.includes(s) || s.includes(lower)) return true
@@ -884,6 +984,7 @@ function isSkillMastered(skill: string): boolean {
 }
 
 const climbLayout = computed<{ nodes: ClimbNode[]; ropes: ClimbRope[] }>(() => {
+  if (isRealPath.value) return personalClimbLayout(climb.selected?.role || '', climb.positioning,climb.promotionPaths)
   if (!selectedJob.value) return { nodes: [], ropes: [] }
   const selId = selectedJob.value.id
   const selLineId = selectedJob.value.lineId
@@ -1131,6 +1232,16 @@ const crRadarData = computed<RadarDatum[]>(() => {
     ref: job.sevenDim[name],
   }))
 })
+const reportRadarColors = ['#a62a13', '#876313', '#2f773c', '#245f99', '#7652a6', '#95551f', '#237180']
+
+function openSkillDetails(rope: ClimbRope) {
+  if(isRealPath.value){selectedPathNode.value=rope.toId;return}
+  activeSkillEdge.value = {
+    fromId: rope.fromId, toId: rope.toId, skills: rope.allSkills,
+    fromTitle: JOB_PORTRAITS.find(job => job.id === rope.fromId)?.title ?? '',
+    toTitle: JOB_PORTRAITS.find(job => job.id === rope.toId)?.title ?? '',
+  }
+}
 
 /* ══ GSAP 攀岩墙动画 ══ */
 function animateClimbingWall() {
@@ -1148,6 +1259,7 @@ function animateClimbingWall() {
   })
   const climberEl = svg.querySelector('.cw-climber')
   if (climberEl) climberEl.removeAttribute('style')
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
 
   const tl = gsap.timeline()
   climbTimeline = tl
@@ -1172,7 +1284,7 @@ function animateClimbingWall() {
   }
 
   const climber = svg.querySelector('.cw-climber')
-  if (climber && ropePaths.length > 0) {
+  if (climber && ropePaths.length > 0 && !isRealPath.value) {
     const firstRope = ropePaths[0] as SVGPathElement
     tl.to(climber, {
       motionPath: { path: firstRope, align: firstRope, alignOrigin: [0.5, 0.5] },
@@ -1186,6 +1298,7 @@ watch(() => climbLayout.value, async () => { await nextTick(); animateClimbingWa
 
 /* ══ 报告文本 ══ */
 const reportText = computed(() => {
+  if(isRealPath.value)return ''
   const job = selectedJob.value
   const user = userStore.currentUser?.name ?? '钟同学'
   if (!job) return ''
@@ -1293,9 +1406,29 @@ function exportDownload() {
 
 const wordCount = computed(() => (reportTextEditable.value || reportText.value).length)
 
-function selectJob(id: string) {
+function scrollToJobs() {
+  bubblePanelRef.value?.scrollIntoView({ behavior: 'auto', block: 'start' })
+}
+
+function selectJob(id: string, fromBubble = false) {
+  if(isRealPath.value){
+    if(id.startsWith('reference-')){selectedPathNode.value=id;wallNoteOpen.value=true;return}
+    if(id.startsWith('personal-')){selectedPathNode.value=id;wallNoteOpen.value=true;focusPathPart(wallReadingTarget(id));return}
+    selectedPathNode.value='personal-start';climb.choose(id);return
+  }
+  // Expanding the wall above the mobile picker must not move the picker out of view.
+  const main = analysisMainRef.value
+  const oldPickerTop = fromBubble && window.matchMedia('(max-width: 1023px)').matches
+    ? bubblePanelRef.value?.getBoundingClientRect().top
+    : undefined
   selectedJobId.value = id
   activeSkillEdge.value = null
+  if (main && oldPickerTop !== undefined) {
+    void nextTick(() => {
+      const newTop = bubblePanelRef.value?.getBoundingClientRect().top
+      if (newTop !== undefined) main.scrollTop += newTop - oldPickerTop
+    })
+  }
   /* 延迟加载成长计划，模拟 Agent 分析过程 */
   planTimers.forEach(t => clearTimeout(t))
   planTimers = []
@@ -1348,7 +1481,10 @@ function toggleStage(phase: string) {
 }
 async function initReportVisualization() {
   await nextTick()
-  if (hasArtifactQuery.value) return
+  stopBubbleChart()
+  bubbleResizeObserver?.disconnect()
+  bubbleResizeObserver = null
+  if (hasArtifactQuery.value || activeMode.value !== 'analysis') return
   initBubbleChart()
   if (bubbleSvgRef.value) {
     bubbleResizeObserver = new ResizeObserver(() => initBubbleChart())
@@ -1356,7 +1492,29 @@ async function initReportVisualization() {
   }
 }
 
-onMounted(initReportVisualization)
+function refreshMotionPreference() {
+  if (activeMode.value === 'analysis' && !hasArtifactQuery.value) initBubbleChart()
+  animateClimbingWall()
+}
+
+onMounted(() => {
+  motionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+  motionQuery.addEventListener('change', refreshMotionPreference)
+  void initReportVisualization()
+})
+
+watch(activeMode, async mode => {
+  showExportMenu.value = false
+  if (mode === 'analysis') {
+    await initReportVisualization()
+    animateClimbingWall()
+  } else {
+    stopBubbleChart()
+    bubbleResizeObserver?.disconnect()
+    bubbleResizeObserver = null
+    climbTimeline?.kill()
+  }
+}, { flush: 'post' })
 
 onMounted(async () => {
   const uid = userStore.currentUser?.id
@@ -1407,6 +1565,7 @@ watch(reportTextEditable, markdown => {
 })
 
 onBeforeUnmount(() => {
+  motionQuery?.removeEventListener('change', refreshMotionPreference)
   stopBubbleChart()
   if (bubbleResizeObserver) {
     bubbleResizeObserver.disconnect()
@@ -1418,7 +1577,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="cr-page">
+  <div class="cr-page" @keydown.esc="activeSkillEdge = null; showExportMenu = false">
 
     <!-- ══ HEADER ══ -->
     <header class="cr-header">
@@ -1429,16 +1588,16 @@ onBeforeUnmount(() => {
       </div>
       <div class="cr-header__tabs">
         <button v-if="!hasArtifactQuery" class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'analysis' }" @click="activeMode = 'analysis'">
-          <Icon icon="lucide:bar-chart-3" :width="13"/><span>职业分析</span>
+          <Icon icon="lucide:bar-chart-3" :width="13"/><span>{{ isRealPath ? '职业攀岩路径' : '职业分析' }}</span>
         </button>
-        <button v-if="!hasArtifactQuery || artifactReady" class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'report' }" @click="switchToReport">
+        <button v-if="!isRealPath && (!hasArtifactQuery || artifactReady)" class="cr-tab" :class="{ 'cr-tab--active': activeMode === 'report' }" @click="switchToReport">
           <Icon icon="lucide:file-text" :width="13"/><span>报告编辑</span>
         </button>
       </div>
       <div class="cr-header__right">
         <button v-if="hasArtifactQuery" class="cr-back" @click="browseOrdinaryReport">退出对话产物</button>
         <button
-          v-if="!hasArtifactQuery || artifactReady"
+          v-if="!isRealPath && (!hasArtifactQuery || artifactReady)"
           class="cr-save-btn"
           :disabled="reportSaved"
           @click="saveCareerReport"
@@ -1459,18 +1618,19 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <!-- 生成报告按钮（仅分析模式） -->
-        <button v-else-if="!hasArtifactQuery" class="cr-report-btn" :disabled="!selectedJob" @click="switchToReport">
+        <button v-else-if="!isRealPath && !hasArtifactQuery" class="cr-report-btn" :disabled="!selectedJob" @click="switchToReport">
           <Icon icon="lucide:file-text" :width="12"/><span>生成报告</span>
         </button>
         <button class="cr-my-reports-btn" @click="router.push({ name: 'student-my-reports' })">
           <Icon icon="lucide:book-open" :width="12"/><span>我的报告</span>
         </button>
-        <button v-if="hasServerReports && !hasArtifactQuery" class="cr-my-reports-btn" title="仅引用服务端已有报告，由 Agent 逐份核验；不包含本页计算或本地保存内容" @click="askAgentToCheckExistingReports">
+        <button v-if="hasServerReports && !hasArtifactQuery" class="cr-my-reports-btn cr-discuss-btn" aria-label="与 Agent 讨论已有报告" title="仅引用服务端已有报告，由 Agent 逐份核验；不包含本页计算或本地保存内容" @click="askAgentToCheckExistingReports">
           <Icon icon="lucide:message-circle" :width="12"/><span>与 Agent 讨论已有报告</span>
         </button>
-        <UserInfoBar />
       </div>
+      <div class="cr-header__identity"><UserInfoBar /></div>
     </header>
+    <nav v-if="isRealPath" class="cr-personal-jumps" aria-label="职业攀岩路径内容定位"><button @click="focusPathPart('career-path-wall')">攀岩路径</button><button @click="focusPathPart('career-path-position')">我的起点与下一步</button><button @click="focusPathPart('career-path-evidence')">本人画像与经历</button></nav>
 
     <section v-if="hasArtifactQuery && !artifactReady" class="cr-agent-state" role="status">
       <Icon :icon="handoff.loading.value ? 'lucide:loader-circle' : 'lucide:circle-alert'" :width="26" />
@@ -1487,14 +1647,14 @@ onBeforeUnmount(() => {
     <!-- ═══════════════════════════════════════════ -->
     <!--              模式 A：职业分析                 -->
     <!-- ═══════════════════════════════════════════ -->
-    <div v-if="(!hasArtifactQuery || artifactReady) && activeMode === 'analysis'" class="cr-main">
+    <div v-if="(!hasArtifactQuery || artifactReady) && activeMode === 'analysis'" ref="analysisMainRef" class="cr-main" :class="{ 'cr-main--selected': hasClimbTarget, 'cr-main--real': isRealPath }" aria-label="职业报告分析">
 
       <!-- ══ 左栏：攀岩墙路径图 ══ -->
-      <div class="cr-left">
+      <div id="career-path-wall" class="cr-left" tabindex="-1">
         <div class="cr-panel-title">
           <Icon icon="lucide:mountain" :width="12"/>
           <span>职业攀岩路径</span>
-          <span v-if="selectedJob" class="cr-panel-sub">{{ selectedJob.title }} 所在线路</span>
+          <span v-if="hasClimbTarget" class="cr-panel-sub">{{ isRealPath ? climb.role : selectedJob?.title }} 所在线路</span>
         </div>
 
         <div class="cr-cw-wrap">
@@ -1502,7 +1662,7 @@ onBeforeUnmount(() => {
             v-if="climbLayout.nodes.length"
             ref="climbingSvgEl"
             class="cr-cw-svg"
-            :viewBox="`0 0 ${CW_W} ${CW_H}`"
+            :viewBox="`0 0 ${CW_W} ${isRealPath ? 680 : CW_H}`"
             preserveAspectRatio="xMidYMid meet"
             overflow="visible"
             fill="none"
@@ -1511,7 +1671,7 @@ onBeforeUnmount(() => {
               <!-- 墙面纹理滤镜 -->
               <filter id="cw-wall-tex" x="0" y="0" width="100%" height="100%">
                 <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" seed="5" result="noise"/>
-                <feDiffuseLighting in="noise" lighting-color="#e8e4de" surfaceScale="1.2" result="lit">
+                <feDiffuseLighting in="noise" lighting-color="#f5f1e8" surfaceScale="0.6" result="lit">
                   <feDistantLight azimuth="225" elevation="50"/>
                 </feDiffuseLighting>
                 <feComposite in="SourceGraphic" in2="lit" operator="arithmetic" k1="0.12" k2="0.88" k3="0" k4="0"/>
@@ -1572,8 +1732,8 @@ onBeforeUnmount(() => {
             </defs>
 
             <!-- 墙面底色 + 纹理（大幅超出 viewBox，配合 overflow=visible 覆盖全容器） -->
-            <rect x="-400" y="-200" :width="CW_W + 800" :height="CW_H + 400" fill="#D8D4CC"/>
-            <rect x="-400" y="-200" :width="CW_W + 800" :height="CW_H + 400" fill="#E2DED6" filter="url(#cw-wall-tex)"/>
+            <rect x="-400" y="-200" :width="CW_W + 800" :height="CW_H + 400" fill="var(--cr-wall-base)"/>
+            <rect x="-400" y="-200" :width="CW_W + 800" :height="CW_H + 400" fill="var(--cr-wall-light)" filter="url(#cw-wall-tex)"/>
             <rect x="-400" y="-200" :width="CW_W + 800" :height="CW_H + 400" fill="url(#cw-tnut)"/>
             <rect x="-400" y="-200" :width="CW_W + 800" :height="CW_H + 400" fill="url(#cw-seams)"/>
 
@@ -1601,8 +1761,11 @@ onBeforeUnmount(() => {
             <g v-for="rope in climbLayout.ropes" :key="'h:'+rope.type+':'+rope.fromId+'-'+rope.toId">
               <g v-for="hold in rope.holds" :key="hold.label" class="cw-hold"
                 :transform="`translate(${hold.x},${hold.y}) rotate(${getHoldRotation(hold.label)})`"
-                @click.stop="activeSkillEdge = { fromId: rope.fromId, toId: rope.toId, skills: rope.allSkills, fromTitle: JOB_PORTRAITS.find(j => j.id === rope.fromId)?.title ?? '', toTitle: JOB_PORTRAITS.find(j => j.id === rope.toId)?.title ?? '' }"
+                role="button" tabindex="0" :aria-label="`查看技能：${hold.label}`"
+                @click.stop="openSkillDetails(rope)"
+                @keydown.enter.prevent="openSkillDetails(rope)" @keydown.space.prevent="openSkillDetails(rope)"
               >
+                <circle r="22" fill="transparent"/>
                 <!-- 岩点造型 -->
                 <path
                   :d="HOLD_SHAPES[getHoldShapeIndex(hold.label)]"
@@ -1621,12 +1784,15 @@ onBeforeUnmount(() => {
                   :transform="`rotate(${-getHoldRotation(hold.label)})`">
                   {{ hold.label.length > 6 ? hold.label.slice(0,6) + '…' : hold.label }}
                 </text>
-                <title>{{ hold.label }}{{ hold.mastered ? ' ✓ 已掌握' : ' ✗ 未掌握' }}（点击查看全部技能）</title>
+                <title>{{ isRealPath ? hold.label+'（点击查看相关内容）' : hold.label+(hold.mastered ? ' ✓ 已掌握' : ' ✗ 未掌握')+'（点击查看全部技能）' }}</title>
               </g>
               <g v-if="rope.omittedCount > 0 && rope.holds.length > 0" class="cw-hold cw-hold--more"
                 :transform="`translate(${(rope.holds[rope.holds.length - 1]?.x ?? 0) + 38},${rope.holds[rope.holds.length - 1]?.y ?? 0})`"
-                @click.stop="activeSkillEdge = { fromId: rope.fromId, toId: rope.toId, skills: rope.allSkills, fromTitle: JOB_PORTRAITS.find(j => j.id === rope.fromId)?.title ?? '', toTitle: JOB_PORTRAITS.find(j => j.id === rope.toId)?.title ?? '' }"
+                role="button" tabindex="0" :aria-label="`查看其余 ${rope.omittedCount} 项技能`"
+                @click.stop="openSkillDetails(rope)"
+                @keydown.enter.prevent="openSkillDetails(rope)" @keydown.space.prevent="openSkillDetails(rope)"
               >
+                <circle r="22" fill="transparent"/>
                 <circle r="12" fill="rgba(120,115,105,0.12)" stroke="rgba(120,115,105,0.3)" stroke-width="1.2" stroke-dasharray="3 2"/>
                 <text y="4" text-anchor="middle" class="cw-hold-text" style="fill:rgba(100,90,78,0.7)">+{{ rope.omittedCount }}</text>
                 <title>还有 {{ rope.omittedCount }} 项技能，点击查看</title>
@@ -1638,11 +1804,13 @@ onBeforeUnmount(() => {
               v-for="node in climbLayout.nodes" :key="node.id"
               class="cw-job-node"
               :transform="`translate(${node.x},${node.y})`"
+              role="button" tabindex="0" :aria-label="`${node.title}，${node.salaryRange}`"
               @click="selectJob(node.id)"
+              @keydown.enter.prevent="selectJob(node.id)" @keydown.space.prevent="selectJob(node.id)"
               filter="url(#cw-node-shadow)"
             >
               <!-- 选中态外发光环 -->
-              <circle v-if="selectedJobId === node.id"
+              <circle v-if="(isRealPath ? selectedPathNode : selectedJobId) === node.id"
                 :r="CW_NODE_R + 7" fill="none"
                 :stroke="LINE_COLORS[node.lineId] ?? '#E85D3A'" stroke-width="2"
                 opacity="0.3" class="cw-node-glow"
@@ -1650,16 +1818,16 @@ onBeforeUnmount(() => {
               <!-- 主体圆盘 -->
               <circle
                 :r="CW_NODE_R"
-                :fill="selectedJobId === node.id
+                :fill="(isRealPath ? selectedPathNode : selectedJobId) === node.id
                   ? (LINE_COLORS[node.lineId] ?? '#E85D3A')
                   : 'url(#cw-node-idle)'"
                 :stroke="LINE_COLORS[node.lineId] ?? '#E85D3A'"
-                :stroke-width="selectedJobId === node.id ? 2.5 : 1.8"
+                :stroke-width="(isRealPath ? selectedPathNode : selectedJobId) === node.id ? 2.5 : 1.8"
               />
               <!-- 高光弧线 -->
               <circle
                 :r="CW_NODE_R - 5" fill="none"
-                :stroke="selectedJobId === node.id ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.35)'"
+                :stroke="(isRealPath ? selectedPathNode : selectedJobId) === node.id ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.35)'"
                 stroke-width="0.8"
               />
               <!-- 螺栓固定孔 -->
@@ -1668,20 +1836,20 @@ onBeforeUnmount(() => {
               <!-- 文字 -->
               <text y="-3" text-anchor="middle"
                 class="cw-node-title"
-                :class="{ 'cw-node-title--active': selectedJobId === node.id }">
+                :class="{ 'cw-node-title--active': (isRealPath ? selectedPathNode : selectedJobId) === node.id }">
                 {{ node.title.length > 6 ? node.title.slice(0,6) : node.title }}
               </text>
               <text y="9" text-anchor="middle"
                 class="cw-node-sub"
-                :class="{ 'cw-node-sub--active': selectedJobId === node.id }">
+                :class="{ 'cw-node-sub--active': (isRealPath ? selectedPathNode : selectedJobId) === node.id }">
                 {{ node.salaryRange }}
               </text>
               <title>{{ node.title }} · {{ node.salaryRange }}</title>
             </g>
 
             <!-- 攀登者标记 -->
-            <g v-if="selectedJob" class="cw-climber"
-              :transform="`translate(${climbLayout.nodes.find(n => n.id === selectedJobId)?.x ?? CW_W/2},${(climbLayout.nodes.find(n => n.id === selectedJobId)?.y ?? CW_H - 50) + 28})`"
+            <g v-if="hasClimbTarget" class="cw-climber"
+              :transform="`translate(${climbLayout.nodes.find(n => n.id === selectedClimbId)?.x ?? CW_W/2},${(climbLayout.nodes.find(n => n.id === selectedClimbId)?.y ?? CW_H - 50) + 28})`"
             >
               <!-- 脉冲光圈 -->
               <circle r="10" fill="none" stroke="rgba(210,80,45,0.4)" stroke-width="1.5" class="cw-climber-pulse"/>
@@ -1691,24 +1859,31 @@ onBeforeUnmount(() => {
                 <circle cx="12" cy="4" r="3.5" fill="#5A534E" stroke="#fff" stroke-width="0.6"/>
                 <path d="M12,8 L12,18 M8,12 L16,12 M12,18 L8,24 M12,18 L16,24" stroke="#5A534E" stroke-width="2" stroke-linecap="round" fill="none"/>
               </g>
-              <text y="22" text-anchor="middle" class="cw-origin-label">当前位置</text>
+              <text y="22" text-anchor="middle" class="cw-origin-label">{{ isRealPath ? '从本人经历出发' : '当前位置' }}</text>
             </g>
 
           </svg>
 
           <!-- 图例（HTML 浮层，固定在容器左上角） -->
-          <div class="cw-legend-overlay">
+          <div v-if="!isRealPath" class="cw-legend-overlay">
             <div class="cw-legend-item"><span class="cw-legend-line cw-legend-line--promote"></span><span>晋升路径</span></div>
             <div class="cw-legend-item"><span class="cw-legend-line cw-legend-line--transfer"></span><span>转岗路径</span></div>
             <div class="cw-legend-item"><span class="cw-legend-dot cw-legend-dot--mastered"></span><span>已掌握</span></div>
             <div class="cw-legend-item"><span class="cw-legend-dot cw-legend-dot--unmastered"></span><span>未掌握</span></div>
           </div>
+          <div v-else class="cw-legend-overlay cw-legend-personal"><span>从经历 → 下一步 → 目标方向</span><small>路线表达探索顺序，不代表职级或距离。</small><small v-if="climb.promotionState==='ready'">右侧为目录晋升参考，不代表本人职级。</small><small v-else-if="climb.selected">{{ climb.promotionState==='loading' ? '正在读取晋升参考…' : climb.promotionState==='unavailable' ? '晋升参考暂时无法读取。' : '现有目录暂未提供此方向的晋升链。' }}</small></div>
+          <div v-if="isRealPath && hasClimbTarget && wallNoteOpen" class="cw-personal-note" role="status">
+            <button class="cw-sp-close" aria-label="关闭路线说明" @click="wallNoteOpen=false"><Icon icon="lucide:x" :width="16" /></button>
+            <strong>{{ selectedPathNode.startsWith('reference-') ? climbLayout.nodes.find(n=>n.id===selectedPathNode)?.title : selectedPathNode==='personal-target' ? climb.role : selectedPathNode==='personal-next' ? '先做的一件事' : '从已有经历开始' }}</strong>
+            <p>{{ selectedPathNode.startsWith('reference-') ? '这是职业发展的参考，不表示你的当前职级，也不是晋升承诺。' : selectedPathNode==='personal-target' ? '这是你选择探索的方向，不表示已达到岗位要求。' : selectedPathNode==='personal-next' ? '优先一步的具体内容和原因，见个人解读。' : '从已确认的经历出发，阅读你与这个方向的联系。' }}</p>
+            <button type="button" class="cw-personal-note__read" @click="focusPathPart(wallReadingTarget(selectedPathNode))">{{ selectedPathNode==='personal-start' ? '阅读我的起点' : selectedPathNode==='personal-next' ? '阅读下一步' : '查看所选方向' }}<Icon icon="lucide:arrow-right" :width="12"/></button>
+          </div>
 
           <!-- 技能详情浮动面板 -->
-          <div v-if="activeSkillEdge" class="cw-skill-panel" @click.stop>
+          <div v-if="activeSkillEdge" class="cw-skill-panel" role="region" aria-label="路线技能详情" @click.stop>
             <div class="cw-sp-header">
               <span class="cw-sp-title">{{ activeSkillEdge.fromTitle }} → {{ activeSkillEdge.toTitle }}</span>
-              <button class="cw-sp-close" @click="activeSkillEdge = null"><Icon icon="lucide:x" :width="12"/></button>
+              <button class="cw-sp-close" aria-label="关闭技能详情" @click="activeSkillEdge = null"><Icon icon="lucide:x" :width="16"/></button>
             </div>
             <ul class="cw-sp-list">
               <li v-for="skill in activeSkillEdge.skills" :key="skill" class="cw-sp-item">
@@ -1721,18 +1896,26 @@ onBeforeUnmount(() => {
           </div>
 
           <!-- 未选岗位引导 -->
-          <div v-if="!selectedJob" class="cr-guide-overlay">
+          <div v-if="!hasClimbTarget" class="cr-guide-overlay">
             <Icon icon="lucide:mountain" :width="28" class="cr-guide-icon"/>
-            <p class="cr-guide-text">请先在右侧<br/><strong>点击岗位气泡</strong></p>
-            <Icon icon="lucide:arrow-right" :width="18" class="cr-guide-arrow"/></div>
+            <p class="cr-guide-text cr-guide-desktop">请先在右侧<br/><strong>点击岗位气泡</strong></p>
+            <Icon icon="lucide:arrow-right" :width="18" class="cr-guide-arrow cr-guide-desktop"/>
+            <p class="cr-guide-text cr-guide-mobile">选择目标岗位后，查看你的攀岩路径</p>
+            <button class="cr-guide-mobile cr-report-btn" @click="scrollToJobs">选择目标岗位 <Icon icon="lucide:arrow-down" :width="16"/></button>
+          </div>
         </div>
       </div>
 
       <!-- ══ 中栏 ══ -->
       <div class="cr-center">
 
+        <div v-if="isRealPath" class="cr-hero cr-real-heading">
+          <div class="cr-hero__info"><div class="cr-hero-job">{{ climb.selected ? '走向'+climb.role+'，我从哪里开始？' : '把已经做过的事，接到想走的方向' }}</div><p class="cr-hero-desc">先看本人经历如何衔接，再决定补清一段经历，还是亲自试一次。</p></div>
+          <button type="button" class="cr-real-button cr-real-button--quiet cr-source-refresh" :disabled="climb.loading" @click="climb.load">刷新资料</button>
+        </div>
+
         <!-- ① Hero 概览条 -->
-        <div v-if="selectedJob" class="cr-hero">
+        <div v-if="!isRealPath && selectedJob" class="cr-hero">
           <div class="cr-hero__gauge">
             <svg viewBox="0 0 80 80" class="cr-hero-ring">
               <circle cx="40" cy="40" r="34" fill="none" stroke="var(--bg-300)" stroke-width="5"/>
@@ -1759,20 +1942,53 @@ onBeforeUnmount(() => {
         <div class="cr-center-top">
 
           <!-- ③ 气泡图 -->
-          <div class="cr-bubble-panel">
+          <div ref="bubblePanelRef" class="cr-bubble-panel">
             <div class="cr-panel-title">
               <Icon icon="lucide:circle-dot" :width="12"/>
-              <span>岗位匹配气泡图</span>
+              <span>{{ isRealPath ? '选择想探索的方向' : '岗位匹配气泡图' }}</span>
               <span v-if="selectedJob" class="cr-panel-sub">气泡越大匹配度越高</span>
-              <span v-else class="cr-panel-sub cr-panel-sub--hint">← 点击气泡选择目标岗位</span>
+              <span v-else class="cr-panel-sub cr-panel-sub--hint">点击气泡选择目标岗位</span>
+            </div>
+            <div v-if="isRealPath" id="career-path-direction" class="cr-real-picker" tabindex="-1">
+              <nav v-if="!climb.selected && climb.recentRoles.length" class="cr-recent-directions" aria-label="接着看上次的方向"><span>接着看</span><button v-for="r in climb.recentRoles" :key="r" class="cr-real-button cr-real-button--quiet" @click="climb.choose(r)">{{ r }}</button></nav>
+              <label>查找方向<input v-model="climb.search" placeholder="输入方向名称" maxlength="100" /></label>
+              <select :value="climb.role" aria-label="目标职业方向" @change="climb.choose(($event.target as HTMLSelectElement).value)"><option value="">选择一个方向</option><option v-for="c in climb.catalogue" :key="c.role" :value="c.role">{{ c.role }}</option></select>
+              <p v-if="climb.loading" role="status">正在读取本人资料与方向目录…</p>
+              <p v-else-if="climb.role && !climb.selected">目录中还没有“{{ climb.role }}”这一同名方向，请在这里选择想了解的方向；不会把名称相近的岗位自动当作同一个。</p>
+              <p v-else-if="!climb.catalogue.length">暂时无法取得职业方向，请刷新资料后再看。</p>
+              <p v-else>气泡大小只为排版，不表示匹配程度。</p>
             </div>
             <div class="cr-bubble-canvas">
               <svg ref="bubbleSvgRef" class="cr-bubble-svg"></svg>
             </div>
+            <nav v-if="isRealPath && climb.pages>1" class="cr-real-pagination" aria-label="职业方向翻页"><button :disabled="climb.page===0" @click="climb.page--">上一组</button><span>{{ climb.page+1 }} / {{ climb.pages }}</span><button :disabled="climb.page+1>=climb.pages" @click="climb.page++">下一组</button></nav>
           </div>
 
           <!-- ② 雷达图 + 差距条 -->
-          <div class="cr-radar-panel">
+          <div id="career-path-position" class="cr-radar-panel" tabindex="-1">
+            <template v-if="isRealPath">
+              <div class="cr-panel-title"><Icon icon="lucide:map-pin" :width="12"/><span>我的起点与下一步</span></div>
+              <CareerStartingPoint v-if="climb.positioning" :value="climb.positioning" actionable @respond="respondToNextStep" />
+              <div v-else class="cr-real-intro"><h2>{{ climb.role ? '先理解你已经做过的事' : '先选一个你想了解的方向' }}</h2><p>{{ climb.role ? '结合本人确认的经历和方向资料，看看哪些能衔接、哪些还需了解。不必先填计划或投入时间。' : '选择方向不会自动认定你已经适合它，也不会自动生成计划。' }}</p></div>
+              <div class="cr-real-discussion" :data-analysis-status="climb.latest?.status || ''">
+                <p v-if="climb.positioning" class="cr-saved-position" role="status"><Icon icon="lucide:check" :width="12"/>解读已保存</p>
+                <p v-if="climb.sourceError" role="alert">{{ climb.sourceError }}</p>
+                <p v-else-if="climb.workbench && !climb.workbench.source_confirmation_task_id">还没有可读取的确认简历。先返回职途导航核对本人资料。</p>
+                <p v-if="climb.legacy" class="cr-real-warning">这是一份旧版解读，仍可回看。可以重新解读，核对具体职责和下一步。</p>
+                <p v-else-if="climb.stale && climb.record" class="cr-real-warning">本人资料或方向已变化。旧解读保留在历史讨论中，不作为当前起点。</p>
+                <details v-if="(climb.stale || climb.legacy) && climb.latest?.result?.positioning"><summary>回看当时的解读</summary><CareerStartingPoint :value="climb.latest.result.positioning" /></details>
+                <p v-if="climb.latest?.status==='failed'" role="alert">这次分析没有完成，你的输入已保留；没有生成新结论或计划。</p>
+                <p v-if="climb.active" role="status">{{ climb.latest?.status==='queued' ? '请求已保存，等待分析服务接手…' : '正在结合本人经历和方向资料分析…' }}</p>
+                <p v-if="personalQuestion && !climb.stale && !climb.legacy" class="cr-personal-question">{{ personalQuestion }}</p>
+                <form id="career-path-response" tabindex="-1" @submit.prevent="climb.submit">
+                  <label v-if="climb.record">补充与这个问题有关的经历<textarea v-model="climb.message" maxlength="2000" rows="3" placeholder="说清你负责了什么、怎样完成，或哪些还没做过；暂时不确定也可以。" /></label>
+                  <button type="submit" class="cr-real-button" :disabled="climb.busy || climb.active || climb.loading || !climb.selected || !climb.workbench?.source_confirmation_task_id || !!climb.sourceError">{{ climb.busy ? '正在保存请求…' : climb.active ? '分析进行中' : climb.positioning ? '结合补充，更新解读' : '看看我从哪里开始' }}</button>
+                </form>
+                <p v-if="climb.error" role="alert">{{ climb.error }} <button @click="climb.reloadProgress">核对已保存进展</button></p>
+                <button v-if="climb.record" class="cr-real-button cr-real-button--quiet" @click="climb.discuss">继续讨论／做一次尝试 <Icon icon="lucide:arrow-right" :width="12"/></button>
+              </div>
+            </template>
+            <template v-else>
             <div class="cr-panel-title">
               <Icon icon="lucide:radar" :width="12"/>
               <span>七维能力差距</span>
@@ -1794,8 +2010,9 @@ onBeforeUnmount(() => {
             <!-- 雷达图淡入 -->
             <template v-else>
               <div class="cr-plan-fadein cr-radar-chart-area">
-                <D3RadarChart :data="crRadarData" :show-legend="true" :height="280" />
+                <D3RadarChart :data="crRadarData" :segment-colors="reportRadarColors" :show-legend="true" :height="280" />
               </div>
+            </template>
             </template>
           </div>
         </div>
@@ -1803,6 +2020,27 @@ onBeforeUnmount(() => {
         <!-- ⑤ 成长计划 -->
         <div class="cr-center-bottom">
           <div class="cr-planning">
+            <template v-if="isRealPath">
+              <div class="cr-panel-title"><Icon icon="lucide:book-open" :width="12"/><span>本次参考资料</span></div>
+              <section id="career-path-evidence" class="cr-real-resume" aria-label="本人的简历解读" tabindex="-1">
+                <p v-if="climb.reportError" role="alert">{{ climb.reportError }}</p>
+                <template v-else-if="climb.report">
+                  <section class="cr-source-section"><h2>已确认的经历</h2>
+                    <article v-for="item in diagnosticFacts" :key="item.id"><h3>{{ item.label }}</h3><dl class="cr-source-fact"><template v-for="(part,index) in diagnosticFactParts(item.fields)" :key="index"><dt>{{ part.label }}</dt><dd>{{ part.text }}</dd></template></dl></article>
+                  </section>
+                  <section v-if="climb.report.analysis" class="cr-source-section"><h2>简历整体解读</h2>
+                    <p v-if="climb.report.analysis.summary?.text">{{ climb.report.analysis.summary.text }}</p>
+                    <div v-if="climb.report.analysis.strengths?.length" class="cr-source-analysis"><h3>已有经历的解读</h3><p v-for="(s,i) in climb.report.analysis.strengths" :key="'s'+i">{{ s.text }}</p></div>
+                    <div v-if="climb.report.analysis.questions?.length" class="cr-source-analysis"><h3>还需讲清的问题</h3><p v-for="(q,i) in climb.report.analysis.questions" :key="'q'+i">{{ q.text }}</p></div>
+                  </section>
+                  <p v-if="!diagnosticFacts.length">当前确认资料未记录具体项目或实践；可以先澄清一段本人做过的事，不补造经历。</p>
+                </template>
+                <p v-else>{{ climb.workbench?.resume_diagnostic.state==='processing' ? '简历解读正在整理，已有画像仍可阅读。' : '暂未取得可读取的简历解读，可返回职途导航查看进度。' }}</p>
+              </section>
+              <section v-if="climb.portrait" class="cr-real-portrait" aria-label="本次参考的能力画像"><h2 class="cr-source-portrait-title">能力画像资料</h2><ServerPortraitDetail :snapshot="climb.portrait" @action="followCurrentPortrait" @current="climb.load" /></section>
+              <p v-else class="cr-real-resume">{{ climb.portraitError || (climb.workbench?.portrait.state==='processing' ? '画像仍在分析；不会用默认分数代替。' : '当前还没有可读取的画像；已确认经历仍可用于方向解读。') }}</p>
+            </template>
+            <template v-else>
             <div class="cr-panel-title">
               <Icon icon="lucide:calendar-check" :width="12"/>
               <template v-if="planLoading">
@@ -1836,13 +2074,13 @@ onBeforeUnmount(() => {
               <div v-for="(stage, si) in planStages" :key="stage.phase" class="cr-plan-stage cr-plan-fadein"
                 :class="`cr-plan-stage--${stage.phase}`"
                 :style="{ animationDelay: si * 0.15 + 's' }">
-                <div class="cr-ps-head" @click="toggleStage(stage.phase)">
+                <button type="button" class="cr-ps-head" :aria-expanded="expandedStages.has(stage.phase)" :aria-controls="`cr-tasks-${stage.phase}`" @click="toggleStage(stage.phase)">
                   <Icon :icon="stage.phase === 'short' ? 'lucide:target' : 'lucide:rocket'" :width="14" class="cr-ps-icon"/>
                   <span class="cr-ps-label">{{ stage.phaseLabel }}</span>
                   <Icon :icon="expandedStages.has(stage.phase) ? 'lucide:chevron-up' : 'lucide:chevron-down'" :width="12" class="cr-ps-toggle"/>
-                </div>
+                </button>
                 <span class="cr-ps-goal">{{ stage.goal }}</span>
-                <ul class="cr-ps-list" :class="{ 'cr-ps-list--collapsed': !expandedStages.has(stage.phase) }">
+                <ul :id="`cr-tasks-${stage.phase}`" class="cr-ps-list" :class="{ 'cr-ps-list--collapsed': !expandedStages.has(stage.phase) }">
                   <li v-for="(t, ti) in stage.tasks" :key="ti" class="cr-task-fadein" :style="{ animationDelay: ti * 0.08 + 's' }">
                     <Icon icon="lucide:circle" :width="8" class="cr-ps-bullet"/>{{ t }}
                   </li>
@@ -1858,6 +2096,7 @@ onBeforeUnmount(() => {
                 </div>
               </div>
             </div>
+            </template>
           </div>
         </div>
       </div>
@@ -1920,29 +2159,36 @@ onBeforeUnmount(() => {
 
         <!-- ⑦ 编辑区 -->
         <div class="cr-rp-editor-wrap">
-          <textarea v-model="reportTextEditable" class="cr-rp-editor" placeholder="在此编辑 Markdown 报告内容…"></textarea>
+          <textarea v-model="reportTextEditable" class="cr-rp-editor" aria-label="Markdown 报告内容" placeholder="在此编辑 Markdown 报告内容…"></textarea>
         </div>
       </div>
     </div>
 
     <!-- ══ FOOTER ══ -->
     <footer v-if="!hasArtifactQuery || artifactReady" class="cr-footer">
-      <span class="cr-footer-source">{{ artifactReady ? '数据来源：Agent 对话演示产物' : '数据来源：简历解析 + 岗位模型匹配' }}</span>
+      <div class="cr-footer__meta">
+      <span class="cr-footer-source">{{ isRealPath ? '本人确认经历 · 方向探索解读，不代表职级认证' : artifactReady ? '数据来源：Agent 对话演示产物' : '数据来源：简历解析 + 岗位模型匹配' }}</span>
       <span v-if="activeMode === 'report'" class="cr-footer-wc">字数：{{ wordCount }}</span>
-      <span class="cr-footer-time">{{ new Date().toLocaleDateString('zh-CN') }}</span>
-      <button v-if="activeMode === 'analysis'" class="cr-footer-go" @click="switchToReport">
+      <span v-if="!isRealPath" class="cr-footer-time">{{ new Date().toLocaleDateString('zh-CN') }}</span>
+      </div>
+      <div class="cr-footer__actions">
+      <button v-if="!isRealPath && activeMode === 'analysis'" class="cr-footer-go" @click="switchToReport">
         进入报告编辑 <Icon icon="lucide:arrow-right" :width="11"/>
       </button>
-      <button class="cr-footer-fav" @click="goToFavorites">
+      <button v-if="!isRealPath" class="cr-footer-fav" @click="goToFavorites">
         <Icon icon="lucide:heart" :width="11"/>
         查看心仪岗位匹配度
       </button>
+      </div>
     </footer>
 
   </div>
 </template>
 
 <style scoped>
+.cr-personal-jumps{display:none}.cr-personal-jumps button{min-height:44px;background:transparent;border:0;border-bottom:1px solid var(--bg-300);color:var(--primary-100);font:inherit;font-size:12px;cursor:pointer}.cr-personal-jumps button:focus-visible{outline:2px solid var(--primary-100);outline-offset:-3px}@media(max-width:1023px){.cr-personal-jumps{display:grid;grid-template-columns:1fr 1.3fr 1.3fr;flex-shrink:0}}
+.cr-real-heading{flex-wrap:wrap}.cr-real-button{min-height:44px;padding:9px 15px;background:var(--primary-100);color:#fff;border:1px solid var(--primary-100);border-radius:5px;font:inherit;cursor:pointer}.cr-real-button:disabled{opacity:.5;cursor:not-allowed}.cr-real-button--quiet{background:transparent;color:var(--primary-100);margin-top:12px}.cr-real-button:focus-visible,.cr-real-picker :is(input,select):focus-visible{outline:2px solid var(--primary-100);outline-offset:3px}.cr-real-picker{padding:14px 18px;font-size:12px;display:flex;gap:10px;flex-wrap:wrap}.cr-real-picker label{display:flex;align-items:center;gap:8px}.cr-real-picker input,.cr-real-picker select{max-width:100%;min-height:44px;padding:8px;border:1px solid var(--bg-300);background:#fffcf7;color:var(--text-100);font:inherit}.cr-real-picker p{width:100%;color:var(--text-300);margin:0}.cr-real-pagination{display:flex;justify-content:center;align-items:center;gap:18px;padding:5px}.cr-real-pagination button{min-height:44px;border:0;background:transparent;color:var(--primary-100);font:inherit;cursor:pointer}.cr-real-pagination button:disabled{opacity:.4}.cr-real-intro,.cr-real-discussion,.cr-real-resume{padding:20px 24px;font-size:14px;line-height:1.8;color:var(--text-200)}.cr-real-intro h2,.cr-real-resume h2{font:500 22px/1.5 var(--font-title);color:var(--text-100)}.cr-real-resume h3{font-size:15px;margin-bottom:5px}.cr-real-resume article{border-top:1px solid var(--bg-300);padding-top:8px;margin-top:12px}.cr-real-resume article p:empty{display:none}.cr-real-discussion p,.cr-real-resume p{white-space:pre-wrap;overflow-wrap:anywhere}.cr-real-discussion label{display:grid;gap:8px;margin-bottom:12px}.cr-real-discussion textarea{box-sizing:border-box;width:100%;resize:vertical;background:#fffcf7;border:1px solid var(--bg-300);padding:12px;font:inherit;color:inherit}.cr-real-discussion [role=alert],.cr-real-warning{color:#963e1c}.cr-personal-question{border-left:2px solid var(--primary-100);padding-left:12px}.cr-real-portrait{border-top:1px solid var(--bg-300);margin:0 24px 20px}.cr-real-portrait>summary,.cr-real-resume summary{min-height:44px;display:flex;align-items:center;cursor:pointer;font-size:13px;color:var(--primary-100)}.cw-legend-personal{display:grid;gap:6px;max-width:calc(100% - 30px);opacity:1;font-size:12px}.cw-legend-personal small{max-width:180px;line-height:1.7;color:var(--text-200)}.cw-personal-note{position:absolute;bottom:20px;left:16px;right:16px;padding:12px 15px;background:#fffcf3ed;border-left:2px solid var(--primary-100);font-size:12px;line-height:1.7}.cw-personal-note p{margin:5px 0 0;max-height:125px;overflow:auto}.cr-main--real .cr-radar-panel{overflow-y:auto}.cr-main--real .cr-bubble-canvas{min-height:260px}.cr-main--real .cr-center-top{min-height:520px;flex:0 0 auto}.cr-main--real .cr-center-bottom{flex:0 0 auto}.cr-main--real .cr-center{overflow-y:auto}.cr-main--real .cr-planning{overflow:visible}.cr-main--real .cr-footer-source{white-space:normal}
+@media(max-width:1023px){.cr-main--real .cr-center{overflow:visible}.cr-main--real .cr-radar-panel{overflow:visible}.cr-real-heading{gap:12px}.cr-real-picker{padding:12px}.cr-real-picker label,.cr-real-picker select{width:100%}.cr-real-picker input{min-width:0;flex:1;font-size:16px}.cr-real-picker select,.cr-real-discussion textarea{font-size:16px}.cr-main--real .cr-center-top{min-height:0}.cr-main--real .cr-left{position:relative}.cr-main--real .cr-left>.cr-panel-title{min-height:44px}.cr-real-discussion{padding:18px}.cr-real-resume{padding:18px}.cr-main--real .cr-bubble-canvas{height:300px}.cw-personal-note{bottom:15px}}
 .cr-agent-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px; text-align: center; }
 .cr-agent-state h2 { margin: 12px 0 5px; font-size: 18px; }
 .cr-agent-state p { color: var(--text-200); }
@@ -2070,7 +2316,7 @@ onBeforeUnmount(() => {
 
 /* ══ 分析模式主布局 ══ */
 .cr-main {
-  flex: 1; display: grid; grid-template-columns: 420px 1fr;
+  flex: 1; display: grid; grid-template-columns: clamp(320px, 29vw, 420px) minmax(0, 1fr);
   overflow: hidden; min-height: 0; position: relative; z-index: 1;
 }
 
@@ -2092,7 +2338,7 @@ onBeforeUnmount(() => {
     repeating-linear-gradient(90deg, transparent, transparent 199px, rgba(0,0,0,0.04) 199px, rgba(0,0,0,0.04) 200px),
     repeating-linear-gradient(0deg, transparent, transparent 199px, rgba(0,0,0,0.03) 199px, rgba(0,0,0,0.03) 200px),
     /* 墙面底色 */
-    #D8D4CC;
+    var(--cr-wall-base);
   background-size: 56px 56px, 200px 200px, 200px 200px, auto;
 }
 .cr-cw-wrap::-webkit-scrollbar { width: 3px; }
@@ -2100,8 +2346,9 @@ onBeforeUnmount(() => {
 .cr-cw-svg { display: block; width: 100%; height: auto; cursor: default; }
 
 /* ── 岗位节点 ── */
-.cw-job-node { cursor: pointer; transition: transform 200ms ease; }
-.cw-job-node:hover { transform: scale(1.04); }
+.cw-job-node { cursor: pointer; }
+/* CSS transform would replace the SVG translate and move the hit target away. */
+.cw-job-node:hover > circle { stroke-width: 2.5px; }
 .cw-node-title { font-size: 11px; fill: #3D3D3D; font-weight: 600; pointer-events: none; }
 .cw-node-title--active { fill: #fff; }
 .cw-node-sub { font-size: 9px; fill: #6B6560; pointer-events: none; }
@@ -2113,8 +2360,8 @@ onBeforeUnmount(() => {
 }
 
 /* ── 岩点 ── */
-.cw-hold { cursor: pointer; transition: transform 150ms ease; }
-.cw-hold:hover { transform: scale(1.12); }
+.cw-hold { cursor: pointer; }
+.cw-hold:hover > path { stroke: #514b42; stroke-width: 1.5px; }
 .cw-hold--more { cursor: pointer; opacity: 0.8; }
 .cw-hold--more:hover { opacity: 1; }
 .cw-hold-text { font-size: 9px; fill: #4A4540; pointer-events: none; font-weight: 600; }
@@ -2239,14 +2486,14 @@ onBeforeUnmount(() => {
 .cr-bubble-panel::before {
   content: ''; position: absolute; inset: 0; z-index: 0;
   pointer-events: none;
-  opacity: 0.38;
+  opacity: 0.1;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100%25' height='100%25'%3E%3Cfilter id='p'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.04' numOctaves='5' seed='3'/%3E%3CfeDiffuseLighting lighting-color='%23fff' surfaceScale='1.5'%3E%3CfeDistantLight azimuth='45' elevation='55'/%3E%3C/feDiffuseLighting%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23p)'/%3E%3C/svg%3E");
   background-size: cover;
 }
 .cr-radar-panel { background: var(--bg-100); position: relative; }
 .cr-radar-panel::before {
   content: ''; position: absolute; inset: 0; z-index: 0;
-  pointer-events: none; opacity: 0.16;
+  pointer-events: none; opacity: 0.04;
   background-image: v-bind(parchmentBg);
   background-size: cover; background-position: center;
 }
@@ -2520,10 +2767,184 @@ onBeforeUnmount(() => {
 }
 .cr-rp-editor:focus { background: color-mix(in srgb, var(--primary-100) 2%, var(--bg-100) 98%); }
 
+/* Report-local finish: preserve the wall and chart workspace, not a new theme. */
+.cr-page {
+  --cr-wall-base: #e8e3d8;
+  --cr-wall-light: #f1ede4;
+  height: 100%; max-height: 100dvh; min-height: 0;
+  color: var(--color-text); font-family: var(--font-ui); font-size: 14px;
+  scrollbar-color: var(--color-border-strong) var(--color-background);
+  scrollbar-width: thin;
+}
+.cr-page ::selection { background: var(--vermilion-100); color: var(--ink-900); }
+.cr-page button { white-space: nowrap; touch-action: manipulation; }
+.cr-page button:focus-visible, .cr-page textarea:focus-visible {
+  outline: 2px solid var(--color-primary); outline-offset: 2px;
+}
+.cr-bubble-canvas :deep(.job-node:focus-visible) { outline: none; }
+.cr-bubble-canvas :deep(.job-node:focus-visible .job-circle) {
+  stroke: var(--color-primary); stroke-width: 3px;
+}
+.cr-header {
+  display: grid; grid-template-columns: auto minmax(160px, 1fr) auto auto;
+  gap: 16px; height: auto; min-height: 60px; padding: 8px 20px;
+  background: var(--color-surface); box-shadow: 0 2px 8px rgba(26,26,26,.04);
+  border-color: var(--color-border);
+}
+.cr-header__tabs { position: static; transform: none; justify-content: center; min-width: 0; align-self: stretch; }
+.cr-header__right { flex-wrap: wrap; gap: 8px; min-width: 0; }
+.cr-header__identity { min-width: 0; }
+.cr-back, .cr-tab, .cr-report-btn, .cr-export-btn, .cr-save-btn, .cr-my-reports-btn {
+  min-height: 36px; font-size: 13px; line-height: 1.3; border-radius: 6px;
+}
+.cr-tab { padding: 8px 14px; border-radius: 0; }
+.cr-report-btn, .cr-export-btn, .cr-save-btn, .cr-my-reports-btn { padding: 8px 12px; justify-content: center; }
+.cr-save-btn, .cr-my-reports-btn { background: var(--gold-100); border-color: var(--gold-300); color: var(--gold-700); }
+.cr-save-btn, .cr-my-reports-btn, .cr-export-btn { transition: background-color .2s ease, color .2s ease, border-color .2s ease; }
+.cr-save-btn:disabled { opacity: 1; background: var(--color-background); color: var(--color-text-muted); border-color: var(--color-border); }
+.cr-export-btn { background: var(--color-surface); color: var(--color-primary); }
+.cr-export-menu { background: var(--color-surface); }
+.cr-export-menu button { min-height: 44px; font-size: 13px; }
+.cr-panel-title {
+  flex-wrap: wrap; min-width: 0; min-height: 44px; padding: 10px 14px;
+  font-size: 14px; line-height: 1.45; gap: 6px;
+  background: color-mix(in srgb, var(--color-surface) 84%, var(--cr-wall-light));
+  border-bottom-color: var(--color-border);
+}
+.cr-panel-sub { font-size: 12px; color: var(--color-text-muted); overflow-wrap: anywhere; }
+.cr-left { min-width: 0; box-shadow: none; }
+.cr-center { min-width: 0; overflow-y: auto; }
+.cr-center-top { flex: 0 0 clamp(340px, 43vh, 420px); grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cr-bubble-panel, .cr-radar-panel { min-width: 0; }
+.cr-bubble-panel { background: var(--color-surface); }
+.cr-radar-panel { background: color-mix(in srgb, var(--color-surface) 88%, var(--cr-wall-light)); }
+.cr-radar-chart-area { display: grid; align-content: center; }
+.cr-radar-legend { flex-wrap: wrap; gap: 6px; padding: 0; background: none; font-size: 12px; }
+.cr-hero { height: auto; min-height: 104px; background: var(--color-surface); box-shadow: none; }
+.cr-hero-job { font-size: 18px; color: var(--color-primary-dark); overflow-wrap: anywhere; }
+.cr-hero-desc { color: var(--color-text-muted); font-size: 13px; white-space: normal; }
+.cr-hero-courses-btn { min-height: 32px; color: var(--color-primary); border-color: var(--vermilion-300); font-size: 12px; border-radius: 6px; }
+.cr-hero-courses-btn:hover { background: var(--vermilion-100); color: var(--color-primary-dark); }
+.cr-hero-pct-label { font-size: 10px; fill: var(--color-text-muted); }
+.cr-center-bottom { min-height: 260px; background: var(--color-background); }
+.cr-plan-stages { padding: 12px; gap: 12px; }
+.cr-plan-stage { min-width: 0; padding: 14px; box-shadow: none; background: var(--color-surface); overflow-x: hidden; }
+.cr-ps-arrow { display: none; }
+.cr-ps-head { min-height: 32px; border: 0; padding: 0; background: none; text-align: left; }
+.cr-ps-list li { font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
+.cr-ps-label, .cr-ps-goal { font-size: 13px; }
+.cr-ps-task, .cr-ps-tasks, .cr-ps-milestone, .cr-ps-expand { font-size: 12px; line-height: 1.65; }
+.cr-ps-task span { overflow-wrap: anywhere; }
+.cr-guide-overlay { background: rgba(241,237,228,.7); backdrop-filter: none; }
+.cr-guide-text { font-size: 14px; }
+.cr-radar-empty { font-size: 13px; color: var(--color-text-muted); }
+.cr-guide-mobile { display: none; }
+.cw-legend-overlay { background: rgba(255,253,248,.94); border-color: rgba(92,78,58,.15); backdrop-filter: none; }
+.cw-legend-item { font-size: 12px; color: #514b42; }
+.cw-node-title { font-size: 12px; fill: #292722; }
+.cw-node-title--active { fill: #fff; }
+.cw-node-sub { font-size: 10px; fill: #575146; }
+.cw-node-sub--active { fill: #fff; }
+.cw-hold-text { font-size: 10px; fill: #37342e; }
+.cw-job-node:focus-visible, .cw-hold:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.cw-skill-panel { width: min(280px, calc(100% - 24px)); max-height: min(70%, 380px); padding: 12px; background: #fffdf8; }
+.cw-sp-header { align-items: flex-start; }
+.cw-sp-title, .cw-sp-item { font-size: 12px; line-height: 1.55; }
+.cw-sp-name { overflow-wrap: anywhere; }
+.cw-sp-tag { font-size: 11px; }
+.cw-sp-close { min-width: 44px; min-height: 44px; align-items: center; justify-content: center; }
+.cr-footer {
+  height: auto; min-height: 52px; padding: 8px 20px; justify-content: space-between;
+  gap: 12px; background: var(--color-surface); border-color: var(--color-border);
+  font-size: 12px; color: var(--color-text-muted);
+}
+.cr-footer__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.cr-footer__actions { display: flex; flex-shrink: 0; gap: 8px; }
+.cr-footer-source, .cr-footer-time { opacity: 1; }
+.cr-footer-wc, .cr-footer-go { margin-left: 0; }
+.cr-footer-go, .cr-footer-fav { min-height: 36px; padding: 6px 12px; font-size: 12px; justify-content: center; border-radius: 6px; }
+.cr-rp-preview-inner { overflow-wrap: anywhere; }
+.cr-rp-preview-inner :deep(pre) { white-space: pre-wrap; }
+.cr-rp-right { min-width: 0; }
+.cr-tool-btn { font-size: 13px; min-height: 36px; }
+.cr-rp-editor { caret-color: var(--color-primary); }
+
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .cr-header { gap: 10px; padding-inline: 12px; }
+  .cr-header__identity :deep(.uib__text) { display: none; }
+  .cr-discuss-btn span { display: none; }
+  .cr-radar-legend { margin-left: 0; }
+}
+
+@media (max-width: 1023px) {
+  .cr-header {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    gap: 6px; padding: 6px 12px 10px; min-height: 0;
+  }
+  .cr-header__left { grid-column: 1; grid-row: 1; }
+  .cr-header__tabs { grid-column: 2; grid-row: 1; }
+  .cr-header__identity { grid-column: 3; grid-row: 1; }
+  .cr-header__right { grid-column: 1 / -1; grid-row: 2; gap: 8px; justify-content: stretch; }
+  .cr-header__right > * { flex: 1 1 0; min-width: 0; }
+  .cr-header__right .cr-discuss-btn { flex-basis: 100%; }
+  .cr-header button { min-height: 44px; }
+  .cr-header__right button { width: 100%; }
+  .cr-tab { flex: 1; justify-content: center; padding: 8px 6px; font-size: 13px; }
+  .cr-tab > svg { display: none; }
+  .cr-back { padding: 6px 8px; }
+  .cr-header__identity :deep(.uib) { gap: 0; }
+  .cr-header__identity :deep(.uib__text) { display: none; }
+  .cr-header__identity :deep(.uib__msg-btn), .cr-header__identity :deep(.uib__card) {
+    width: 44px; min-height: 44px; padding: 4px; justify-content: center;
+  }
+  .cr-main, .cr-report-main {
+    display: flex; flex-direction: column; min-height: 0; overflow-x: hidden; overflow-y: auto;
+    overscroll-behavior-y: contain; overflow-anchor: none;
+  }
+  .cr-left, .cr-center { flex: none; width: 100%; overflow: visible; border-right: 0; }
+  .cr-cw-wrap { display: block; flex: none; width: 100%; height: 256px; overflow: hidden; }
+  .cr-main--selected .cr-cw-wrap { height: auto; aspect-ratio: 400 / 900; }
+  .cr-cw-svg { width: 100%; height: 100%; }
+  .cr-guide-desktop { display: none; }
+  .cr-guide-mobile { display: flex; }
+  .cr-guide-overlay { gap: 12px; padding: 16px; }
+  .cr-guide-overlay .cr-report-btn { min-height: 44px; padding: 10px 16px; }
+  .cr-center-top { display: flex; flex: none; flex-direction: column; overflow: visible; }
+  .cr-bubble-panel, .cr-radar-panel { flex: none; overflow: visible; border-right: 0; border-bottom: 1px solid var(--color-border); }
+  .cr-bubble-panel { scroll-margin-top: 8px; }
+  .cr-bubble-canvas { flex: none; height: 340px; padding: 8px 12px 12px; }
+  .cr-radar-chart-area { min-height: 320px; padding: 12px; }
+  .cr-radar-empty, .cr-radar-skeleton { min-height: 320px; }
+  .cr-hero { padding: 16px; }
+  .cr-hero-courses-btn { min-height: 44px; }
+  .cr-center-bottom, .cr-planning { flex: none; overflow: visible; min-height: 0; }
+  .cr-planning-empty { min-height: 180px; font-size: 13px; }
+  .cr-plan-stages { flex: none; flex-direction: column; overflow: visible; padding: 12px; }
+  .cr-plan-stage { flex: none; width: 100%; overflow: visible; }
+  .cr-ps-head { min-height: 44px; }
+  .cr-ps-list li { font-size: 14px; }
+  .cr-ps-milestone { font-size: 13px; }
+  .cr-ps-expand { min-height: 44px; }
+  .cw-skill-panel { position: fixed; z-index: 40; right: 12px; left: 12px; width: auto; top: 50%; max-height: min(60dvh, 380px); }
+  .cr-radar-legend { margin-left: 0; }
+  .cr-footer { flex-direction: column; align-items: stretch; padding: 8px 12px max(8px, env(safe-area-inset-bottom)); gap: 6px; }
+  .cr-footer__meta { justify-content: space-between; gap: 4px 8px; line-height: 1.5; }
+  .cr-footer__actions { width: 100%; }
+  .cr-footer__actions button { flex: 1; min-width: 0; min-height: 44px; padding: 6px; }
+  .cr-rp-right { flex: none; order: -1; overflow: visible; }
+  .cr-rp-toolbar { padding: 12px; }
+  .cr-tool-btn { min-height: 44px; }
+  .cr-rp-editor-wrap { flex: none; height: clamp(360px, 55dvh, 520px); }
+  .cr-rp-editor { font-size: 16px; line-height: 1.7; }
+  .cr-rp-preview { flex: none; min-height: 240px; overflow: visible; padding: 20px 16px; border-right: 0; border-top: 1px solid var(--color-border); }
+  .cr-agent-context { flex-wrap: wrap; }
+  .cr-agent-context span { white-space: normal; }
+}
+
 /* ══ prefers-reduced-motion ══ */
 @media (prefers-reduced-motion: reduce) {
-  .cr-bubble { animation: none; }
-  .cr-back, .cr-report-btn, .cr-tab, .cr-tool-btn { transition: none; }
+  .cr-page *, .cr-page *::before, .cr-page *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .cr-bubble-canvas :deep(*) { animation: none !important; transition: none !important; }
 }
 
 /* ══ 打印 ══ */
@@ -2534,4 +2955,10 @@ onBeforeUnmount(() => {
   .cr-rp-right { display: none; }
   .cr-rp-preview { border: none; padding: 20px; }
 }
+/* Keep both original visualization panes bounded when the real interpretation is long. */
+.cr-main--real .cr-center-top{height:clamp(480px,68vh,620px);min-height:480px;grid-template-rows:minmax(0,1fr)}
+.cr-main--real .cr-cw-svg{width:100%;height:100%;max-height:100%}
+.cr-recent-directions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex-basis:100%}.cr-recent-directions .cr-real-button{margin-top:0}.cr-saved-position{font-size:12px;color:var(--text-300)}
+.cr-source-refresh{margin-top:0}.cw-personal-note__read{display:inline-flex;align-items:center;gap:6px;min-height:44px;padding:6px 0;border:0;background:none;color:var(--primary-100);font:inherit;cursor:pointer}.cw-personal-note__read:focus-visible{outline:2px solid var(--primary-100);outline-offset:3px}.cr-source-section+.cr-source-section{margin-top:32px;padding-top:26px;border-top:1px solid var(--bg-300)}.cr-source-section>h2{margin:0 0 18px;font-size:20px}.cr-source-fact{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 16px;margin:8px 0 0;line-height:1.85}.cr-source-fact dt{color:var(--text-300);font-size:12px}.cr-source-fact dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.cr-source-analysis{margin-top:24px}.cr-source-analysis>h3{margin-bottom:12px}.cr-source-analysis>p+p{margin-top:18px}.cr-real-portrait>.cr-source-portrait-title{padding:22px 24px 0;margin:0;font:500 20px/1.5 var(--font-title);color:var(--text-100)}.cr-saved-position{display:flex;align-items:center;gap:5px;margin-top:0;font-size:12px;color:var(--text-200)}@media(max-width:600px){.cr-source-fact{grid-template-columns:1fr;gap:2px}.cr-source-fact dd+dt{margin-top:12px}.cr-real-portrait>.cr-source-portrait-title{padding:20px 18px 0}}
+@media(max-width:1023px){.cr-main--real .cr-center-top{height:auto;min-height:0;grid-template-rows:none}.cr-main--real.cr-main--selected .cr-cw-wrap{aspect-ratio:400/680}.cr-main--real .cr-cw-svg{max-height:none}}
 </style>

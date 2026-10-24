@@ -43,7 +43,7 @@ async function accountRequest<T>(path: string, init: RequestInit = {}): Promise<
   const url = `${base}/api/auth${path}`
   let response: Response
   try {
-    response = await fetch(url, { ...init, credentials: 'include', headers: {
+    response = await fetch(url, { ...init, credentials: 'include', cache: 'no-store', headers: {
       Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}),
       ...(init.method && init.method !== 'GET' ? { 'X-CSRFToken': csrfToken } : {}),
       ...init.headers,

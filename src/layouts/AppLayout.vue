@@ -9,6 +9,8 @@ import CloudTabNav from '@/components/book/CloudTabNav.vue'
 import BookPage from '@/components/book/BookPage.vue'
 import UserInfoBar from '@/components/UserInfoBar.vue'
 import AgentMark from '@/components/agent/AgentMark.vue'
+import TaskCompanionPanel from '@/components/agent/TaskCompanionPanel.vue'
+import {taskCompanionEnabled} from '@/composables/taskCompanionFeature'
 import StarMark from '@/components/brand/StarMark.vue'
 import { gsap } from '@/plugins/gsap'
 
@@ -90,6 +92,7 @@ const studentMenus = [
   { index: '/app/dashboard', icon: ICONS.home, title: '首页' },
   // ── 职业探索 ──
   { index: '/app/student/career-analysis', icon: ICONS.target, title: '职业分析' },
+  { index: '/app/student/job-catalog', icon: ICONS.briefcase, title: '岗位目录' },
   { index: '/app/student/career-navigation', icon: ICONS.route, title: '职途导航' },
   // ── 能力成长 ──
   { index: '/app/exams', icon: ICONS.checkSquare, title: '技能自评' },
@@ -105,7 +108,7 @@ const studentMenus = [
 // 管理员菜单
 const adminMenus = [
   { index: '/app/dashboard', icon: ICONS.home, title: '首页' },
-  { index: '/app/admin/job-dataset', icon: ICONS.database, title: '岗位数据集' },
+  { index: '/app/admin/job-dataset', icon: ICONS.briefcase, title: '岗位管理中心' },
   { index: '/app/admin/knowledge-base', icon: ICONS.bookOpen, title: '知识库维护' },
 ]
 
@@ -231,7 +234,7 @@ onBeforeUnmount(() => {
           <div class="page-turn-perspective">
             <router-view v-slot="{ Component }">
               <Transition name="page-fade" mode="out-in">
-                <component :is="Component" :key="route.fullPath" />
+                <component :is="Component" :key="route.name === 'student-my-reports' ? route.path : route.fullPath" />
               </Transition>
             </router-view>
           </div>
@@ -266,6 +269,7 @@ onBeforeUnmount(() => {
       </RouterLink>
     </nav>
 
+    <TaskCompanionPanel v-if="isStudent&&taskCompanionEnabled" />
     <!-- ===== 移动端抽屉 ===== -->
     <el-drawer v-if="!isImmersiveRoute" v-model="drawerOpen" direction="ltr" size="82%" :with-header="false" class="mobile-drawer">
       <div class="drawer">

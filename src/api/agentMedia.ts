@@ -1,6 +1,7 @@
 import { getApiMode } from './config'
 import { httpGet, httpPost, httpFormPost } from './adapters/httpAdapter'
 import { ApiError } from './types'
+import type {TaskContext} from './agentTask'
 
 export type AgentFileMeta = {
   file_id: string
@@ -11,6 +12,7 @@ export type AgentFileMeta = {
   excerpt?: string
   error?: string
   ingest_engine?: string
+  task_context?: TaskContext
 }
 
 export type AgentFileEvent = {
@@ -57,7 +59,7 @@ function unwrapError(e: unknown): Error {
 
 export async function uploadAgentFile(
   file: File,
-  opts?: { studentId?: string; sessionId?: string; purpose?: string },
+  opts?: { studentId?: string; sessionId?: string; purpose?: string; taskContextVersion?: number },
 ): Promise<AgentFileMeta> {
   if (getApiMode() !== 'http') {
     return {
@@ -72,6 +74,7 @@ export async function uploadAgentFile(
   // Optional legacy hint only; backend ownership is always resolved from Principal.
   if (opts?.studentId) form.append('student_id', opts.studentId)
   if (opts?.sessionId) form.append('session_id', opts.sessionId)
+  if (opts?.taskContextVersion !== undefined) form.append('task_context_version', String(opts.taskContextVersion))
   form.append('purpose', opts?.purpose || 'chat_attachment')
 
   try {

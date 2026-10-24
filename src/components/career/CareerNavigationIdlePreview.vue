@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { ResumeTraceEvent } from '@/api/pipeline'
+import { describeResumeEntityCheckpoint } from '@/utils/resumeTraceAttempts'
+import CareerNavigationBackdrop from '@/components/career/CareerNavigationBackdrop.vue'
 
 const props = withDefaults(defineProps<{
   live?: boolean
@@ -30,13 +32,15 @@ const showTeam = computed(() => hasTeamTrace.value
   || (!savedWithoutTrace.value && !props.candidateReady && !props.confirmed
     && !props.failed && !props.traceError && props.progress < 100))
 const agentStates = computed(() => agents.map(agent => ({ ...agent,
-  state: props.trace.some(event => event.stage === agent.done) ? 'done'
-    : props.trace.some(event => event.stage === agent.running) ? 'running' : 'waiting',
+  state: agent.name === 'EntityAgent' && props.trace.some(event => event.stage === agent.done
+    && describeResumeEntityCheckpoint(event.facts?.link_status).limited) ? 'limited'
+    : props.trace.some(event => event.stage === agent.done) ? 'done'
+    : props.trace.some(event => event.stage === agent.running) ? (props.failed ? 'failed' : 'running') : 'waiting',
 })))
 const currentAgent = computed(() => [...agentStates.value].reverse().find(agent => agent.state === 'running')
-  || [...agentStates.value].reverse().find(agent => agent.state === 'done'))
+  || [...agentStates.value].reverse().find(agent => agent.state === 'failed' || agent.state === 'done' || agent.state === 'limited'))
 const stepIndex = computed(() => Math.min(3, Math.floor(Math.max(0, props.progress) / 25)))
-const traceStatus = computed(() => props.traceError ? '读取中断' : props.failed ? '解析未完成' : props.confirmed ? '简历已确认' : props.candidateReady ? '待核对' : '解析中')
+const traceStatus = computed(() => props.failed ? '处理失败' : props.confirmed ? '简历已确认' : props.candidateReady ? '待本人核对' : props.traceError ? '进度暂不可读' : hasTeamTrace.value ? '正在解析' : '等待处理')
 const phaseLabel = computed(() => savedWithoutTrace.value ? '历史轨迹未留存' : currentAgent.value?.label || '等待接收')
 const attemptLabel = computed(() => savedWithoutTrace.value ? '已有结果'
   : props.attempt === null ? '等待开始' : props.attempt === 0 ? '等待处理'
@@ -55,12 +59,16 @@ const milestoneDetails = computed(() => {
       ? `${document.block_count} 段文字${typeof document.text_chars === 'number' ? ` · ${document.text_chars} 字` : ''}` : '',
     typeof structure.field_count === 'number'
       ? `${structure.field_count} 个字段${typeof structure.project_count === 'number' ? ` · ${structure.project_count} 项项目` : ''}` : '',
-    typeof entity.mention_count === 'number' ? `${entity.mention_count} 条技能提及` : '',
+    typeof entity.mention_count === 'number'
+      ? `${entity.mention_count} 条技能提及 · ${describeResumeEntityCheckpoint(entity.link_status).detail}` : '',
     typeof evidence.block_count === 'number'
       ? `${evidence.block_count} 段证据${typeof evidence.missing_page_count === 'number' && evidence.missing_page_count > 0 ? ` · ${evidence.missing_page_count} 页未取得文字` : ''}` : '',
   ]
 })
 function eventTitle(event: ResumeTraceEvent) {
+  if (event.stage === 'entity_resolved' && describeResumeEntityCheckpoint(event.facts?.link_status).limited) {
+    return '技能线索已整理，关联核验尚未完成'
+  }
   const labels: Record<string, string> = {
     file_received: '已接收简历', attempt_started: '开始本轮解析', source_extract: '读取文档内容', source_extracted: '文字与区块已提取',
     handoff_document: '开始整理简历事实', structure_extract: '识别简历事实',
@@ -123,9 +131,10 @@ const actionWidths = ['106px', '132px', '92px']
 <template>
   <section class="cnip-shell" :class="{ 'cnip-shell--trace-only': traceOnly }" :aria-label="live ? '简历解析过程' : '分析结果预览'">
     <div v-if="!traceOnly" class="cnip-portrait-side">
+    <CareerNavigationBackdrop />
     <header class="cnip-header">
       <span class="cnip-eyebrow">{{ live ? '真实解析过程' : '分析结果预览' }}</span>
-      <h2 class="cnip-title">{{ live ? (failed ? '解析未完成，可查看中断位置' : candidateReady ? '简历候选已生成，等你核对' : '你的经历，正在被整理成能力画像的依据') : '你的经历，会在这里被整理成一张能力画像' }}</h2>
+      <h2 class="cnip-title">{{ live ? (failed ? '解析未完成，可查看中断位置' : candidateReady ? '简历候选已生成，等你核对' : !hasTeamTrace ? '简历已接收，接下来逐步整理你的经历' : '你的经历，正在被整理成能力画像的依据') : '你的经历，会在这里被整理成一张能力画像' }}</h2>
       <p class="cnip-desc">{{ live ? '进度来自后端已完成的检查点；未核对的资料不会变成正式分数。' : '主结果会先落在左侧画像区，分析过程会持续出现在右侧仪表盘。' }}</p>
     </header>
 
@@ -135,7 +144,7 @@ const actionWidths = ['106px', '132px', '92px']
             v-for="(label, index) in (live ? liveStageLabels : stageLabels)"
             :key="label"
             class="cnip-phase-step"
-            :class="{ 'cnip-phase-step--active': live ? progress < 100 && index === stepIndex : index === 0, 'cnip-phase-step--done': live && progress >= (index + 1) * 25 }"
+            :class="{ 'cnip-phase-step--active': live ? !failed && progress < 100 && index === stepIndex : index === 0, 'cnip-phase-step--done': live && progress >= (index + 1) * 25, 'cnip-phase-step--failed': live && failed && agentStates[index]?.state === 'failed' }"
           >
             <span class="cnip-phase-dot">{{ index + 1 }}</span>
             <span class="cnip-phase-label">{{ label }}</span>
@@ -146,25 +155,24 @@ const actionWidths = ['106px', '132px', '92px']
         <div v-if="live" class="cnip-live-banner" role="status" aria-live="polite">
           <div class="cnip-live-banner__top">
             <span><Icon icon="lucide:workflow" :width="15" /> {{ phaseLabel }}</span>
-            <strong>{{ savedWithoutTrace ? '未留存' : traceError || attempt === null ? '待回读' : `${Math.round(progress)}%` }}</strong>
+            <strong>{{ traceStatus }}</strong>
           </div>
-          <div class="cnip-live-banner__track"><span :style="{ width: `${traceError || attempt === null ? 0 : Math.min(100, Math.max(0, progress))}%` }"></span></div>
           <p>{{ savedWithoutTrace ? '此任务没有留下可回放的解析进度。' : traceError ? '进度暂不可读取，请稍后刷新。' : currentEvent ? eventTitle(currentEvent) : '任务已建立，等待开始读取文件' }}<template v-if="!traceError && attempt !== null && !savedWithoutTrace"> · {{ Math.floor(progress / 25) }} / 4 步完成</template></p>
         </div>
 
         <div v-if="live" class="cnip-live-workspace">
           <div class="cnip-live-workspace__intro">
-            <strong>{{ failed ? '解析在这里中断' : candidateReady ? '已取得可核对的简历候选' : '正在从原文整理事实' }}</strong>
+            <strong>{{ failed ? '解析在这里中断' : candidateReady ? '已取得可核对的简历候选' : !hasTeamTrace ? '文件已保存，等待开始读取' : '正在从原文整理事实' }}</strong>
             <p>{{ failed ? '已完成的步骤仍可在右侧查看；未完成的步骤不会补画结果。' : candidateReady ? '请到左侧对照原文核对。这里记录解析交接，不代表能力画像或岗位匹配已完成。' : '下方只展示服务端已经写入的检查点；画像分数要等核对后再生成。' }}</p>
           </div>
-          <ol class="cnip-live-milestones">
+          <ol class="cnip-live-milestones" aria-label="简历解析四步进展">
             <li v-for="(agent, index) in agentStates" :key="agent.name" :class="`cnip-live-milestone--${agent.state}`">
               <span class="cnip-live-milestone__index">{{ String(index + 1).padStart(2, '0') }}</span>
               <div>
                 <strong>{{ agent.label }}</strong>
-                <p>{{ milestoneDetails[index] || (agent.state === 'running' ? '正在处理，等待后端检查点' : agent.state === 'done' ? '检查点已写入' : failed ? '未执行' : '等待前一步完成') }}</p>
+                <p>{{ milestoneDetails[index] || (agent.state === 'failed' ? '此步骤未完成，已停止处理' : agent.state === 'running' ? '正在处理，等待后端检查点' : agent.state === 'done' ? '检查点已写入' : failed ? '未执行' : '等待前一步完成') }}</p>
               </div>
-              <span class="cnip-live-milestone__state">{{ agent.state === 'done' ? '已完成' : agent.state === 'running' ? '进行中' : failed ? '未执行' : '待开始' }}</span>
+              <span class="cnip-live-milestone__state">{{ agent.state === 'failed' ? '已中断' : agent.state === 'limited' ? '部分可用' : agent.state === 'done' ? '已完成' : agent.state === 'running' ? '进行中' : failed ? '未执行' : '待开始' }}</span>
             </li>
           </ol>
         </div>
@@ -377,21 +385,26 @@ const actionWidths = ['106px', '132px', '92px']
 
         <template v-if="live || traceOnly">
           <div class="cnip-live-status">
-            <div><span>当前阶段</span><strong>{{ phaseLabel }}</strong></div>
-            <div><span>任务状态</span><strong>{{ traceStatus }}</strong></div>
-            <div><span>处理情况</span><strong>{{ attemptLabel }}</strong></div>
-            <div class="cnip-live-status__track"><span :style="{ width: `${traceError || attempt === null ? 0 : Math.min(100, Math.max(0, progress))}%` }"></span></div>
-            <p class="cnip-live-status__note">{{ progressLabel }}；这里仅表示简历解析检查点，不代表画像已完成。</p>
+            <div><span>当前进展</span><strong>{{ traceStatus }}</strong></div>
+          </div>
+          <div class="cnip-live-status">
+            <div><span>处理步骤</span><strong>{{ phaseLabel }}</strong></div>
+            <div><span>本轮处理</span><strong>{{ attemptLabel }}</strong></div>
+            <details class="cnip-progress-details">
+              <summary>查看解析检查点</summary>
+              <div class="cnip-live-status__track"><span :style="{ width: `${traceError || attempt === null ? 0 : Math.min(100, Math.max(0, progress))}%` }"></span></div>
+              <p class="cnip-live-status__note">{{ progressLabel }}；这里仅表示简历解析检查点，不代表画像已完成。</p>
+            </details>
           </div>
           <div v-if="showTeam" class="cnip-team">
             <div class="cnip-team__heading">四步解析进度 <span>根据实际记录更新</span></div>
             <div v-for="(agent, index) in agentStates" :key="agent.name" class="cnip-team__agent" :class="`cnip-team__agent--${agent.state}`">
               <span class="cnip-team__index">0{{ index + 1 }}</span>
               <div><strong>{{ agent.label }}</strong><small v-if="milestoneDetails[index]">{{ milestoneDetails[index] }}</small></div>
-              <span class="cnip-team__state">{{ agent.state === 'done' ? '完成' : agent.state === 'running' ? '执行中' : '等待' }}</span>
+              <span class="cnip-team__state">{{ agent.state === 'failed' ? '已中断' : agent.state === 'limited' ? '部分可用' : agent.state === 'done' ? '完成' : agent.state === 'running' ? '执行中' : failed ? '未执行' : '等待' }}</span>
             </div>
           </div>
-          <p v-else class="cnip-legacy-note">{{ savedWithoutTrace ? '简历内容已保存，可以继续核对；这份历史记录没有可查看的解析进度。' : '这份历史简历没有完整的分步进度，请以已保存的核对结果为准。' }}</p>
+          <p v-else-if="savedWithoutTrace" class="cnip-legacy-note">简历内容已保存，可以继续核对；这份历史记录没有可查看的解析进度。</p>
           <p v-if="traceError" class="cnip-trace-error">解析进度暂不可读取，请稍后刷新；已保存的简历内容不受影响。</p>
           <p v-if="!showTeam" class="cnip-trace-empty">{{ savedWithoutTrace ? '简历已确认，可以查看当前结果。' : '解析进度以已完成的步骤为准。' }}</p>
         </template>
@@ -429,9 +442,17 @@ const actionWidths = ['106px', '132px', '92px']
   overflow: hidden;
   color: var(--color-text, #111111);
 }
+.cnip-portrait-side { overflow-y: auto; scrollbar-color: #c9b9aa transparent; scrollbar-width: thin; }
+.cnip-dashboard-side { overflow-y: auto; scrollbar-color: #555 transparent; scrollbar-width: thin; }
+.cnip-live-status__note { color: #bcb3aa; line-height: 1.6; }
+.cnip-progress-details summary { color: #d6d6d6; cursor: pointer; font-size: 12px; }
+.cnip-progress-details summary:focus-visible { outline: 2px solid #e8ac5c; outline-offset: 3px; }
 .cnip-shell--trace-only .cnip-dashboard-side { width: 100%; }
 .cnip-phase-step--done .cnip-phase-dot { background: #41755b; color: #fff; border-color: #41755b; }
 .cnip-phase-step--done .cnip-phase-label { color: #41755b; }
+.cnip-phase-step--failed .cnip-phase-dot { color: #a43c20; border-color: #a43c20; }
+.cnip-phase-step--failed .cnip-phase-label, .cnip-live-milestone--failed .cnip-live-milestone__state { color: #a43c20; }
+.cnip-team__agent--failed .cnip-team__state { color: #f0a58b; }
 .cnip-live-banner { padding: 12px 18px 14px; border-bottom: 1px solid #e6dfd7; background: #f8f3ed; }
 .cnip-live-banner__top { display: flex; justify-content: space-between; align-items: center; font-size: 13px; color: #5c392b; }
 .cnip-live-banner__top span { display: inline-flex; gap: 7px; align-items: center; }
@@ -450,6 +471,7 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-live-milestones p { margin: 5px 0 0; color: var(--color-text-muted, #666); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .cnip-live-milestone__state { color: #776f68; font-size: 11px; white-space: nowrap; }
 .cnip-live-milestone--done .cnip-live-milestone__state { color: #41755b; }
+.cnip-live-milestone--limited .cnip-live-milestone__state { color: #946329; }
 .cnip-live-milestone--running .cnip-live-milestone__state { color: #a43c20; }
 .cnip-live-status { padding: 12px 14px; display: grid; gap: 8px; border-bottom: 1px solid #303030; }
 .cnip-live-status > div:not(.cnip-live-status__track) { display: flex; justify-content: space-between; gap: 8px; font: 10px Consolas, monospace; }
@@ -457,15 +479,17 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-live-status strong { color: #e5dfd8; font-weight: 500; text-align: right; }
 .cnip-live-status__track { background: #363636; margin: 1px 0 0; }
 .cnip-team { padding: 13px 12px; border-bottom: 1px solid #303030; }
-.cnip-team__heading { color: #c35a3a; font: 700 10px Consolas, monospace; letter-spacing: .08em; }
-.cnip-team__heading span { color: #777; font-weight: 400; letter-spacing: 0; float: right; }
-.cnip-team__agent { display: grid; grid-template-columns: 20px 1fr auto; gap: 7px; align-items: center; padding: 9px 0; border-bottom: 1px solid #292929; opacity: .55; }
+.cnip-team__heading { color: #e3a58d; font: 700 12px/1.6 var(--font-body, sans-serif); }
+.cnip-team__heading span { display: block; color: #aaa; font-size: 11px; font-weight: 400; }
+.cnip-team__agent { display: grid; grid-template-columns: 20px 1fr auto; gap: 7px; align-items: center; padding: 12px 0; border-bottom: 1px solid #333; }
 .cnip-team__agent:last-child { border-bottom: 0; }
 .cnip-team__agent--running, .cnip-team__agent--done { opacity: 1; }
+.cnip-team__agent--limited { opacity: 1; }
+.cnip-team__agent--limited .cnip-team__state { color: #dfb776; }
 .cnip-team__index { color: #8b6a5d; font: 10px Consolas, monospace; }
-.cnip-team__agent strong { color: #e6e1dc; font: 600 11px Consolas, monospace; display: block; }
-.cnip-team__agent small { display: block; color: #89827f; font-size: 10px; margin-top: 3px; }
-.cnip-team__state { color: #888; font-size: 10px; }
+.cnip-team__agent strong { color: #e6e1dc; font: 600 12px/1.6 var(--font-body, sans-serif); display: block; }
+.cnip-team__agent small { display: block; color: #b7afa9; font-size: 11px; margin-top: 3px; }
+.cnip-team__state { color: #aaa; font-size: 11px; }
 .cnip-team__agent--running .cnip-team__state { color: #e8ac5c; }
 .cnip-team__agent--done .cnip-team__state { color: #79bf94; }
 .cnip-legacy-note { margin: 0; padding: 12px 14px; border-bottom: 1px solid #303030; color: #a9a09a; font-size: 11px; line-height: 1.6; }
@@ -488,6 +512,8 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-trace-history__list { display: grid; gap: 7px; max-height: 190px; overflow-y: auto; padding: 0 11px 11px; }
 
 .cnip-portrait-side {
+  position: relative;
+  isolation: isolate;
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -496,6 +522,7 @@ const actionWidths = ['106px', '132px', '92px']
   gap: 20px;
   padding: clamp(22px, 3.8vw, 36px);
 }
+.cnip-portrait-side > :not(.career-nav-backdrop) { position: relative; z-index: 1; }
 
 .cnip-header {
   display: flex;
@@ -1353,6 +1380,11 @@ const actionWidths = ['106px', '132px', '92px']
 }
 
 @media (max-width: 640px) {
+  .cnip-shell, .cnip-portrait-side, .cnip-dashboard-side,
+  .cnip-canvas, .cnip-console, .cnip-surface, .cnip-profile { min-width: 0; max-width: 100%; box-sizing: border-box; }
+  .cnip-shell { width: 100%; }
+  .cnip-console__title, .cnip-phase-step, .cnip-log, .cnip-log > *,
+  .cnip-trace-event, .cnip-team__agent { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
   .cnip-portrait-side {
     padding: 18px 16px 16px;
   }
@@ -1479,4 +1511,10 @@ const actionWidths = ['106px', '132px', '92px']
 .cnip-shell--trace-only .cnip-trace-history__list { max-height: 50vh; padding: 0 12px 14px; }
 .cnip-shell--trace-only .cnip-legacy-note,
 .cnip-shell--trace-only .cnip-trace-empty { color: var(--color-text-muted, #666); }
+
+@container career-nav (max-width: 900px) {
+  .cnip-shell { flex-direction: column; overflow-y: auto; }
+  .cnip-portrait-side { flex: none; min-height: 680px; overflow: visible; }
+  .cnip-dashboard-side { width: 100%; height: auto; min-height: 280px; flex: none; }
+}
 </style>

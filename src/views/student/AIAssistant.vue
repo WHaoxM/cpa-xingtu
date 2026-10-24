@@ -1,9 +1,12 @@
 ﻿<!-- 页面：AI助手；路由：student/ai-assistant（student-ai-assistant）；角色：STUDENT -->
 <script setup lang="ts">
-import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted } from 'vue'
+import { ref, computed, nextTick, watch, onBeforeUnmount, onMounted, toRef } from 'vue'
+import {storeToRefs} from 'pinia'
+import {useAgentTaskStore} from '@/stores/agentTask'
+import {taskCompanionEnabled} from '@/composables/taskCompanionFeature'
 import { useRouter, useRoute } from 'vue-router'
 import { Icon } from '@iconify/vue'
-import { Attachments, Bubble, Conversations, Prompts, Thinking, Welcome, XSender } from 'vue-element-plus-x'
+import { Attachments, FilesCard, Bubble, Conversations, Prompts, Thinking, Welcome, XSender } from 'vue-element-plus-x'
 import { useLearningStore, useAgentChatStore, useUserStore } from '@/stores'
 import { useResumeStore } from '@/stores/resume'
 import { usePageEntrance } from '@/composables/usePageEntrance'
@@ -11,6 +14,7 @@ import { useChatAttachments } from '@/composables/useChatAttachments'
 import { useSpeechInput } from '@/composables/useSpeechInput'
 import { isCareerResourceUri, isPipelineTaskId } from '@/composables/useAgentResourceHandoff'
 import { renderMarkdown } from '@/utils/markdown'
+import { ComposerDraftSynchronizer } from '@/utils/composerDraftSync'
 import { getApiMode } from '@/api/config'
 import { getAgentSessionId } from '@/api/agent'
 import { mountSessionResources } from '@/api/agentMedia'
@@ -20,14 +24,17 @@ import { CURRENT_USER_ID } from '@/mock/data'
 import type { AIMessage, AIToolCall } from '@/types'
 import MessagePartsRenderer from '@/components/agent/MessagePartsRenderer.vue'
 import AgentMark from '@/components/agent/AgentMark.vue'
+import TaskNextActions from '@/components/agent/TaskNextActions.vue'
+import AgentRunConversationCard from '@/components/agent/AgentRunConversationCard.vue'
+import AgentAmbientFlow from '@/components/agent/AgentAmbientFlow.vue'
 import ExpertDirectory from '@/components/agent/ExpertDirectory.vue'
 import { workspaceExperts, type WorkspaceExpert } from '@/components/agent/expertCatalog'
 
 function resolveStudentId(): string {
   try {
-    return useUserStore().currentUser?.id || CURRENT_USER_ID
+    return useUserStore().currentUser?.id || (getApiMode() === 'http' ? '' : CURRENT_USER_ID)
   } catch {
-    return CURRENT_USER_ID
+    return getApiMode() === 'http' ? '' : CURRENT_USER_ID
   }
 }
 
@@ -36,7 +43,9 @@ const router = useRouter()
 const route = useRoute()
 const learningStore = useLearningStore()
 const agentChat = useAgentChatStore()
+const task = useAgentTaskStore()
 const resumeStore = useResumeStore()
+const httpMediaRefs = storeToRefs(task)
 const {
   attachments,
   busy: attachmentsBusy,
@@ -44,21 +53,91 @@ const {
   removeAttachment,
   clearAttachments,
   readyFileIds,
-} = useChatAttachments()
+} = taskCompanionEnabled ? {
+  attachments:httpMediaRefs.attachments,busy:httpMediaRefs.attachmentsBusy,
+  addFiles:task.addFiles,removeAttachment:task.removeAttachment,
+  clearAttachments:task.clearAttachments,readyFileIds:task.readyFileIds,
+} : useChatAttachments()
 
 const messages = computed(() => agentChat.messages)
-const inputMessage = ref('')
+const latestActionPlanHandoff = computed(() => {
+  for (let mi = messages.value.length - 1; mi >= 0; mi--) {
+    const message = messages.value[mi]
+    if (message?.role !== 'assistant') continue
+    const handoff = [...(message.parts || [])].reverse().find(part => part.type === 'action_plan_handoff')
+    // A handoff is actionable only while the latest assistant turn still asks
+    // for its clarification. Looking back through older turns resurrected an
+    // already-completed handoff after plan creation and attached it to every
+    // later chat request.
+    return handoff?.type === 'action_plan_handoff' ? handoff : null
+  }
+  return null
+})
+const inputMessage = taskCompanionEnabled?toRef(task,'draft'):ref('')
 const messagesContainer = ref<HTMLDivElement>()
 const fileInputRef = ref<HTMLInputElement>()
 const composerInputRef = ref<InstanceType<typeof XSender>>()
 const loading = ref(false)
+const composerRestoring = ref(getApiMode() === 'http')
+watch(()=>task.busy,value=>{if(taskCompanionEnabled)loading.value=value})
+const sessionStartError = ref('')
 const sidebarOpen = ref(true)
 const isInitialState = computed(() => messages.value.length === 0)
+const visibleAgentRunState = computed(() => taskCompanionEnabled && interactionMode.value === 'agent'
+  && (!!task.runControlSnapshot || !!task.runControlError))
+const isEmptyChat = computed(() => isInitialState.value && !visibleAgentRunState.value)
 const isHttpMode = computed(() => getApiMode() === 'http')
+function taskRunIdForMessage(message: AIMessage): string {
+  if (!taskCompanionEnabled || interactionMode.value !== 'agent') return ''
+  for (const prefix of ['task-user-', 'task-reply-']) {
+    if (message.id.startsWith(prefix)) return message.id.slice(prefix.length)
+  }
+  const outcomeRunId = message.outcome?.run_id
+  if (outcomeRunId && (task.activeRunId === outcomeRunId
+    || task.context?.turns?.some(turn => turn.run_id === outcomeRunId))) return outcomeRunId
+  return ''
+}
+function shouldShowTaskRunCard(message: AIMessage): boolean {
+  const runId = taskRunIdForMessage(message)
+  if (!runId) return false
+  if (message.id.startsWith('task-reply-')) return true
+  if (message.id.startsWith('task-user-')) {
+    return !messages.value.some(candidate => candidate.role === 'assistant'
+      && (candidate.id === `task-reply-${runId}` || candidate.outcome?.run_id === runId))
+  }
+  return message.role === 'assistant' && message.outcome?.run_id === runId
+}
+function taskRunSnapshotForMessage(message: AIMessage) {
+  const runId = taskRunIdForMessage(message)
+  const timeline = task.runTimelineById[runId]
+  return timeline?.run || (task.runControlSnapshot?.run_id === runId ? task.runControlSnapshot : null)
+}
+function taskRunTimelineForMessage(message: AIMessage) {
+  return task.runTimelineById[taskRunIdForMessage(message)]
+}
+function taskRunFallbackStatus(message: AIMessage): string {
+  const runId = taskRunIdForMessage(message)
+  return task.context?.turns?.find(turn => turn.run_id === runId)?.status || ''
+}
+function isCurrentTaskRunMessage(message: AIMessage): boolean {
+  return !!taskRunIdForMessage(message) && taskRunIdForMessage(message) === task.activeRunId
+}
+function refreshTaskRunMessage(runId: string): void {
+  if (runId === task.activeRunId) void task.refreshAgentRun()
+  else void task.loadAgentRunTimeline(runId)
+}
 const pendingTaskRef = ref<{ task_id: string; pipeline: string; status: string } | null>(null)
 const taskRefError = ref('')
 const pendingResourceUri = computed(() => isHttpMode.value && isCareerResourceUri(route.query.resource_uri)
   ? route.query.resource_uri as string : '')
+const pendingResourceLabel = computed(() => {
+  if (!pendingResourceUri.value) return ''
+  if (pendingResourceUri.value.startsWith('career://me/reports/')) return '这份岗位报告'
+  if (pendingResourceUri.value.startsWith('career://me/explorations/')) return '这次方向探索'
+  if (pendingResourceUri.value === 'career://me/resume') return '你的已确认简历'
+  if (pendingResourceUri.value === 'career://me/portrait') return '你的当前画像'
+  return '你的业务资料'
+})
 const resourceRefError = computed(() => route.query.resource_uri && !pendingResourceUri.value
   ? '无效的业务资料引用' : '')
 let taskRefLoadSeq = 0
@@ -83,12 +162,29 @@ watch(() => route.query.task_id, async raw => {
 }, { immediate: true })
 
 onMounted(async () => {
-  await agentChat.bootstrap()
-  const requestedSession = typeof route.query.session_id === 'string' ? route.query.session_id : ''
-  if (requestedSession && agentChat.conversations.some(c => c.sessionId === requestedSession)) {
-    await onSelectConversation(requestedSession)
+  try {
+    await agentChat.bootstrap()
+    const requestedSession = typeof route.query.session_id === 'string' ? route.query.session_id : ''
+    if (requestedSession && agentChat.conversations.some(c => c.sessionId === requestedSession)) {
+      await onSelectConversation(requestedSession, true)
+    }
+    if (taskCompanionEnabled) await task.ensure()
+    const requestedMode = route.query.interaction_mode
+    if (requestedMode === 'ask' || requestedMode === 'agent' || requestedMode === 'experts') {
+      setInteractionMode(requestedMode)
+    }
+    if (window.matchMedia('(max-width: 760px)').matches) sidebarOpen.value = false
+  } finally {
+    composerRestoring.value = false
   }
-  if (window.matchMedia('(max-width: 760px)').matches) sidebarOpen.value = false
+})
+
+// Keep the selected task in the existing deep link, not private browser caches.
+// Wait until an incoming link has been restored before reflecting selection.
+watch([() => agentChat.activeSessionId, composerRestoring], ([sid, restoring]) => {
+  if (taskCompanionEnabled && !restoring && sid && route.query.session_id !== sid) {
+    void router.replace({query:{...route.query,session_id:sid}})
+  }
 })
 
 /** Transport modes remain available, but task intent leads the UI rather than technical labels. */
@@ -101,6 +197,9 @@ const modeOptions: { id: InteractionMode; label: string; tip: string }[] = [
 ]
 const workspaceView = ref<'chat' | 'experts'>('chat')
 const selectedExpert = ref<WorkspaceExpert | null>(null)
+const canSendAgentFollowup = computed(() => taskCompanionEnabled && interactionMode.value === 'agent'
+  && !selectedExpert.value && task.canSendFollowup)
+const composerBusy = computed(() => loading.value && !canSendAgentFollowup.value)
 const composerMenuOpen = ref(false)
 const composerMenuSection = ref<'main' | 'experts' | 'mode'>('main')
 const expertSearch = ref('')
@@ -272,7 +371,7 @@ const promptItems = [
 const conversationItems = computed(() => agentChat.sidebarItems.map(conversation => ({
   ...conversation,
   id: conversation.sessionId,
-  label: conversation.title || '新对话',
+  label: displayUserText(conversation.title || '') || '新对话',
   disabled: loading.value || agentChat.switching,
 })))
 
@@ -285,21 +384,31 @@ const attachmentCards = computed(() => attachments.value.map(attachment => ({
   showDelIcon: true,
 })))
 
-watch(inputMessage, async text => {
-  await nextTick()
-  const sender = composerInputRef.value
-  if (sender && sender.getModelValue().text !== text) sender.setText(text)
-})
+const composerDraftSynchronizer = new ComposerDraftSynchronizer()
+watch([inputMessage,composerInputRef], ([text]) => {
+  void composerDraftSynchronizer.schedule(
+    () => composerInputRef.value,
+    text,
+    (candidate) => candidate === inputMessage.value,
+  ).catch(() => {
+    // Keep the Vue draft intact if the editor's asynchronous write fails.
+    console.warn('AI composer draft sync failed')
+  })
+},{flush:'post'})
 
 function onSenderChange() {
-  inputMessage.value = composerInputRef.value?.getModelValue().text || ''
+  if (composerRestoring.value) return
+  const actualText = composerInputRef.value?.getModelValue().text || ''
+  if (composerDraftSynchronizer.shouldIgnoreChange(actualText)) return
+  inputMessage.value = actualText
 }
 
 function onSenderSubmit() {
+  if (composerRestoring.value) return
   const text = composerInputRef.value?.getModelValue().text || ''
-  if ((!text.trim() && !readyFileIds().length && !pendingTaskRef.value) || loading.value || attachmentsBusy.value) return
+  if ((!text.trim() && !readyFileIds().length && !pendingTaskRef.value) || composerBusy.value || attachmentsBusy.value) return
   void sendMessage(text)
-  composerInputRef.value?.clear()
+  if(!(taskCompanionEnabled&&interactionMode.value==='agent'&&!selectedExpert.value))composerInputRef.value?.clear()
   inputMessage.value = ''
 }
 
@@ -324,6 +433,7 @@ function onAttachmentDelete(item: { uid?: string | number }) {
 async function prepareTask(prompt: string) {
   inputMessage.value = prompt
   await nextTick()
+  await composerDraftSynchronizer.flush()
   composerInputRef.value?.focus('mark')
 }
 
@@ -513,12 +623,33 @@ function startTaskPolls(msgId: string, tools: AIToolCall[] | undefined, runId: s
   })
 }
 
-async function sendMessage(preset?: string) {
+async function sendMessage(
+  preset?: string,
+  explicitHandoff?: { handoffId: string; action: 'start' | 'answer' },
+) {
+  if (composerRestoring.value) return
   const userMsg = (preset ?? inputMessage.value).trim()
   const fileIds = readyFileIds()
   const taskRef = pendingTaskRef.value
   const resourceUri = pendingResourceUri.value
-  if ((!userMsg && !fileIds.length && !taskRef && !resourceUri) || loading.value || attachmentsBusy.value) return
+  const actionHandoff = explicitHandoff || (
+    latestActionPlanHandoff.value?.stage === 'awaiting_time'
+      ? { handoffId: latestActionPlanHandoff.value.handoff_id, action: 'answer' as const }
+      : undefined
+  )
+  if ((!userMsg && !fileIds.length && !taskRef && !resourceUri) || (loading.value && !canSendAgentFollowup.value) || attachmentsBusy.value) return
+
+  if(taskCompanionEnabled&&interactionMode.value==='agent'&&!selectedExpert.value&&!actionHandoff){
+    try{
+      sessionStartError.value=''
+      if(taskRef||resourceUri)await task.handoff([taskRef?{task_id:taskRef.task_id}:{uri:resourceUri}])
+      await task.send(userMsg||'请一起看看这份资料',fileIds)
+      if(!task.error){clearAttachments();pendingTaskRef.value=null}
+      sessionStartError.value=task.error
+      scrollToBottom()
+    }catch(error){sessionStartError.value=error instanceof Error?error.message:'任务暂不可用'}
+    return
+  }
 
   if (!preset) inputMessage.value = ''
   const readyAtts = attachments.value
@@ -535,18 +666,22 @@ async function sendMessage(preset?: string) {
     ...(voiceTurn ? [{ type: 'voice_transcript', turn_id: voiceTurn, text: '' }] : []),
     ...(taskRef ? [{ type: 'artifact_ref', task_id: taskRef.task_id }] : []),
     ...(resourceUri ? [{ type: 'resource_ref', uri: resourceUri }] : []),
+    ...(actionHandoff ? [{ type: 'action_plan_handoff', handoff_id: actionHandoff.handoffId, action: actionHandoff.action }] : []),
   ]
 
   try {
     await agentChat.ensureActiveSession()
   } catch (e) {
     console.warn('[ai] ensure session failed', e)
+    sessionStartError.value = e instanceof Error ? e.message : '暂时无法开始对话，请重试。'
+    return
   }
+  sessionStartError.value = ''
 
   const now = new Date().toISOString().replace('T', ' ').substring(0, 16)
   agentChat.addMessage({
     role: 'user',
-    content: userMsg || (taskRef ? `（已引用任务 ${taskRef.task_id}）` : resourceUri ? '（已引用当前业务资料）' : `（已附带 ${fileIds.length} 个附件）`),
+    content: userMsg || (taskRef ? '（已关联这次简历核对）' : resourceUri ? '（已引用当前业务资料）' : `（已附带 ${fileIds.length} 个附件）`),
     timestamp: now,
     attachments: readyAtts.length ? readyAtts.map(a => ({ name: a.name })) : undefined,
   })
@@ -575,7 +710,7 @@ async function sendMessage(preset?: string) {
       }
       startProcessingWait()
       const result = await learningStore.getAIResponseFromApi(apiPayload, {
-        interactionMode: interactionMode.value,
+        interactionMode: actionHandoff ? 'agent' : interactionMode.value,
         // Experts ≠ 强制端到端；仅显式业务意图才由后端 detect_plan_template 选计划
         planMode: false,
         attachmentIds: fileIds,
@@ -673,7 +808,13 @@ async function sendMessage(preset?: string) {
   }
 }
 
+function startActionPlan(handoffId: string) {
+  if (!isHttpMode.value || loading.value || !handoffId) return
+  void sendMessage('把这项差距变成一周行动计划', { handoffId, action: 'start' })
+}
+
 async function clearChat() {
+  if (composerRestoring.value) return
   clearAllTimers()
   stopAllPolls()
   loading.value = false
@@ -694,8 +835,8 @@ async function clearChat() {
   if (window.matchMedia('(max-width: 760px)').matches) sidebarOpen.value = false
 }
 
-async function onSelectConversation(sessionId: string) {
-  if (loading.value) return
+async function onSelectConversation(sessionId: string, initialRestore = false) {
+  if ((!initialRestore && loading.value) || (composerRestoring.value && !initialRestore)) return
   if (sessionId === agentChat.activeSessionId) {
     workspaceView.value = 'chat'
     closeComposerMenu()
@@ -714,10 +855,15 @@ async function onSelectConversation(sessionId: string) {
   workspaceView.value = 'chat'
   closeComposerMenu()
   inputMessage.value = ''
-  await agentChat.switchSession(sessionId)
-  if (window.matchMedia('(max-width: 760px)').matches) sidebarOpen.value = false
-  await nextTick()
-  scrollToBottom()
+  composerRestoring.value = isHttpMode.value
+  try {
+    await agentChat.switchSession(sessionId)
+    if (window.matchMedia('(max-width: 760px)').matches) sidebarOpen.value = false
+    await nextTick()
+    scrollToBottom()
+  } finally {
+    if (!initialRestore) composerRestoring.value = false
+  }
 }
 
 async function onDeleteConversation(sessionId: string, e?: Event) {
@@ -776,8 +922,17 @@ function toolStatusLabel(tool: AIToolCall): string {
 
 /** 兼容旧消息里塞进正文的「已附带 N 个附件」 */
 function displayUserContent(msg: AIMessage): string {
-  return msg.content
+  return displayUserText(msg.content)
+}
+
+function displayUserText(content: string): string {
+  return content
+    // Exact legacy transport placeholder only; never rewrite a student's prose.
+    .replace(/^（已引用任务 [A-Za-z0-9_-]+）$/u, '（已关联这次简历核对）')
     .replace(/\n*（已附带\s*\d+\s*个附件）\s*$/u, '')
+    // Resource refs are server routing metadata, not text the student typed.
+    // History may include the verified URI when the turn is rehydrated.
+    .replace(/\s*\[业务资料引用:[^\]\n]*(?:\]|$)/gu, '')
     .trim()
 }
 
@@ -834,6 +989,10 @@ function displayThinkingParas(thinking: string): string[] {
           <button type="button" :disabled="loading" :class="{ 'is-active': workspaceView === 'experts' }" @click="openExpertDirectory"><Icon icon="lucide:users-round" :width="16" />专家与协作组</button>
         </nav>
         <span class="ai-rail__section-label">最近任务</span>
+        <p v-if="agentChat.sessionListError" class="ai-session-error" role="alert">
+          {{ agentChat.sessionListError }}
+          <button type="button" @click="agentChat.bootstrap()">重试读取</button>
+        </p>
         <div class="ai-rail__list">
           <Conversations
             v-if="conversationItems.length"
@@ -859,7 +1018,7 @@ function displayThinkingParas(thinking: string): string[] {
               </span>
             </template>
           </Conversations>
-          <p v-if="!agentChat.sidebarItems.length" class="ai-rail__empty">暂无历史会话</p>
+          <p v-if="!agentChat.sidebarItems.length && !agentChat.sessionListError" class="ai-rail__empty">暂无历史会话</p>
         </div>
       </aside>
 
@@ -871,7 +1030,8 @@ function displayThinkingParas(thinking: string): string[] {
         @click="sidebarOpen = false"
       />
 
-      <div class="ai-main" :class="{ 'ai-main--empty': workspaceView === 'chat' && isInitialState }">
+      <div class="ai-main" :class="{ 'ai-main--empty': workspaceView === 'chat' && isEmptyChat }">
+      <AgentAmbientFlow v-if="workspaceView === 'chat'" />
       <header class="ai-topbar ai-topbar--chat">
         <button type="button" class="ai-topbar__home" title="返回首页" aria-label="返回首页" @click="router.push('/app/dashboard')"><Icon icon="lucide:arrow-left" :width="17" /></button>
         <button
@@ -907,7 +1067,16 @@ function displayThinkingParas(thinking: string): string[] {
 
       <template v-else>
 
-      <div ref="messagesContainer" class="ai-messages" :class="{ 'ai-messages--empty': isInitialState }">
+      <p v-if="agentChat.historyError" class="ai-history-error" role="alert">
+        {{ agentChat.historyError }}
+        <button
+          type="button"
+          :disabled="!agentChat.activeSessionId"
+          @click="agentChat.activeSessionId && agentChat.switchSession(agentChat.activeSessionId)"
+        >重新读取这段对话</button>
+      </p>
+
+      <div ref="messagesContainer" class="ai-messages" :class="{ 'ai-messages--empty': isEmptyChat }">
         <template v-if="isInitialState">
           <div class="welcome">
             <Welcome
@@ -948,6 +1117,28 @@ function displayThinkingParas(thinking: string): string[] {
                   <Bubble class="ai-bubble ai-bubble--user" placement="end" variant="filled" shape="corner" avatar-size="0px" avatar-gap="0px" max-width="100%">
                     <template #content><span class="msg__bubble-text">{{ displayUserContent(msg) }}</span></template>
                   </Bubble>
+                  <AgentRunConversationCard
+                    v-if="shouldShowTaskRunCard(msg)"
+                    :owner-key="resolveStudentId()"
+                    :session-id="task.sessionId || agentChat.activeSessionId || ''"
+                    :run-id="taskRunIdForMessage(msg)"
+                    :run="taskRunSnapshotForMessage(msg)"
+                    :fallback-status="taskRunFallbackStatus(msg)"
+                    :events="taskRunTimelineForMessage(msg)?.events || []"
+                    :sync-state="taskRunTimelineForMessage(msg)?.syncState || 'idle'"
+                    :sync-error="taskRunTimelineForMessage(msg)?.syncError || ''"
+                    :busy="isCurrentTaskRunMessage(msg) && task.runControlBusy"
+                    :control-error="isCurrentTaskRunMessage(msg) ? task.runControlError : ''"
+                    :save-state="isCurrentTaskRunMessage(msg) ? task.runSaveState : null"
+                    :saved-plan="isCurrentTaskRunMessage(msg) ? task.savedRunPlan : null"
+                    :interactive="isCurrentTaskRunMessage(msg) && !!taskRunSnapshotForMessage(msg)"
+                    @load-history="task.loadAgentRunTimeline"
+                    @control="task.controlAgentRun"
+                    @resume="task.resumeAgentRun"
+                    @save="task.saveAgentRunPlan"
+                    @refresh="refreshTaskRunMessage"
+                    @read-saved-plan="task.readSavedAgentRunPlan"
+                  />
                 </div>
               </div>
 
@@ -957,11 +1148,55 @@ function displayThinkingParas(thinking: string): string[] {
                   <template #content>
                     <div class="msg__stack">
                       <MessagePartsRenderer
+                        :presentation="isHttpMode ? 'student' : undefined"
+                        :compact-evidence="isHttpMode"
                         :message="msg"
                         :session-id="agentChat.activeSessionId"
                         :is-streaming="msg.id === streamingMsgId"
                         :streaming-text="streamingContent"
                         @upgrade="applyUpgradeHint"
+                        @action-plan-start="startActionPlan"
+                      />
+                      <div v-if="task.retryableFollowup?.assistantMessageId === msg.id" class="agent-followup-actions">
+                        <span>原跟进仍待核对；继续操作会复用同一请求编号。</span>
+                        <button type="button" :disabled="task.followupBusy"
+                          @click="task.retryAgentRunFollowup(task.retryableFollowup.key)">用原请求继续核对</button>
+                      </div>
+                      <div v-if="task.retryableNewTask?.assistantMessageId === msg.id" class="agent-followup-actions">
+                        <span>分类已确认是独立新任务，提交回执尚未核实。</span>
+                        <button type="button" :disabled="task.busy"
+                          @click="task.retryClassifiedNewTask(task.retryableNewTask.key)">用原请求核对新任务</button>
+                      </div>
+                      <div v-if="task.pendingFollowupConfirmation?.assistantMessageId === msg.id"
+                        class="agent-followup-actions agent-followup-actions--confirm" role="group" aria-label="确认保存任务计划">
+                        <span v-if="task.pendingFollowupConfirmation.saveChoice === 'confirmed'">已确认过此版本；点击后会继续用原幂等请求核对保存回执。</span>
+                        <span v-else>将保存计划第 {{ task.pendingFollowupConfirmation.saveConfirmation?.plan_version }} 版、任务约束第 {{ task.pendingFollowupConfirmation.saveConfirmation?.contract_revision }} 版。</span>
+                        <button type="button" :disabled="task.runControlBusy"
+                          @click="task.confirmFollowupSave(task.pendingFollowupConfirmation.key)">{{ task.pendingFollowupConfirmation.saveChoice === 'confirmed' ? '继续核对保存' : '确认保存' }}</button>
+                        <button v-if="task.pendingFollowupConfirmation.saveChoice !== 'confirmed'" type="button" class="agent-followup-actions__secondary"
+                          @click="task.dismissFollowupSave(task.pendingFollowupConfirmation.key)">暂不保存</button>
+                      </div>
+                      <AgentRunConversationCard
+                        v-if="shouldShowTaskRunCard(msg)"
+                        :owner-key="resolveStudentId()"
+                        :session-id="task.sessionId || agentChat.activeSessionId || ''"
+                        :run-id="taskRunIdForMessage(msg)"
+                        :run="taskRunSnapshotForMessage(msg)"
+                        :fallback-status="taskRunFallbackStatus(msg)"
+                        :events="taskRunTimelineForMessage(msg)?.events || []"
+                        :sync-state="taskRunTimelineForMessage(msg)?.syncState || 'idle'"
+                        :sync-error="taskRunTimelineForMessage(msg)?.syncError || ''"
+                        :busy="isCurrentTaskRunMessage(msg) && task.runControlBusy"
+                        :control-error="isCurrentTaskRunMessage(msg) ? task.runControlError : ''"
+                        :save-state="isCurrentTaskRunMessage(msg) ? task.runSaveState : null"
+                        :saved-plan="isCurrentTaskRunMessage(msg) ? task.savedRunPlan : null"
+                        :interactive="isCurrentTaskRunMessage(msg) && !!taskRunSnapshotForMessage(msg)"
+                        @load-history="task.loadAgentRunTimeline"
+                        @control="task.controlAgentRun"
+                        @resume="task.resumeAgentRun"
+                        @save="task.saveAgentRunPlan"
+                        @refresh="refreshTaskRunMessage"
+                        @read-saved-plan="task.readSavedAgentRunPlan"
                       />
                       <span v-if="msg.id === streamingMsgId" class="cursor" aria-hidden="true" />
                     </div>
@@ -984,8 +1219,11 @@ function displayThinkingParas(thinking: string): string[] {
               </div>
             </div>
 
-            <!-- http 处理中 -->
-            <div v-if="isProcessing" class="msg msg--assistant">
+            <div v-if="isProcessing&&taskCompanionEnabled" class="msg msg--assistant" role="status">
+              <AgentMark :size="28"/><p>正在等待本次回复</p>
+            </div>
+            <!-- Legacy HTTP presentation remains available outside the staged task capability. -->
+            <div v-if="isProcessing&&!taskCompanionEnabled" class="msg msg--assistant">
               <AgentMark :size="28" class="msg__avatar--pulse" />
               <div class="msg__stack">
                 <div class="thought thought--live thought--open">
@@ -1000,7 +1238,16 @@ function displayThinkingParas(thinking: string): string[] {
               </div>
             </div>
           </div>
+            <TaskNextActions v-if="taskCompanionEnabled"/>
         </template>
+          <template v-if="taskCompanionEnabled && interactionMode === 'agent'">
+            <p v-if="task.runControlError && !task.runControlSnapshot && task.activeRunId
+              && !messages.some(message => taskRunIdForMessage(message) === task.activeRunId)"
+              class="agent-run-read-error" role="alert">
+              <span>{{ task.runControlError }}</span>
+              <button type="button" :disabled="task.runControlBusy" @click="refreshTaskRunMessage(task.activeRunId)">重新读取任务记录</button>
+            </p>
+          </template>
       </div>
 
       <div class="ai-composer" @keydown.esc="closeComposerMenu">
@@ -1017,21 +1264,31 @@ function displayThinkingParas(thinking: string): string[] {
           overflow="scrollX"
           :hide-upload="true"
           @delete-card="onAttachmentDelete"
-        />
+        >
+          <template #file-list>
+            <div v-for="file in attachments" :key="file.id" class="ai-file-transfer">
+              <FilesCard :name="file.name" :file-size="file.size" :status="file.status==='error'?'error':undefined" :error-tip="file.error"
+                :description="file.status==='reading'?'正在上传或解析':undefined" @delete="removeAttachment(file.id)"/>
+              <i v-if="file.status==='reading'" class="ai-file-transfer__spinner" role="status" aria-label="正在上传或解析附件"/>
+            </div>
+          </template>
+        </Attachments>
 
-        <div class="ai-composer__box" :class="{ 'is-disabled': loading }">
-          <p v-if="pendingTaskRef" class="ai-task-reference">已核验任务引用：{{ pendingTaskRef.pipeline }} · {{ pendingTaskRef.task_id }} · {{ pendingTaskRef.status }}（发送时由服务端再次核验）</p>
+        <div class="ai-composer__box" :class="{ 'is-disabled': loading || composerRestoring }" :aria-busy="composerRestoring">
+          <p v-if="composerRestoring" class="ai-task-reference" role="status">正在恢复对话，稍后即可继续输入。</p>
+          <p v-if="sessionStartError" class="ai-task-reference" role="alert">{{ sessionStartError }}</p>
+          <p v-if="pendingTaskRef" class="ai-task-reference">已关联这次简历核对，发送后会重新检查可读取的资料。</p>
           <p v-if="taskRefError" class="ai-task-reference">任务引用不可用：{{ taskRefError }}</p>
-          <p v-if="pendingResourceUri" class="ai-task-reference">已选中业务资料：{{ pendingResourceUri }}（发送时由服务端按当前身份读取，不传页面内容）</p>
+          <p v-if="pendingResourceUri" class="ai-task-reference">已关联：{{ pendingResourceLabel }}。发送后会核对这份资料的当前版本。</p>
           <p v-if="resourceRefError" class="ai-task-reference">业务资料引用不可用：{{ resourceRefError }}</p>
           <XSender
             ref="composerInputRef"
             class="ai-composer__sender"
             variant="updown"
             submit-type="enter"
-            :placeholder="loading ? '正在整理回复…' : '描述你的问题，Enter 发送 · Shift+Enter 换行'"
-            :disabled="loading"
-            :loading="loading"
+            :placeholder="composerRestoring ? '正在恢复对话…' : canSendAgentFollowup ? '继续补充当前任务，Enter 发送 · Shift+Enter 换行' : composerBusy ? '正在整理回复…' : '描述你的问题，Enter 发送 · Shift+Enter 换行'"
+            :disabled="composerBusy || composerRestoring"
+            :loading="composerBusy"
             :auto-focus="false"
             @change="onSenderChange"
             @submit="onSenderSubmit"
@@ -1047,15 +1304,15 @@ function displayThinkingParas(thinking: string): string[] {
                 accept=".txt,.md,.json,.csv,.pdf,.doc,.docx,.png,.jpg,.jpeg,.webp"
                 @change="onFilesSelected"
               >
-              <button type="button" class="icon-btn icon-btn--plus" title="添加到任务" aria-label="添加到任务" :aria-expanded="composerMenuOpen" :disabled="loading" @click="toggleComposerMenu">
+              <button type="button" class="icon-btn icon-btn--plus" title="添加到任务" aria-label="添加到任务" :aria-expanded="composerMenuOpen" :disabled="loading || composerRestoring" @click="toggleComposerMenu">
                 <Icon :icon="composerMenuOpen ? 'lucide:x' : 'lucide:plus'" :width="18" />
               </button>
-              <button type="button" class="icon-btn" title="上传附件" aria-label="上传附件" :disabled="loading" @click="openFilePicker"><Icon icon="lucide:paperclip" :width="16" /></button>
+              <button type="button" class="icon-btn" title="上传附件" aria-label="上传附件" :disabled="loading || composerRestoring" @click="openFilePicker"><Icon icon="lucide:paperclip" :width="16" /></button>
               <button
                 type="button"
                 class="icon-btn"
                 :class="{ 'is-active': speechListening }"
-                :disabled="loading || !speechSupported"
+                :disabled="loading || composerRestoring || !speechSupported"
                 :title="speechSupported ? (speechListening ? '停止语音' : '语音输入') : '当前浏览器不支持语音输入'"
                 @click="toggleSpeech()"
               >
@@ -1066,7 +1323,7 @@ function displayThinkingParas(thinking: string): string[] {
             </template>
             <template #action-list>
               <div class="ai-composer__right">
-              <button type="button" class="composer-mode" :aria-expanded="composerMenuOpen && composerMenuSection === 'mode'" :title="modeOptions.find(opt => opt.id === interactionMode)?.tip" :disabled="loading" @click="openModeMenu">
+              <button type="button" class="composer-mode" :aria-expanded="composerMenuOpen && composerMenuSection === 'mode'" :title="modeOptions.find(opt => opt.id === interactionMode)?.tip" :disabled="composerRestoring" @click="openModeMenu">
                 <Icon :icon="interactionMode === 'experts' ? 'lucide:users-round' : interactionMode === 'ask' ? 'lucide:message-circle' : 'lucide:sparkles'" :width="15" />
                 {{ modeOptions.find(opt => opt.id === interactionMode)?.label }}
                 <Icon icon="lucide:chevron-down" :width="13" />
@@ -1074,7 +1331,7 @@ function displayThinkingParas(thinking: string): string[] {
               <button
                 type="button"
                 class="send-btn"
-                :disabled="(!inputMessage.trim() && !readyFileIds().length && !pendingTaskRef) || loading || attachmentsBusy"
+                :disabled="(!inputMessage.trim() && !readyFileIds().length && !pendingTaskRef) || composerBusy || composerRestoring || attachmentsBusy"
                 aria-label="发送"
                 @click="onSenderSubmit"
               >
@@ -1111,6 +1368,10 @@ function displayThinkingParas(thinking: string): string[] {
 </template>
 
 <style scoped>
+.ai-file-transfer{position:relative;display:inline-flex;margin-right:10px}
+.ai-file-transfer__spinner{position:absolute;left:9px;top:8px;width:15px;height:15px;border:2px solid var(--color-primary,#b46849);border-right-color:transparent;border-radius:50%;animation:ai-file-transfer 1s linear infinite;background:var(--color-surface,#fffdf8)}
+@keyframes ai-file-transfer{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.ai-file-transfer__spinner{animation:none}}
 .ai-page {
   height: 100vh;
   height: 100dvh;
@@ -1310,12 +1571,43 @@ function displayThinkingParas(thinking: string): string[] {
   color: var(--color-text-muted);
 }
 
+.ai-session-error,
+.ai-history-error {
+  margin: 8px 12px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, #b42318 35%, var(--color-border));
+  border-radius: 8px;
+  background: color-mix(in srgb, #b42318 5%, var(--color-surface));
+  color: var(--color-text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-session-error button,
+.ai-history-error button {
+  display: block;
+  margin-top: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.ai-history-error { margin: 8px 24px 0; }
+.ai-history-error button { display: inline-block; margin: 0 0 0 8px; }
+.ai-task-reference { margin: 0; padding: 8px 12px; color: var(--color-text-muted); font-size: 12px; line-height: 1.5; }
+
 .ai-main {
   flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
+  position: relative;
+  isolation: isolate;
 }
 
 .ai-topbar {
@@ -2055,6 +2347,72 @@ function displayThinkingParas(thinking: string): string[] {
   text-overflow: ellipsis;
   max-width: 140px;
 }
+
+.agent-run-read-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  margin: 12px 0;
+  padding: 11px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-danger, #b4533c) 30%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-danger, #b4533c) 7%, transparent);
+  color: var(--color-text-primary, #3b352c);
+  font-size: 13px;
+}
+
+.agent-run-read-error button {
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid var(--color-border, #d7d0c5);
+  border-radius: 8px;
+  background: var(--color-surface, #fff);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-run-read-error button:focus-visible {
+  outline: 2px solid var(--color-primary, #b85c38);
+  outline-offset: 2px;
+}
+
+.agent-run-read-error button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+.agent-followup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding-top: 4px;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.agent-followup-actions button {
+  min-height: 38px;
+  padding: 7px 11px;
+  border: 1px solid var(--color-primary);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-primary) 8%, var(--color-surface));
+  color: var(--color-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.agent-followup-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.agent-followup-actions .agent-followup-actions__secondary {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+}
+.agent-followup-actions button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
 
 .ai-composer__right {
   display: flex;

@@ -5,6 +5,7 @@ import type { AIToolCall } from '@/types'
 
 const props = defineProps<{
   tool: AIToolCall | Record<string, unknown>
+  presentation?: 'student'
 }>()
 
 // ui_view 契约（docs/frontend/cpa-xingtu/contracts/ai-assistant-materials.md §4）：
@@ -28,13 +29,16 @@ const statusLabel = computed(() => {
   if (normalized.value.status === 'unknown') return '待核验'
   return '已完成'
 })
+const displaySummary = computed(() => normalized.value.summary || (props.presentation === 'student'
+  ? ({ running: '正在处理这一步', error: '这一步未能完成', needs_input: '这一步需要你的回应', partial: '这一步只完成了一部分', unknown: '这一步的处理结果尚未确认', done: '这一步已完成' }[normalized.value.status || 'unknown'])
+  : '已处理'))
 </script>
 
 <template>
-  <div class="tool-card" :class="`tool-card--${normalized.status || 'done'}`">
+  <div class="tool-card" :class="[`tool-card--${normalized.status || 'unknown'}`, { 'tool-card--student': presentation === 'student' }]">
     <div class="tool-card__head">
       <Icon icon="lucide:wrench" :width="13" />
-      <span class="tool-card__summary">{{ normalized.summary || '已处理' }}</span>
+      <span class="tool-card__summary">{{ displaySummary }}</span>
       <span class="tool-card__status">{{ statusLabel }}</span>
     </div>
   </div>
@@ -88,4 +92,8 @@ const statusLabel = computed(() => {
   color: #64748b;
   font-size: 12px;
 }
+.tool-card--student { border: 0; border-radius: 0; padding: 8px 0; background: transparent; }
+.tool-card--student .tool-card__head { width: 100%; align-items: flex-start; }
+.tool-card--student .tool-card__summary { font-size: 14px; line-height: 1.75; overflow-wrap: anywhere; }
+.tool-card--student .tool-card__status { padding-top: 2px; }
 </style>

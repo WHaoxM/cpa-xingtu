@@ -8,11 +8,11 @@ import { useLearningStore } from '@/stores'
 import { useResumeStore } from '@/stores/resume'
 import { useUserStore } from '@/stores/user'
 import { mockTargetRoleMarkets } from '@/mock/data'
-import { getTargetRoleMarketCard, listSavedJobs } from '@/api/favorites'
+import { deleteSavedJobRecord, getTargetRoleMarketCard, listSavedJobs } from '@/api/favorites'
 import { getApiMode } from '@/api/config'
 import { openAgentWithResource } from '@/composables/useAgentResourceHandoff'
 import { hasServerSavedJobCollection } from '@/composables/agentResourceHandoffContract'
-import type { TargetRoleMarket } from '@/types'
+import type { SavedJob, TargetRoleMarket } from '@/types'
 
 // ── 角色专属色（当代杂志调：暖而有质地） ──
 const roleColors: Record<string, string> = {
@@ -58,6 +58,80 @@ const learningStore = useLearningStore()
 const resumeStore = useResumeStore()
 const userStore = useUserStore()
 const hasServerSavedJobs = ref(false)
+const isHttpMode = computed(() => getApiMode() === 'http')
+const httpFavoriteJobs = ref<SavedJob[]>([])
+const httpFavoriteLoading = ref(false)
+const httpFavoriteError = ref('')
+const removingSavedJobId = ref<string | null>(null)
+
+async function loadHttpFavoriteJobs() {
+  httpFavoriteLoading.value = true
+  httpFavoriteError.value = ''
+  try {
+    httpFavoriteJobs.value = await listSavedJobs('')
+  } catch (error) {
+    httpFavoriteJobs.value = []
+    httpFavoriteError.value = error instanceof Error
+      ? `暂时无法读取已收藏岗位：${error.message}`
+      : '暂时无法读取已收藏岗位，请确认已登录后重试。'
+  } finally {
+    httpFavoriteLoading.value = false
+  }
+}
+
+function publicationStatusLabel(status?: string): string {
+  switch (status) {
+    case 'current': return '当前发布版本'
+    case 'revoked': return '已撤回 · 历史资料'
+    case 'superseded': return '已有新版本 · 历史资料'
+    case 'unavailable': return '来源暂时无法核对'
+    case 'legacy_unverified': return '个人保存 · 来源未核实'
+    default: return '来源暂时无法核对'
+  }
+}
+
+function savedDateLabel(value?: string): string {
+  const date = value ? new Date(value) : null
+  return date && !Number.isNaN(date.getTime())
+    ? new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }).format(date)
+    : '收藏日期未提供'
+}
+
+function snapshotSkillNames(job: SavedJob): string[] {
+  const raw = job.publicationSnapshot?.required_skills
+  if (!Array.isArray(raw)) return []
+  return raw.map(item => typeof item === 'string'
+    ? item
+    : typeof item === 'object' && item !== null && 'name' in item
+      ? String((item as { name: unknown }).name)
+      : '').filter(Boolean)
+}
+
+function safeSavedSourceUrl(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim()) return ''
+  try {
+    const url = new URL(value.trim())
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password
+      ? url.toString()
+      : ''
+  } catch {
+    return ''
+  }
+}
+
+async function removeHttpFavorite(job: SavedJob) {
+  if (!job.savedJobId || removingSavedJobId.value) return
+  removingSavedJobId.value = job.savedJobId
+  try {
+    await deleteSavedJobRecord(job.savedJobId)
+    await loadHttpFavoriteJobs()
+    ElMessage.success('已从心仪岗位移除')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '移除失败，请稍后重试')
+  } finally {
+    removingSavedJobId.value = null
+  }
+}
 
 function askAgentAboutSavedJobs() {
   if (!hasServerSavedJobs.value) return
@@ -183,6 +257,10 @@ function goToCareerAnalysis() {
   router.push('/app/student/career-analysis')
 }
 
+function goToJobCatalog() {
+  router.push({ name: 'student-job-catalog' })
+}
+
 function goBack() {
   router.back()
 }
@@ -195,6 +273,7 @@ function shortDemand(level: string): string {
 
 /* ── Hero 统计数据 ── */
 const heroStats = computed(() => {
+  if (isHttpMode.value) return null
   const dirs = filteredDirections.value
   if (!dirs.length) return null
   const scored = dirs.filter(d => d.matchState === 'scored')
@@ -248,6 +327,11 @@ let cardObserver: IntersectionObserver | null = null
 
 onMounted(async () => {
   await learningStore.loadFavoritesFromApi()
+  if (isHttpMode.value) {
+    await loadHttpFavoriteJobs()
+    hasServerSavedJobs.value = !httpFavoriteError.value && httpFavoriteJobs.value.length > 0
+    return
+  }
   const uid = userStore.currentUser?.id
   if (getApiMode() === 'http' && uid) {
     try {
@@ -341,18 +425,83 @@ function setCardStagger(cards: NodeListOf<Element>) {
               最高薪资 <strong>{{ heroStats.bestSalary }}K</strong>
             </span>
           </div>
-          <div v-else class="hero-subtitle">在职业分析中关注方向，同步展示薪资与匹配度</div>
+          <div v-else class="hero-subtitle">{{ isHttpMode ? '这里会保留你收藏的具体岗位版本；招聘状态仍需另行确认。' : '在职业分析中关注方向，同步展示薪资与匹配度' }}</div>
         </div>
         <div class="hero-actions">
-          <el-button v-if="hasServerSavedJobs" class="hero-btn-outline" title="仅分享服务端收藏记录，不代表岗位已经核实或获得推荐" @click="askAgentAboutSavedJobs">与 Agent 讨论已收藏岗位</el-button>
-          <el-button class="hero-btn-outline" @click="goToCareerAnalysis">去关注方向</el-button>
-          <el-button class="hero-btn-solid" @click="goToMatch">进入职途导航</el-button>
+          <el-button v-if="!isHttpMode && hasServerSavedJobs" class="hero-btn-outline" title="仅分享服务端收藏记录，不代表岗位已经核实或获得推荐" @click="askAgentAboutSavedJobs">与 Agent 讨论已收藏岗位</el-button>
+          <el-button v-if="!isHttpMode" class="hero-btn-outline" @click="goToCareerAnalysis">去关注方向</el-button>
+          <el-button v-if="!isHttpMode" class="hero-btn-solid" @click="goToMatch">进入职途导航</el-button>
+          <el-button v-else class="hero-btn-solid" @click="goToJobCatalog">浏览岗位目录</el-button>
         </div>
       </div>
     </div>
 
     <!-- ── 内容区 ── -->
-    <div class="favorites-content">
+    <div v-if="isHttpMode" class="favorites-content">
+      <section class="specific-favorites" aria-labelledby="specific-favorites-title">
+        <header class="specific-favorites__head">
+          <div>
+            <span class="specific-favorites__eyebrow">具体岗位</span>
+            <h2 id="specific-favorites-title">你保存过的岗位资料</h2>
+            <p>每条收藏都对应当时看到的平台发布版本。收藏不代表岗位仍在招聘；招聘状态未确认。</p>
+          </div>
+          <el-button type="primary" plain @click="goToJobCatalog">继续浏览岗位</el-button>
+        </header>
+
+        <div v-if="httpFavoriteError" class="specific-favorites__state" role="alert">
+          <Icon icon="lucide:cloud-off" /><p>{{ httpFavoriteError }}</p>
+          <el-button @click="loadHttpFavoriteJobs">重新读取</el-button>
+        </div>
+        <div v-else-if="httpFavoriteLoading" class="specific-favorites__state" aria-live="polite">正在读取你的收藏…</div>
+        <div v-else-if="!httpFavoriteJobs.length" class="specific-favorites__state">
+          <Icon icon="lucide:bookmark" /><strong>还没有收藏具体岗位</strong>
+          <p>在岗位目录打开一份管理员审核发布的资料后，可以把它保存到这里。</p>
+          <el-button type="primary" @click="goToJobCatalog">去岗位目录看看</el-button>
+        </div>
+        <div v-else class="specific-favorites__list">
+          <article v-for="job in httpFavoriteJobs" :key="job.savedJobId ?? job.id" class="specific-favorite-card">
+            <div class="specific-favorite-card__top">
+              <span class="specific-favorite-card__status" :class="`status--${job.publicationStatus ?? 'unavailable'}`">
+                {{ publicationStatusLabel(job.publicationStatus) }}
+              </span>
+              <time>{{ savedDateLabel(job.savedAt) }}</time>
+            </div>
+            <h3>{{ job.publicationStatus === 'unavailable' ? '岗位资料暂时无法核对' : job.jobTitle || '岗位名称未提供' }}</h3>
+            <p v-if="job.publicationStatus === 'legacy_unverified'" class="specific-favorite-card__boundary">
+              这是此前个人保存的信息，平台没有确认它关联到哪份发布版本；不展示薪资或匹配结论。
+            </p>
+            <template v-else-if="job.publicationStatus !== 'unavailable' && job.publicationSnapshot">
+              <div v-if="snapshotSkillNames(job).length" class="specific-favorite-card__skills">
+                <span v-for="skill in snapshotSkillNames(job)" :key="skill">{{ skill }}</span>
+              </div>
+              <details v-if="typeof job.publicationSnapshot.source_text === 'string' || safeSavedSourceUrl(job.publicationSnapshot.source_uri)" class="specific-favorite-card__source">
+                <summary>查看当时保存的资料</summary>
+                <p v-if="typeof job.publicationSnapshot.source_text === 'string'">{{ job.publicationSnapshot.source_text }}</p>
+                <a v-if="safeSavedSourceUrl(job.publicationSnapshot.source_uri)" :href="safeSavedSourceUrl(job.publicationSnapshot.source_uri)" target="_blank" rel="noopener noreferrer">打开登记的来源地址</a>
+              </details>
+              <p class="specific-favorite-card__boundary">管理员审核发布 · 招聘状态未确认<span v-if="job.publicationVersion"> · 资料版本 {{ job.publicationVersion }}</span></p>
+            </template>
+            <div class="specific-favorite-card__actions">
+              <el-button v-if="job.publicationStatus === 'current'" size="small"
+                @click="router.push({ name: 'student-job-catalog', query: { job_id: job.jobPortraitId, version: String(job.publicationVersion) } })">查看这份岗位资料</el-button>
+              <span v-else-if="job.publicationStatus !== 'legacy_unverified'">历史内容可回看，当前目录是否仍有该岗位需重新确认。</span>
+              <el-popconfirm title="确定从心仪岗位移除这条记录？" confirm-button-text="移除" cancel-button-text="保留" @confirm="removeHttpFavorite(job)">
+                <template #reference><el-button text type="danger" size="small" :loading="removingSavedJobId === job.savedJobId">移除收藏</el-button></template>
+              </el-popconfirm>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section v-if="learningStore.targetRoles.length" class="followed-roles" aria-labelledby="followed-roles-title">
+        <div><span class="specific-favorites__eyebrow">职业方向</span><h2 id="followed-roles-title">你关注的职业方向</h2>
+          <p>这是关注方向，不是具体岗位收藏。当前没有已核实的市场薪资、需求量或匹配结论。</p></div>
+        <ul><li v-for="item in learningStore.targetRoles" :key="item.role"><strong>{{ item.role }}</strong><time>{{ item.savedAt }}</time></li></ul>
+        <el-button text @click="goToCareerAnalysis">管理关注方向</el-button>
+      </section>
+    </div>
+
+    <div v-else class="favorites-content">
 
       <!-- ── 工具栏 ── -->
       <div v-if="followedCount > 0" class="toolbar">
@@ -669,6 +818,36 @@ function setCardStagger(cards: NodeListOf<Element>) {
   flex-direction: column;
   gap: 14px;
 }
+
+.specific-favorites,.followed-roles { display: flex; flex-direction: column; gap: 16px; padding: clamp(18px, 3vw, 28px); border: 1px solid rgba(0,0,0,.07); border-radius: 14px; background: #fff; box-shadow: 0 3px 14px rgba(45,35,25,.045); }
+.specific-favorites__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; padding-bottom: 17px; border-bottom: 1px solid rgba(0,0,0,.07); }
+.specific-favorites__eyebrow { color: var(--color-primary-dark); font-size: 10px; font-weight: 800; letter-spacing: .12em; }
+.specific-favorites__head h2,.followed-roles h2 { margin: 6px 0; color: #27231f; font-family: var(--font-title); font-size: clamp(21px,3vw,27px); letter-spacing: -.025em; }
+.specific-favorites__head p,.followed-roles > div p { max-width: 720px; margin: 0; color: #77716a; font-size: 13px; line-height: 1.7; }
+.specific-favorites__state { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 36px 18px; color: #77716a; text-align: center; }
+.specific-favorites__state :deep(svg) { color: #a59b90; font-size: 27px; }
+.specific-favorites__state strong { color: #332e28; font-size: 15px; }
+.specific-favorites__state p { max-width: 520px; margin: 0; font-size: 13px; line-height: 1.65; }
+.specific-favorites__list { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,370px),1fr)); gap: 13px; }
+.specific-favorite-card { min-width: 0; padding: 17px; border: 1px solid #e9e3dc; border-radius: 12px; background: linear-gradient(145deg,#fff 30%,#fcfaf7); }
+.specific-favorite-card__top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.specific-favorite-card__top time,.followed-roles li time { color: #968d83; font-size: 11px; }
+.specific-favorite-card__status { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: #f0eee9; color: #696157; font-size: 10px; font-weight: 750; }
+.specific-favorite-card__status.status--current { background: #e8f2ea; color: #386246; }
+.specific-favorite-card__status.status--revoked,.specific-favorite-card__status.status--unavailable { background: #f8eae6; color: #994a39; }
+.specific-favorite-card h3 { margin: 14px 0 9px; color: #27231f; font-size: 18px; line-height: 1.35; }
+.specific-favorite-card__skills { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.specific-favorite-card__skills span { padding: 5px 8px; border: 1px solid #e9e0d6; border-radius: 999px; color: #655c52; font-size: 11px; }
+.specific-favorite-card__source { margin-top: 13px; padding: 10px 0; border-top: 1px solid #eee8e1; border-bottom: 1px solid #eee8e1; }
+.specific-favorite-card__source summary { color: var(--color-secondary); cursor: pointer; font-size: 12px; font-weight: 700; }
+.specific-favorite-card__source p { max-height: 220px; overflow: auto; color: #655f58; font-size: 12px; line-height: 1.7; white-space: pre-wrap; }
+.specific-favorite-card__source a { color: var(--color-secondary); font-size: 12px; overflow-wrap: anywhere; }
+.specific-favorite-card__boundary { margin: 10px 0 0; color: #81786e; font-size: 11px; line-height: 1.6; }
+.specific-favorite-card__actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 14px; padding-top: 10px; border-top: 1px solid #eee8e1; }
+.specific-favorite-card__actions > span { color: #81786e; font-size: 11px; line-height: 1.5; }
+.followed-roles ul { display: flex; flex-wrap: wrap; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.followed-roles li { display: flex; align-items: center; gap: 12px; padding: 9px 12px; border: 1px solid #e9e3dc; border-radius: 9px; }
+.followed-roles li strong { color: #3f3932; font-size: 12px; }
 
 /* ══════════════════════════════════
    工具栏
