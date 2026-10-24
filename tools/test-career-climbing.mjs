@@ -131,12 +131,77 @@ test('source experience presentation keeps actual role and descriptions without 
   assert.deepEqual(diagnosticFactParts('一段实际经历'),[{label:'经历记录',text:'一段实际经历'}])
 })
 
-test('wall marker stays at personal evidence when the goal or interpretation changes',async()=>{
-  const raw=readFileSync(new URL('../src/composables/careerClimbingContract.ts',import.meta.url),'utf8').replace(/^import .*$/gm,'')
-  const compiled=(await transform(raw,{loader:'ts',format:'esm'})).code
-  const {personalClimbLayout}=await import(`data:text/javascript;base64,${Buffer.from(compiled).toString('base64')}`)
-  assert.deepEqual(personalClimbLayout('',null),{nodes:[],ropes:[]})
-  const a=personalClimbLayout('数据分析',null),b=personalClimbLayout('前端开发',{next_action:{kind:'practice'},connections:[]})
-  assert.deepEqual(a.nodes[0],b.nodes[0]);assert.equal(b.nodes[1].title,'动手试一次')
-  assert.ok(!JSON.stringify(b).includes('salaryRange":"15'))
+test('real climbing view presents the persisted career-relation graph and its truthful empty state',async()=>{
+  const report=readFileSync(new URL('../src/views/student/CareerReport.vue',import.meta.url),'utf8')
+  const api=readFileSync(new URL('../src/api/careerRelations.ts',import.meta.url),'utf8')
+  const componentSource=readFileSync(new URL('../src/components/career/CareerRelationGraph.vue',import.meta.url),'utf8')
+  assert.match(report,/<CareerRelationGraph v-if="isRealPath" :focus-role="climb\.role" compact @select-role="climb\.choose" \/>/)
+  assert.doesNotMatch(report,/personalClimbLayout/)
+  assert.match(api,/httpGet<CareerRelationGraph>\('\/api\/career\/relationship-graph'\)/)
+
+  const {descriptor,errors}=parse(componentSource)
+  assert.deepEqual(errors,[])
+  const bindings=compileScript(descriptor,{id:'career-relation-graph-test'})
+  const bindImports=code=>code.replace(/import\s*\{([^}]+)\}\s*from\s*(['"])([^'"]+)\2;?/g,(_match,names,_quote,source)=>{
+    const target=source==='vue'||source==='@iconify/vue'||source==='@/api/careerRelations'
+    assert.ok(target,`unexpected component dependency: ${source}`)
+    return `const {${names.replace(/\s+as\s+/g,':')}}=globalThis.__careerRelationGraphTest;`
+  })
+  const script=bindImports((await transform(bindings.content,{loader:'ts',format:'esm'})).code)
+  const template=compileTemplate({source:descriptor.template.content,filename:'CareerRelationGraph.vue',id:'career-relation-graph-test',compilerOptions:{bindingMetadata:bindings.bindings}})
+  assert.deepEqual(template.errors,[])
+  const templateCode=bindImports((await transform(template.code,{loader:'ts',format:'esm'})).code)
+
+  const makeNode=(id,label,skillId)=>({id,label,revision:'r1',content_sha256:'a'.repeat(64),skill_count:1,
+    skills:[{skill_id:skillId,name:'SQL',evidence:{url:'https://example.test/source',note:'verified source'}}]})
+  const sourceNode=makeNode('role-analyst','数据分析师',1)
+  const connectedNode=makeNode('role-scientist','数据科学家',1)
+  const unrelatedNode=makeNode('role-designer','交互设计师',2)
+  const edge={id:'edge-analyst-scientist',source:sourceNode.id,target:connectedNode.id,relation_type:'shared_skill',
+    weight:0.5,shared_skill_count:1,union_skill_count:2,shared_skills:[{skill_id:1,name:'SQL',
+      source_evidence:{url:'https://example.test/analyst',note:'source A'},target_evidence:{url:'https://example.test/scientist',note:'source B'}}],
+    source_revision:'r1',target_revision:'r1'}
+  const readyGraph={status:'ready',reason:null,algorithm_version:'shared-skill-jaccard/v1',source_kind:'active_pathway_revision',
+    weight_definition:'shared / union',input_sha256:'b'.repeat(64),source_count:3,node_count:3,edge_count:1,computed_at:null,
+    nodes:[sourceNode,connectedNode,unrelatedNode],edges:[edge]}
+  async function openGraph(graph){
+    const calls=[]
+    globalThis.__careerRelationGraphTest={...await import('vue'),onMounted:()=>{},Icon:{render:()=>null},
+      getCareerRelationGraph:async()=>{calls.push('read');return graph}}
+    const nonce=Math.random().toString(36).slice(2)
+    const component=(await import(`data:text/javascript;base64,${Buffer.from(script).toString('base64')}#${nonce}`)).default
+    const renderModule=await import(`data:text/javascript;base64,${Buffer.from(templateCode).toString('base64')}#render-${nonce}`)
+    component.render=renderModule.render
+    const emitted=[]
+    const scope=(await import('vue')).effectScope()
+    const state=scope.run(()=>component.setup({focusRole:'数据分析师',compact:true},{emit:(...args)=>emitted.push(args),expose(){}}))
+    await state.load()
+    const html=await renderToString(createSSRApp({setup:()=>state,render:component.render}))
+    return {state,calls,emitted,html,close:()=>scope.stop()}
+  }
+
+  const ready=await openGraph(readyGraph)
+  assert.deepEqual(ready.calls,['read'])
+  assert.equal(ready.state.state.value,'ready')
+  assert.equal(ready.state.graph.value.input_sha256,readyGraph.input_sha256)
+  assert.deepEqual(ready.state.visibleNodes.value.map(node=>node.id),[sourceNode.id,connectedNode.id])
+  assert.deepEqual(ready.state.drawnEdges.value.map(item=>item.edge.id),[edge.id])
+  assert.match(ready.state.reasonText.value,/共享规范技能/)
+  assert.match(ready.html,/数据分析师/)
+  assert.match(ready.html,/数据科学家/)
+  assert.match(ready.html,/1 条关系/)
+  ready.state.selectEdge(edge)
+  assert.equal(ready.state.selectedEdge.value.id,edge.id)
+  ready.state.selectNode(connectedNode)
+  assert.deepEqual(ready.emitted,[['select-role','数据科学家']])
+  ready.close()
+
+  const empty=await openGraph({...readyGraph,status:'empty',reason:'fewer_than_two_active_pathways',source_count:1,node_count:1,edge_count:0,nodes:[sourceNode],edges:[]})
+  assert.equal(empty.state.graph.value.node_count,1)
+  assert.equal(empty.state.graph.value.edge_count,0)
+  assert.equal(empty.state.drawnEdges.value.length,0)
+  assert.match(empty.state.reasonText.value,/少于两个/)
+  assert.match(empty.html,/少于两个/)
+  assert.match(empty.html,/1 个职业/)
+  empty.close()
 })
