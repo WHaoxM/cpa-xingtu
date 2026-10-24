@@ -5,12 +5,13 @@ import { toAgentRunTimelineItem } from './agentRunEventModel'
 
 const props = defineProps<{
   events: AgentRunEvent[]
+  runId?: string
   syncState: 'idle' | 'loading' | 'syncing' | 'synced' | 'stale' | 'error'
   syncError?: string
 }>()
 
 const items = computed(() => props.events
-  .map(toAgentRunTimelineItem)
+  .map(event => toAgentRunTimelineItem(event, props.runId))
   .filter(item => item !== null))
 
 function eventTime(value: string): string {
