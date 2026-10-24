@@ -6,14 +6,13 @@ import {useAgentTaskStore} from '@/stores/agentTask'
 import {taskCompanionEnabled} from '@/composables/taskCompanionFeature'
 import { useRouter, useRoute } from 'vue-router'
 import { Icon } from '@iconify/vue'
-import { Attachments, FilesCard, Bubble, Conversations, Prompts, Thinking, Welcome, XSender } from 'vue-element-plus-x'
+import { Attachments, FilesCard, Bubble, Conversations, Prompts, Welcome, XSender } from 'vue-element-plus-x'
 import { useLearningStore, useAgentChatStore, useUserStore } from '@/stores'
 import { useResumeStore } from '@/stores/resume'
 import { usePageEntrance } from '@/composables/usePageEntrance'
 import { useChatAttachments } from '@/composables/useChatAttachments'
 import { useSpeechInput } from '@/composables/useSpeechInput'
 import { isCareerResourceUri, isPipelineTaskId } from '@/composables/useAgentResourceHandoff'
-import { renderMarkdown } from '@/utils/markdown'
 import { ComposerDraftSynchronizer } from '@/utils/composerDraftSync'
 import { getApiMode } from '@/api/config'
 import { getAgentSessionId } from '@/api/agent'
@@ -270,19 +269,12 @@ function applyUpgradeHint(to?: string) {
 }
 
 /* ── 流式 / 思考 ── */
-const streamingMsgId = ref<string | null>(null)
-const streamingContent = ref('')
-const isThinking = ref(false)
 const isProcessing = ref(false)
-const liveThinkingOpen = ref(true)
-const thinkingStreamText = ref('')
-const thinkingStartTime = ref(0)
-const thinkingElapsed = ref(0)
-const expandedThinkingIds = ref<Set<string>>(new Set())
-const expandedToolArgs = ref<Set<string>>(new Set())
+const requestStartedAt = ref(0)
+const requestElapsed = ref(0)
+const shouldFollowMessages = ref(true)
+const showJumpToLatest = computed(() => !isEmptyChat.value && !shouldFollowMessages.value)
 const processingLabel = ref('正在处理')
-let streamTimer: ReturnType<typeof setInterval> | null = null
-let thinkTimer: ReturnType<typeof setInterval> | null = null
 let elapsedTimer: ReturnType<typeof setInterval> | null = null
 const pollTimers = new Map<string, ReturnType<typeof setInterval>>()
 
@@ -327,27 +319,12 @@ onBeforeUnmount(() => {
 })
 
 function clearAllTimers() {
-  if (streamTimer) { clearInterval(streamTimer); streamTimer = null }
-  if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null }
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
 }
 
 function stopAllPolls() {
   for (const t of pollTimers.values()) clearInterval(t)
   pollTimers.clear()
-}
-
-function formatThinkingProse(steps: string[]): string {
-  return steps
-    .map(step => step.replace(/\.\.\.$/u, '。').replace(/\.\.\./gu, '。').trim())
-    .filter(Boolean)
-    .join('\n\n')
-}
-
-function thoughtLabel(seconds?: number): string {
-  if (seconds == null || seconds <= 0) return '思考过程'
-  const n = Math.max(1, Math.round(Number(seconds)))
-  return `思考了 ${n} 秒`
 }
 
 const quickPrompts = [
@@ -441,7 +418,14 @@ async function prepareTask(prompt: string) {
   composerInputRef.value?.focus('mark')
 }
 
+function onMessagesScroll() {
+  const container = messagesContainer.value
+  if (!container) return
+  shouldFollowMessages.value = container.scrollHeight - container.clientHeight - container.scrollTop <= 48
+}
+
 function scrollToBottom() {
+  shouldFollowMessages.value = true
   nextTick(() => {
     if (messagesContainer.value) {
       messagesContainer.value.scrollTo({
@@ -452,9 +436,11 @@ function scrollToBottom() {
   })
 }
 
-watch([streamingContent, thinkingStreamText, isProcessing], () => {
-  scrollToBottom()
-})
+function followMessagesIfNeeded() {
+  if (shouldFollowMessages.value) scrollToBottom()
+}
+
+watch([isProcessing, () => messages.value.length], followMessagesIfNeeded)
 
 /**
  * Profile hint for Agent/Experts only.
@@ -474,106 +460,19 @@ function buildResumePrefix(): string {
   return `[用户概况] ${parts.join('；')} | 询问：`
 }
 
-function simulateThinking(steps: string[]): Promise<{ duration: number; prose: string }> {
-  return new Promise(resolve => {
-    const prose = formatThinkingProse(steps)
-    if (!prose) {
-      resolve({ duration: 1, prose: '' })
-      return
-    }
-    thinkingStreamText.value = ''
-    isThinking.value = true
-    liveThinkingOpen.value = true
-    thinkingStartTime.value = Date.now()
-    thinkingElapsed.value = 0
-
-    elapsedTimer = setInterval(() => {
-      thinkingElapsed.value = Math.floor((Date.now() - thinkingStartTime.value) / 1000)
-    }, 200)
-
-    // Longer traces stream in larger chunks so deep thinking stays snappy.
-    const baseChunk = prose.length > 600 ? 10 : prose.length > 280 ? 6 : 3
-    let idx = 0
-    const tick = () => {
-      if (idx < prose.length) {
-        const chunk = baseChunk + (Math.random() > 0.7 ? 4 : 0)
-        thinkingStreamText.value += prose.slice(idx, idx + chunk)
-        idx += chunk
-        thinkTimer = setTimeout(tick, 12 + Math.random() * 18) as unknown as ReturnType<typeof setInterval>
-      } else {
-        if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
-        thinkingStreamText.value = prose
-        const duration = Math.max(1, Math.round((Date.now() - thinkingStartTime.value) / 1000))
-        thinkingElapsed.value = duration
-        thinkTimer = setTimeout(() => {
-          isThinking.value = false
-          liveThinkingOpen.value = false
-          resolve({ duration, prose })
-        }, 280) as unknown as ReturnType<typeof setInterval>
-      }
-    }
-    tick()
-  })
-}
-
 function startProcessingWait() {
   isProcessing.value = true
-  processingLabel.value = '正在处理'
-  thinkingStartTime.value = Date.now()
-  thinkingElapsed.value = 0
+  processingLabel.value = '正在等待回复'
+  requestStartedAt.value = Date.now()
+  requestElapsed.value = 0
   elapsedTimer = setInterval(() => {
-    thinkingElapsed.value = Math.floor((Date.now() - thinkingStartTime.value) / 1000)
+    requestElapsed.value = Math.floor((Date.now() - requestStartedAt.value) / 1000)
   }, 200)
 }
 
 function stopProcessingWait() {
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null }
   isProcessing.value = false
-}
-
-function simulateStreaming(msgId: string, fullContent: string): Promise<void> {
-  return new Promise(resolve => {
-    streamingMsgId.value = msgId
-    streamingContent.value = ''
-    let idx = 0
-    const speed = isHttpMode.value ? 12 + Math.random() * 10 : 22 + Math.random() * 18
-
-    streamTimer = setInterval(() => {
-      if (idx < fullContent.length) {
-        const chunkSize = Math.random() > 0.9 ? 4 : (Math.random() > 0.7 ? 2 : 1)
-        streamingContent.value += fullContent.slice(idx, idx + chunkSize)
-        idx += chunkSize
-      } else {
-        if (streamTimer) { clearInterval(streamTimer); streamTimer = null }
-        streamingMsgId.value = null
-        streamingContent.value = ''
-        resolve()
-      }
-    }, speed)
-  })
-}
-
-function getDisplayContent(msg: AIMessage): string {
-  if (msg.id === streamingMsgId.value) return renderMarkdown(streamingContent.value)
-  return renderMarkdown(msg.content)
-}
-
-function isThinkingExpanded(msgId: string): boolean {
-  return expandedThinkingIds.value.has(msgId)
-}
-
-function toggleThinking(msgId: string) {
-  if (expandedThinkingIds.value.has(msgId)) expandedThinkingIds.value.delete(msgId)
-  else expandedThinkingIds.value.add(msgId)
-}
-
-function toggleLiveThinking() {
-  liveThinkingOpen.value = !liveThinkingOpen.value
-}
-
-function toggleToolArgs(key: string) {
-  if (expandedToolArgs.value.has(key)) expandedToolArgs.value.delete(key)
-  else expandedToolArgs.value.add(key)
 }
 
 function pollPipelineTask(msgId: string, toolIndex: number, taskId: string) {
@@ -742,17 +641,12 @@ async function sendMessage(
       }
       stopProcessingWait()
 
-      // HTTP JSON 已携带完整结果：只展示真实耗时和原文，不伪装成增量流。
-      const prose = formatThinkingProse(result.thinking)
-      const duration = result.elapsedSeconds
       const tools = (result.toolCalls || []).map(t => ({ ...t }))
 
       const aiMsg = agentChat.addMessage({
         role: 'assistant',
         content: result.content,
         timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16),
-        thinking: prose,
-        thinkingDuration: duration,
         status: 'done',
         toolCalls: tools,
         parts: result.parts,
@@ -778,24 +672,19 @@ async function sendMessage(
         startTaskPolls(aiMsg.id, tools, result.outcome.run_id)
       }
     } else {
+      startProcessingWait()
       const result = await learningStore.getAIResponseFromApi(apiPayload)
-      const { duration, prose } = await simulateThinking(result.thinking)
+      stopProcessingWait()
       const tools = (result.toolCalls || []).map(t => ({ ...t, status: 'done' as const }))
 
-      const aiMsg = agentChat.addMessage({
+      agentChat.addMessage({
         role: 'assistant',
         content: result.content,
         timestamp: new Date().toISOString().replace('T', ' ').substring(0, 16),
-        thinking: prose,
-        thinkingDuration: duration,
-        status: 'streaming',
+        status: 'done',
         toolCalls: tools,
         artifacts: result.artifacts,
       })
-
-      await simulateStreaming(aiMsg.id, result.content)
-      const target = agentChat.messages.find(m => m.id === aiMsg.id)
-      if (target) target.status = 'done'
     }
 
     selectedExpert.value = null
@@ -806,7 +695,6 @@ async function sendMessage(
       if (userMsg && !inputMessage.value.trim()) inputMessage.value = userMsg
     }
     stopProcessingWait()
-    isThinking.value = false
     const friendly = toFriendlyApiError(e)
     try {
       await agentChat.ensureActiveSession()
@@ -823,7 +711,7 @@ async function sendMessage(
     }
   } finally {
     loading.value = false
-    scrollToBottom()
+    followMessagesIfNeeded()
   }
 }
 
@@ -837,12 +725,8 @@ async function clearChat() {
   clearAllTimers()
   stopAllPolls()
   loading.value = false
-  streamingMsgId.value = null
-  isThinking.value = false
   isProcessing.value = false
-  liveThinkingOpen.value = true
-  thinkingStreamText.value = ''
-  expandedThinkingIds.value = new Set()
+  requestElapsed.value = 0
   selectedExpert.value = null
   interactionMode.value = 'agent'
   workspaceView.value = 'chat'
@@ -864,11 +748,8 @@ async function onSelectConversation(sessionId: string, initialRestore = false) {
   }
   clearAllTimers()
   stopAllPolls()
-  streamingMsgId.value = null
-  isThinking.value = false
   isProcessing.value = false
-  thinkingStreamText.value = ''
-  expandedThinkingIds.value = new Set()
+  requestElapsed.value = 0
   selectedExpert.value = null
   interactionMode.value = 'agent'
   workspaceView.value = 'chat'
@@ -1095,7 +976,8 @@ function displayThinkingParas(thinking: string): string[] {
         >重新读取这段对话</button>
       </p>
 
-      <div ref="messagesContainer" class="ai-messages" :class="{ 'ai-messages--empty': isEmptyChat }">
+      <div class="ai-message-area">
+      <div ref="messagesContainer" class="ai-messages" :class="{ 'ai-messages--empty': isEmptyChat }" @scroll="onMessagesScroll">
         <template v-if="isInitialState">
           <div class="welcome">
             <Welcome
@@ -1171,8 +1053,6 @@ function displayThinkingParas(thinking: string): string[] {
                         :compact-evidence="isHttpMode"
                         :message="msg"
                         :session-id="agentChat.activeSessionId"
-                        :is-streaming="msg.id === streamingMsgId"
-                        :streaming-text="streamingContent"
                         @upgrade="applyUpgradeHint"
                         @action-plan-start="startActionPlan"
                       />
@@ -1217,44 +1097,15 @@ function displayThinkingParas(thinking: string): string[] {
                         @refresh="refreshTaskRunMessage"
                         @read-saved-plan="task.readSavedAgentRunPlan"
                       />
-                      <span v-if="msg.id === streamingMsgId" class="cursor" aria-hidden="true" />
                     </div>
                   </template>
                 </Bubble>
               </div>
             </template>
 
-            <!-- mock 思考独白 -->
-            <div v-if="isThinking" class="msg msg--assistant">
-              <AgentMark :size="28" class="msg__avatar--pulse" />
-              <div class="msg__stack">
-                <Thinking v-model="liveThinkingOpen" class="ai-thinking" status="thinking" :auto-collapse="false" :content="thinkingStreamText">
-                  <template #label><span class="thought__shimmer">正在思考 · {{ thinkingElapsed }}s</span></template>
-                  <template #content>
-                    <p v-for="(para, pi) in thinkingStreamText.split('\n\n').filter(Boolean)" :key="`live-t-${pi}`" class="thought__p">{{ para }}</p>
-                    <span class="thought__cursor" aria-hidden="true" />
-                  </template>
-                </Thinking>
-              </div>
-            </div>
-
-            <div v-if="isProcessing&&taskCompanionEnabled" class="msg msg--assistant" role="status">
-              <AgentMark :size="28"/><p>正在等待本次回复</p>
-            </div>
-            <!-- Legacy HTTP presentation remains available outside the staged task capability. -->
-            <div v-if="isProcessing&&!taskCompanionEnabled" class="msg msg--assistant">
-              <AgentMark :size="28" class="msg__avatar--pulse" />
-              <div class="msg__stack">
-                <div class="thought thought--live thought--open">
-                  <div class="thought__toggle thought__toggle--static">
-                    <span class="thought__label thought__label--live">
-                      <span class="thought__shimmer">{{ processingLabel }}</span>
-                    </span>
-                    <span class="thought__timer">{{ thinkingElapsed }}s</span>
-                  </div>
-                  <p class="thought__p thought__p--plain">正在分析问题与上下文…</p>
-                </div>
-              </div>
+            <div v-if="isProcessing" class="msg msg--assistant ai-request-status" role="status" aria-live="polite">
+              <AgentMark :size="28" />
+              <p>{{ processingLabel }} · {{ requestElapsed }}s</p>
             </div>
           </div>
             <TaskNextActions v-if="taskCompanionEnabled"/>
@@ -1267,6 +1118,17 @@ function displayThinkingParas(thinking: string): string[] {
               <button type="button" :disabled="task.runControlBusy" @click="refreshTaskRunMessage(task.activeRunId)">重新读取任务记录</button>
             </p>
           </template>
+      </div>
+      <button
+        v-if="showJumpToLatest"
+        type="button"
+        class="ai-jump-latest"
+        aria-label="回到最新消息"
+        @click="scrollToBottom"
+      >
+        <Icon icon="lucide:arrow-down" :width="15" />
+        <span>回到最新</span>
+      </button>
       </div>
 
       <div class="ai-composer" @keydown.esc="closeComposerMenu">
@@ -1677,8 +1539,11 @@ function displayThinkingParas(thinking: string): string[] {
 }
 .ai-topbar__reset--new { display: none; }
 
+.ai-message-area { position: relative; display: flex; flex: 1; min-height: 0; }
+
 .ai-messages {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 12px 20px 28px;
   scroll-behavior: smooth;
@@ -1690,7 +1555,31 @@ function displayThinkingParas(thinking: string): string[] {
   justify-content: center;
 }
 
-.ai-main--empty .ai-messages { flex: 0 0 auto; overflow: visible; width: 100%; margin-top: auto; padding-bottom: 0; box-sizing: border-box; }
+.ai-main--empty .ai-message-area { flex: 0 0 auto; width: 100%; margin-top: auto; }
+.ai-main--empty .ai-messages { flex: 0 0 auto; overflow: visible; width: 100%; margin-top: 0; padding-bottom: 0; box-sizing: border-box; }
+.ai-jump-latest {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  bottom: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 15px;
+  transform: translateX(-50%);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 0 4px 16px rgba(30, 33, 36, .14);
+  font-size: 13px;
+  cursor: pointer;
+}
+.ai-jump-latest:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.ai-jump-latest:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+.ai-request-status { align-items: center; gap: 10px; color: var(--color-text-muted); font-size: 13px; }
+.ai-request-status p { margin: 0; }
 .ai-main--empty .ai-composer { width: 100%; margin-bottom: auto; padding-top: 0; box-sizing: border-box; }
 .ai-main--empty .ai-composer__box { max-width: 800px; }
 .ai-main--empty .ai-composer__input { min-height: 94px; }
@@ -1897,131 +1786,6 @@ function displayThinkingParas(thinking: string): string[] {
   color: var(--color-secondary);
   text-decoration: underline;
   text-underline-offset: 2px;
-}
-
-.cursor {
-  display: inline-block;
-  width: 2px;
-  height: 1em;
-  margin-left: 2px;
-  vertical-align: text-bottom;
-  background: var(--color-text);
-  animation: blink 1s step-end infinite;
-}
-
-@keyframes blink {
-  50% { opacity: 0; }
-}
-
-.thought {
-  margin: 0;
-  max-width: 40rem;
-}
-
-.thought__toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 0;
-  border: none;
-  background: transparent;
-  color: var(--color-text-muted);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1.4;
-  cursor: pointer;
-  user-select: none;
-}
-
-.thought__toggle--static {
-  cursor: default;
-}
-
-.thought__toggle:hover {
-  color: var(--color-text);
-}
-
-.thought__chevron {
-  flex-shrink: 0;
-  opacity: 0.7;
-  transition: transform 180ms ease;
-}
-
-.thought--open .thought__chevron {
-  transform: rotate(90deg);
-}
-
-.thought__label--live {
-  display: inline-flex;
-  align-items: center;
-}
-
-.thought__shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--color-text-muted) 0%,
-    var(--color-text) 45%,
-    var(--color-text-muted) 90%
-  );
-  background-size: 200% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: thought-shimmer 1.8s ease-in-out infinite;
-}
-
-@keyframes thought-shimmer {
-  0% { background-position: 100% 0; }
-  100% { background-position: -100% 0; }
-}
-
-.thought__timer {
-  margin-left: 8px;
-  font-size: 12px;
-  font-weight: 400;
-  font-variant-numeric: tabular-nums;
-  color: var(--color-text-subtle);
-}
-
-.thought__body {
-  margin-top: 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--parchment-300) 40%, var(--color-surface));
-  animation: fadein 180ms ease-out;
-}
-
-.thought__p {
-  margin: 0 0 0.65em;
-  font-size: 13px;
-  line-height: 1.65;
-  color: var(--color-text-muted);
-  font-style: normal;
-  text-wrap: pretty;
-}
-
-.thought__p--plain {
-  margin-top: 6px;
-  padding: 0;
-  font-style: normal;
-}
-
-.thought__p:last-child { margin-bottom: 0; }
-
-.thought--live .thought__body {
-  max-height: 200px;
-  overflow: hidden;
-  mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
-}
-
-.thought__cursor {
-  display: inline-block;
-  width: 0.4em;
-  height: 0.85em;
-  margin-left: 1px;
-  vertical-align: text-bottom;
-  background: var(--color-text-subtle);
-  animation: blink 1s step-end infinite;
 }
 
 .tool-row {
@@ -2502,6 +2266,7 @@ function displayThinkingParas(thinking: string): string[] {
     gap: 10px;
   }
   .ai-main--empty .ai-messages { padding-top: 18px; }
+  .ai-jump-latest { bottom: 8px; min-height: 40px; }
   .ai-main--empty .ai-composer__input { min-height: 85px; }
   .welcome__shortcuts { margin-top: 18px; }
   .composer-menu { left: 12px; bottom: 78px; }

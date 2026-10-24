@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, type Component } from 'vue'
+import { computed, type Component } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { AIMessage, MessagePart } from '@/types'
 import { renderMarkdown } from '@/utils/markdown'
@@ -23,8 +23,6 @@ const emit = defineEmits<{
   upgrade: [to?: string]
   actionPlanStart: [handoffId: string]
 }>()
-
-const thinkingOpen = ref(false)
 
 // ── Part 分发表：新增 part 类型只需加一行 ──
 const PART_COMPONENTS: Record<string, Component> = {
@@ -97,16 +95,6 @@ function displayText(part: MessagePart): string {
   return part.text || ''
 }
 
-function thoughtLabel(seconds?: number): string {
-  if (seconds == null || seconds <= 0) return '思考过程'
-  const n = Math.max(1, Math.round(Number(seconds)))
-  return `思考了 ${n} 秒`
-}
-
-function thinkingParas(text?: string): string[] {
-  return String(text || '').split(/\n{2,}/).map(s => s.trim()).filter(Boolean)
-}
-
 function outcomeLabel(): string {
   const outcome = props.message.outcome
   if (!outcome) return ''
@@ -141,24 +129,6 @@ function outcomeLabel(): string {
       :class="`outcome-notice--${message.outcome?.status}`"
       role="status"
     >{{ outcomeLabel() }}</div>
-    <div
-      v-if="message.thinking"
-      class="thought"
-      :class="{ 'thought--open': thinkingOpen }"
-    >
-      <button type="button" class="thought__toggle" @click="thinkingOpen = !thinkingOpen">
-        <Icon class="thought__chevron" icon="lucide:chevron-right" :width="13" />
-        <span class="thought__label">{{ thoughtLabel(message.thinkingDuration) }}</span>
-      </button>
-      <div v-if="thinkingOpen" class="thought__body">
-        <p
-          v-for="(para, pi) in thinkingParas(message.thinking)"
-          :key="`${message.id}-t-${pi}`"
-          class="thought__p"
-        >{{ para }}</p>
-      </div>
-    </div>
-
     <template v-for="block in readingBlocks" :key="`${message.id}-block-${block.items[0]?.index}`">
       <section v-if="block.process" class="message-process" aria-label="处理步骤">
         <h3 class="message-process__title">处理步骤</h3>
@@ -333,41 +303,6 @@ function outcomeLabel(): string {
   color: #111827;
   line-height: 1.7;
   font-size: 14px;
-}
-
-.thought {
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.78);
-  overflow: hidden;
-}
-
-.thought__toggle {
-  width: 100%;
-  border: 0;
-  background: transparent;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 8px 10px;
-  color: #64748b;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.thought--open .thought__chevron {
-  transform: rotate(90deg);
-}
-
-.thought__body {
-  padding: 0 10px 10px;
-}
-
-.thought__p {
-  margin: 6px 0 0;
-  color: #475569;
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 .upgrade-hint,

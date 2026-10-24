@@ -261,6 +261,23 @@ test('only HTTP student assistant opts in; shared callers retain the default pre
   }
 })
 
+test('raw reasoning fields are never rendered, while the assistant page uses truthful request status', async () => {
+  const privateReasoning = 'PRIVATE_CHAIN_SHOULD_NOT_APPEAR'
+  const html = await render('MessagePartsRenderer', {
+    message: message([{ type: 'text', text: 'Visible answer' }], { thinking: privateReasoning, thinkingDuration: 9 }),
+    presentation: 'student',
+  })
+  assert.ok(html.includes('Visible answer'))
+  assert.ok(!html.includes(privateReasoning))
+
+  const page = read('../src/views/student/AIAssistant.vue')
+  assert.doesNotMatch(page, /simulateThinking|simulateStreaming|PRIVATE_CHAIN/)
+  assert.match(page, /ai-request-status" role="status"/)
+  assert.match(page, /showJumpToLatest/)
+  assert.match(page, /onMessagesScroll/)
+
+})
+
 test('legacy generated task placeholder is friendly, while ordinary student text and model paragraphs are untouched', async () => {
   const source = read('../src/views/student/AIAssistant.vue')
   const fn = source.slice(source.indexOf('function displayUserText('), source.indexOf('function displayUserAttachments('))
@@ -290,7 +307,7 @@ test('composer cannot accept a draft before the requested session has finished r
   const noop = () => {}
   globalThis.__assistantStartupTest = { agentChat, route: { query: { session_id: 'requested' } }, onMounted: fn => { mounted = fn }, window: { matchMedia: () => ({ matches: false }) }, getApiMode: () => 'http' }
   const harness = `import {ref,nextTick,watch} from 'vue'; const {agentChat,route,onMounted,window,getApiMode}=globalThis.__assistantStartupTest; const taskCompanionEnabled=false;
-    const inputMessage=ref(''), loading=ref(false), isHttpMode=ref(true), workspaceView=ref('chat'), sidebarOpen=ref(true),streamingMsgId=ref(null),isThinking=ref(false),isProcessing=ref(false),thinkingStreamText=ref(''),expandedThinkingIds=ref(new Set()),selectedExpert=ref(null),interactionMode=ref('agent');
+    const inputMessage=ref(''), loading=ref(false), isHttpMode=ref(true), workspaceView=ref('chat'), sidebarOpen=ref(true),isProcessing=ref(false),requestElapsed=ref(0),selectedExpert=ref(null),interactionMode=ref('agent');
     const clearAllTimers=()=>{},stopAllPolls=()=>{},closeComposerMenu=()=>{},scrollToBottom=()=>{},setInteractionMode=()=>{};
     ${stateDeclaration}\n${select}\n${mount}\nexport {inputMessage}; export const restoring=typeof composerRestoring==='undefined'?undefined:composerRestoring;`
   const code = (await transform(harness, { loader: 'ts', format: 'esm' })).code.replace(/from "vue"/g, `from ${JSON.stringify(import.meta.resolve('vue'))}`)
