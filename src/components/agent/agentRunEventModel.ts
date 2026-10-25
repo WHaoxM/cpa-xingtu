@@ -5,11 +5,13 @@ export type AgentRunTimelineTone = 'neutral' | 'success' | 'warning' | 'error'
 
 export type AgentRunTimelineItem = {
   id: string
+  eventSeq: number
   eventType: string
   occurredAt: string
   title: string
   detail?: string
   tone: AgentRunTimelineTone
+  kind?: 'tool_call'
 }
 
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'partial'])
@@ -78,17 +80,207 @@ function agentLabel(value: unknown): string {
   return known[agent] || '业务专家'
 }
 
+const TOOL_CALL_ID = /^[A-Za-z0-9_.:-]{1,128}$/u
+const TOOL_LABELS: Record<string, string> = {
+  career_data_read: '读取当前任务允许的职业资料',
+}
+const TOOL_ERROR_DETAILS: Record<string, string> = {
+  permission_denied: '这次调用未获得所需权限。',
+  tool_timeout: '工具等待超时，未得到可确认结果。',
+  tool_connection_error: '工具连接失败，未得到可确认结果。',
+  tool_execution_error: '工具执行未完成。',
+  tool_output_truncated: '结果过长，系统未能完整接收。',
+  tool_result_missing: '执行记录未包含工具返回结果。',
+  invalid_tool_call_id: '工具返回与本次调用不匹配，未采用该结果。',
+  tool_call_id_conflict: '工具返回与本次调用不匹配，未采用该结果。',
+}
+
+type ToolCallEvent = {
+  event: AgentRunEvent
+  payload: Record<string, unknown>
+  phase: 'started' | 'settled'
+}
+
+type ToolCallGroup = {
+  identity: string
+  started?: ToolCallEvent
+  settled?: ToolCallEvent
+}
+
+function validToolCallEvent(event: AgentRunEvent): ToolCallEvent | null {
+  const phase = event.event_type === 'run.tool_call_started'
+    ? 'started'
+    : event.event_type === 'run.tool_call_settled' ? 'settled' : null
+  if (!phase) return null
+  const payload = asRecord(event.payload)
+  const schemaVersion = payload.schema_version
+  const modelIteration = payload.model_iteration
+  if ((schemaVersion !== 1 && schemaVersion !== 2)
+    || (schemaVersion === 2 && (!Number.isInteger(modelIteration) || Number(modelIteration) < 1 || Number(modelIteration) > 6))
+    || (modelIteration !== undefined && (!Number.isInteger(modelIteration) || Number(modelIteration) < 1 || Number(modelIteration) > 6))
+    || typeof payload.turn_id !== 'string' || !/^turn_[a-f0-9]{32}$/u.test(payload.turn_id)
+    || typeof payload.assistant_message_id !== 'string' || !/^msg_[a-f0-9]{32}$/u.test(payload.assistant_message_id)
+    || typeof payload.tool_call_id !== 'string' || !TOOL_CALL_ID.test(payload.tool_call_id)
+    || typeof payload.tool_name !== 'string' || !/^[a-z][a-z0-9_]{0,63}$/u.test(payload.tool_name)
+    || !Number.isInteger(payload.plan_version) || Number(payload.plan_version) < 1
+    || !Number.isInteger(payload.contract_revision) || Number(payload.contract_revision) < 0
+    || !Number.isInteger(payload.step_index) || Number(payload.step_index) < 1
+    || !Number.isInteger(payload.attempt) || Number(payload.attempt) < 1) return null
+
+  if (phase === 'started') {
+    const summary = asRecord(payload.input_summary)
+    if (payload.status !== 'started'
+      || !Number.isInteger(summary.argument_count)
+      || Number(summary.argument_count) < 0 || Number(summary.argument_count) > 256
+      || !Array.isArray(summary.argument_names)
+      || summary.argument_names.length > 32
+      || summary.argument_names.some(name => typeof name !== 'string' || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(name))) return null
+  } else {
+    const status = safeLabel(payload.status, 32)
+    const summary = asRecord(payload.output_summary)
+    if (!/^[a-z_]{1,32}$/u.test(status)
+      || !['json_object', 'json_array', 'text', 'empty'].includes(String(summary.result_kind))
+      || !Number.isInteger(summary.output_bytes) || Number(summary.output_bytes) < 0 || Number(summary.output_bytes) > 10 * 1024 * 1024
+      || !Number.isInteger(summary.field_count) || Number(summary.field_count) < 0 || Number(summary.field_count) > 256
+      || !Number.isInteger(summary.attempts) || Number(summary.attempts) < 0 || Number(summary.attempts) > 4
+      || (summary.error_code !== null && typeof summary.error_code !== 'string')) return null
+  }
+  return { event, payload, phase }
+}
+
+function toolCallIdentity(payload: Record<string, unknown>, runId: string): string {
+  return JSON.stringify([
+    runId,
+    payload.turn_id,
+    payload.assistant_message_id,
+    payload.tool_call_id,
+    payload.model_iteration ?? null,
+    payload.plan_version,
+    payload.contract_revision,
+    payload.step_index,
+    payload.attempt,
+    payload.tool_name,
+  ])
+}
+
+function toolResultKind(value: unknown): string {
+  return ({
+    json_object: '对象结果',
+    json_array: '列表结果',
+    text: '文本结果',
+    empty: '空结果',
+  } as Record<string, string>)[String(value)] || '结果结构待核验'
+}
+
+function toolStatusLabel(status: unknown): { label: string; tone: AgentRunTimelineTone; detail: string } {
+  switch (status) {
+    case 'succeeded': return { label: '已完成', tone: 'success', detail: '工具调用已完成。' }
+    case 'failed': return { label: '未完成', tone: 'error', detail: '工具调用未完成。' }
+    case 'denied': return { label: '权限不足', tone: 'warning', detail: '工具调用因权限限制未完成。' }
+    case 'partial': return { label: '部分结果', tone: 'warning', detail: '工具返回了部分结果。' }
+    case 'unavailable': return { label: '暂不可用', tone: 'warning', detail: '工具当前不可用。' }
+    case 'needs_input':
+    case 'approval_required': return { label: '需要补充', tone: 'warning', detail: '工具需要补充信息后才能继续。' }
+    case 'started':
+    case 'running':
+    case 'pending':
+    case 'queued': return { label: '处理中', tone: 'neutral', detail: '工具调用仍在处理中，尚未确认完成。' }
+    default: return { label: '状态待核验', tone: 'warning', detail: '工具调用状态待核验，尚未确认结果。' }
+  }
+}
+
+function unresolvedToolDetail(runStatus: string): string {
+  if (isAgentRunActive(runStatus) || needsAgentRunAttention(runStatus)) {
+    return '已发起调用；当前执行记录尚未包含工具结果。'
+  }
+  if (runStatus === 'paused') return '任务已暂停；当前执行记录尚未包含工具结果。'
+  if (isAgentRunTerminal(runStatus)) return '任务已结束；当前执行记录没有这次调用的结果。'
+  return '已发起调用；结果暂未在执行记录中核实。'
+}
+
+function toolCallItem(group: ToolCallGroup, runStatus: string): AgentRunTimelineItem {
+  const start = group.started
+  const settled = group.settled
+  const event = settled?.event || start!.event
+  const payload = settled?.payload || start!.payload
+  const startSummary = asRecord(start?.payload.input_summary)
+  const inputCount = Number.isInteger(startSummary.argument_count) ? Number(startSummary.argument_count) : null
+  const inputDetail = inputCount === null ? '' : `输入摘要：${inputCount} 项`
+  let tone: AgentRunTimelineTone = 'warning'
+  let outputDetail = ''
+  let errorDetail = ''
+
+  if (!settled) {
+    tone = isAgentRunActive(runStatus) || needsAgentRunAttention(runStatus) ? 'neutral' : 'warning'
+    outputDetail = unresolvedToolDetail(runStatus)
+  } else {
+    const status = toolStatusLabel(settled.payload.status)
+    tone = status.tone
+    outputDetail = status.detail
+    const summary = asRecord(settled.payload.output_summary)
+    const kind = toolResultKind(summary.result_kind)
+    const fieldCount = Number.isInteger(summary.field_count) ? Number(summary.field_count) : 0
+    const shape = fieldCount > 0 ? `${kind}，${fieldCount} 个字段` : kind
+    outputDetail += ` 结果结构：${shape}。`
+    const errorCode = safeLabel(summary.error_code, 64)
+    errorDetail = ['failed', 'denied', 'unavailable'].includes(String(settled.payload.status))
+      ? TOOL_ERROR_DETAILS[errorCode] || ''
+      : ''
+  }
+
+  const toolName = String(payload.tool_name)
+  return {
+    id: `tool-call:${start?.event.event_seq ?? event.event_seq}`,
+    eventSeq: start?.event.event_seq ?? event.event_seq,
+    eventType: settled ? 'run.tool_call_settled' : 'run.tool_call_started',
+    occurredAt: event.occurred_at,
+    title: TOOL_LABELS[toolName] || 'Agent 工具调用',
+    detail: [outputDetail, inputDetail, errorDetail].filter(Boolean).join(' '),
+    tone,
+    kind: 'tool_call',
+  }
+}
+
+/** Build a per-run timeline; pair tool events only when their complete stable identity matches. */
+export function toAgentRunTimelineItems(
+  events: AgentRunEvent[],
+  runId = '',
+  runStatus = '',
+): AgentRunTimelineItem[] {
+  const groups = new Map<string, ToolCallGroup>()
+  const projected: AgentRunTimelineItem[] = []
+  for (const event of mergeAgentRunEvents([], events)) {
+    if (event.event_type === 'run.tool_call_started' || event.event_type === 'run.tool_call_settled') {
+      const call = validToolCallEvent(event)
+      if (!call) continue
+      const identity = toolCallIdentity(call.payload, runId)
+      const group = groups.get(identity) || { identity }
+      if (call.phase === 'started' && !group.started) group.started = call
+      if (call.phase === 'settled' && !group.settled) group.settled = call
+      groups.set(identity, group)
+      continue
+    }
+    const item = toAgentRunTimelineItem(event, runId)
+    if (item) projected.push(item)
+  }
+  for (const group of groups.values()) projected.push(toolCallItem(group, runStatus))
+  return projected.sort((a, b) => a.eventSeq - b.eventSeq)
+}
+
 /** Project only allow-listed, user-safe event facts. Unknown payload fields stay hidden. */
 export function toAgentRunTimelineItem(event: AgentRunEvent, runId = ''): AgentRunTimelineItem | null {
   const payload = asRecord(event.payload)
   const base = {
     id: String(event.event_seq),
+    eventSeq: event.event_seq,
     eventType: event.event_type,
     occurredAt: event.occurred_at,
     tone: 'neutral' as AgentRunTimelineTone,
   }
   const step = stepNumber(payload)
   switch (event.event_type) {
+    case 'run.tool_call_started':
+    case 'run.tool_call_settled': return null
     case 'run.submitted': return { ...base, title: '任务已提交' }
     case 'run.planning': return { ...base, title: '正在准备计划' }
     case 'run.plan_created': return { ...base, title: '计划已生成' }

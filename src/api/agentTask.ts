@@ -33,7 +33,7 @@ export type AgentRunControlSnapshot = {
   task_contract?:{revision:number;goal:string;deliverables:string[];constraints:string[];acceptance_criteria:string[]}|null
   current_plan?:AgentRunTaskPlan|null
   saved_artifacts?:{confirmation_id:string;artifact_id:string;contract_revision:number;plan_version:number;plan_sha256:string;saved_at:string|null}[]
-  final_result?:{reply?:string;result_ref?:string}|null
+  final_result?:{reply?:string;result_ref?:string;assistant_message_id?:string}|null
   final_result_checkpoint?:boolean
 }
 export type AgentRunEvent = {

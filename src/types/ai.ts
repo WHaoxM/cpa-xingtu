@@ -194,6 +194,8 @@ export interface AIMessage {
   artifacts?: ArtifactRef[]
   turnId?: string
   outcome?: TurnOutcome
+  /** Durable Agent run identity for server-backed task replies. */
+  agentRunId?: string
   attachments?: AIMessageAttachment[]
   interactionMode?: InteractionMode | string
   upgradeHint?: AgentUpgradeHint

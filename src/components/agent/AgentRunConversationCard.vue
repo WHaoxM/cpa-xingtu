@@ -100,6 +100,7 @@ watch(() => props.run?.status || props.fallbackStatus, () => {
       <AgentRunTimeline
         :events="events"
         :run-id="runId"
+        :run-status="run?.status || fallbackStatus"
         :sync-state="syncState"
         :sync-error="syncError"
       />

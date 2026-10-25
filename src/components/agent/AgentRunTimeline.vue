@@ -1,18 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AgentRunEvent } from '@/api/agentTask'
-import { toAgentRunTimelineItem } from './agentRunEventModel'
+import { toAgentRunTimelineItems } from './agentRunEventModel'
 
 const props = defineProps<{
   events: AgentRunEvent[]
   runId?: string
+  runStatus?: string
   syncState: 'idle' | 'loading' | 'syncing' | 'synced' | 'stale' | 'error'
   syncError?: string
 }>()
 
-const items = computed(() => props.events
-  .map(event => toAgentRunTimelineItem(event, props.runId))
-  .filter(item => item !== null))
+const items = computed(() => toAgentRunTimelineItems(props.events, props.runId, props.runStatus))
 
 function eventTime(value: string): string {
   const date = new Date(value)

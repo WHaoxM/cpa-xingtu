@@ -92,6 +92,9 @@ const isEmptyChat = computed(() => isInitialState.value && !visibleAgentRunState
 const isHttpMode = computed(() => getApiMode() === 'http')
 function taskRunIdForMessage(message: AIMessage): string {
   if (!taskCompanionEnabled || interactionMode.value !== 'agent') return ''
+  const agentRunId = message.agentRunId
+  if (agentRunId && (task.activeRunId === agentRunId
+    || task.context?.turns?.some(turn => turn.run_id === agentRunId))) return agentRunId
   for (const prefix of ['task-user-', 'task-reply-']) {
     if (message.id.startsWith(prefix)) return message.id.slice(prefix.length)
   }
@@ -106,9 +109,10 @@ function shouldShowTaskRunCard(message: AIMessage): boolean {
   if (message.id.startsWith('task-reply-')) return true
   if (message.id.startsWith('task-user-')) {
     return !messages.value.some(candidate => candidate.role === 'assistant'
-      && (candidate.id === `task-reply-${runId}` || candidate.outcome?.run_id === runId))
+      && (candidate.id === `task-reply-${runId}` || candidate.outcome?.run_id === runId
+        || candidate.agentRunId === runId))
   }
-  return message.role === 'assistant' && message.outcome?.run_id === runId
+  return message.role === 'assistant' && (message.outcome?.run_id === runId || message.agentRunId === runId)
 }
 function taskRunSnapshotForMessage(message: AIMessage) {
   const runId = taskRunIdForMessage(message)

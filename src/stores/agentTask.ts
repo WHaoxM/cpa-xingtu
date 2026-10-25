@@ -226,6 +226,7 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
    const known=runControlSnapshot.value?.run_id===run.run_id?runControlSnapshot.value:timeline.run
    const latest=mergeAgentRunSnapshots(known,run)
    runReadSeq++;runControlSnapshot.value=latest;timeline.run=latest
+    upsertAgentRunFinalReply(latest)
   const pendingSaves=readPendingAgentRunOperations().filter(row=>row.ownerId===owner()&&row.sessionId===sid&&row.runId===run.run_id&&row.kind==='save')
   for(const operation of pendingSaves){
    const receipt=(run.saved_artifacts||[]).find(item=>item.contract_revision===operation.contractRevision&&item.plan_version===operation.planVersion&&(!operation.planSha256||item.plan_sha256===operation.planSha256))
@@ -250,6 +251,7 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
    const known=runControlSnapshot.value?.run_id===runId?runControlSnapshot.value:timeline.run
    const run=mergeAgentRunSnapshots(known,incoming)
    runControlSnapshot.value=run;timeline.run=run
+    upsertAgentRunFinalReply(run)
    const saves=readPendingAgentRunOperations().filter(row=>row.ownerId===requestedOwner&&row.sessionId===sid&&row.runId===runId&&row.kind==='save')
    let receiptFound=false
    for(const operation of saves){
@@ -293,6 +295,7 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
      const knownRun=runControlSnapshot.value?.run_id===runId?runControlSnapshot.value:state.run
      const currentRun=mergeAgentRunSnapshots(knownRun,page.run)
      state.events=appended.events;state.cursor=appended.cursor;state.latestSeq=page.latest_seq;state.run=currentRun
+      upsertAgentRunFinalReply(currentRun)
      if(runId===activeRunId.value&&runCurrent(e,sid,runId))applyRunSnapshot(currentRun,e,sid)
      if(page.has_more){
       if(!page.events.length)throw Error('任务执行记录分页没有前进')
@@ -613,12 +616,38 @@ export const useAgentTaskStore=defineStore('agentTask',()=>{
  function hydrate(){
   for(const turn of context.value?.turns||[]){
    if(!chat.messages.some(m=>m.id==='task-user-'+turn.run_id))chat.addMessage({id:'task-user-'+turn.run_id,role:'user',content:turn.message,timestamp:turn.created_at,status:'done'})
-   const existing=chat.messages.find(m=>m.id==='task-reply-'+turn.run_id)
-   if(turn.reply&&!existing)chat.addMessage({id:'task-reply-'+turn.run_id,role:'assistant',content:turn.reply,
-    parts:parts(turn.reply,turn.evidence_summary),timestamp:turn.created_at,status:'done'})
-   else if(turn.reply&&existing&&turn.status==='failed'){existing.content=turn.reply;existing.parts=parts(turn.reply,turn.evidence_summary)}
+    const existing=chat.messages.find(m=>m.id==='task-reply-'+turn.run_id||m.agentRunId===turn.run_id)
+    if(turn.reply&&!existing)chat.addMessage({id:'task-reply-'+turn.run_id,role:'assistant',content:turn.reply,
+     parts:parts(turn.reply,turn.evidence_summary),timestamp:turn.created_at,status:'done',agentRunId:turn.run_id})
+    else if(turn.reply&&existing){existing.content=turn.reply;existing.parts=parts(turn.reply,turn.evidence_summary);existing.agentRunId=turn.run_id}
   }
  }
+  function upsertAgentRunFinalReply(run:AgentRunControlSnapshot){
+   if(run.status!=='completed')return
+   const reply=run.final_result?.reply?.trim()
+   if(!reply)return
+   const legacyId='task-reply-'+run.run_id
+   const finalMessageId=typeof run.final_result?.assistant_message_id==='string'
+    &&/^msg_[a-f0-9]{32}$/.test(run.final_result.assistant_message_id)
+    ?run.final_result.assistant_message_id:legacyId
+   const candidates=chat.messages.filter(message=>message.role==='assistant'
+    &&(message.id===legacyId||message.id===finalMessageId||message.agentRunId===run.run_id))
+   const existing=candidates.find(message=>message.id===finalMessageId)
+    ||candidates.find(message=>message.agentRunId===run.run_id)||candidates[0]
+   if(!existing){
+    chat.addMessage({id:finalMessageId,role:'assistant',content:reply,timestamp:new Date().toISOString().replace('T',' ').substring(0,16),
+     status:'done',agentRunId:run.run_id,parts:[{type:'text',text:reply}]})
+    return
+   }
+   existing.id=finalMessageId;existing.agentRunId=run.run_id;existing.content=reply;existing.status='done'
+   const existingParts=existing.parts||[]
+   existing.parts=[{type:'text',text:reply},...existingParts.filter(part=>part.type!=='text')]
+   for(const duplicate of candidates){
+    if(duplicate===existing)continue
+    const index=chat.messages.indexOf(duplicate)
+    if(index>=0)chat.messages.splice(index,1)
+   }
+  }
  async function restore(preferredRun?:AgentRunControlSnapshot|string,startPolling=true){
   const sid=sessionId.value||chat.activeSessionId
   if(!sid||!owner())return

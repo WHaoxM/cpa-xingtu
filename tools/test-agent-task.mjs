@@ -15,7 +15,7 @@ const settle=async()=>{for(let i=0;i<12;i++){await Promise.resolve();await vue.n
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve}}
 const runSnapshot=(runId,status='completed',extra={})=>({run_id:runId,status,current_contract_revision:0,current_plan_version:0,
  task_contract:null,current_plan:null,saved_artifacts:[],final_result:null,...extra})
-const runEvent=(event_seq,event_type)=>({event_seq,event_type,run_status:'running',payload:{},occurred_at:'2026-10-24T10:00:00Z'})
+const runEvent=(event_seq,event_type,payload={},run_status='running')=>({event_seq,event_type,run_status,payload,occurred_at:'2026-10-24T10:00:00Z'})
 const eventPage=(runId,status,events=[],afterSeq=0)=>{const cursor=events.at(-1)?.event_seq??afterSeq;return {data:{run:runSnapshot(runId,status),events,cursor,latest_seq:cursor,has_more:false}}}
 async function setup(overrides={}){
  pinia.setActivePinia(pinia.createPinia())
@@ -130,6 +130,44 @@ test('refresh restores pending server selection; send consumes that selection wi
  await t.task.restore();assert.deepEqual(t.task.attachments,[])
 })
 
+test('refresh uses the durable final assistant message ID and does not duplicate old run replies',async()=>{
+ const finalMessageId=`msg_${'c'.repeat(32)}`
+ const t=await setup({
+  readTaskContext:async()=>({data:{task:{revision:4,active_run_id:'run_new',last_run_id:'run_new',turns:[
+   {run_id:'run_old',message:'旧任务',reply:'旧任务回答',status:'completed',created_at:'2026-10-23T10:00:00Z'},
+   {run_id:'run_new',message:'新任务',reply:'最终答复',status:'completed',created_at:'2026-10-24T10:00:00Z'},
+  ]}}}),
+  readTaskRun:async run=>({data:{run:runSnapshot(run,'completed',run==='run_new'
+   ?{final_result:{reply:'最终答复',assistant_message_id:finalMessageId}}
+   :{final_result:{reply:'旧任务回答'}})}}),
+ })
+ await t.task.restore();await settle()
+ const final=t.chat.messages.filter(message=>message.content==='最终答复')
+ assert.equal(final.length,1)
+ assert.equal(final[0].id,finalMessageId)
+ assert.equal(final[0].agentRunId,'run_new')
+ assert.equal(t.chat.messages.filter(message=>message.content==='旧任务回答').length,1)
+ assert.ok(t.chat.messages.some(message=>message.id==='task-reply-run_old'))
+ await t.task.restore();await settle()
+ assert.equal(t.chat.messages.filter(message=>message.content==='最终答复').length,1)
+ assert.equal(t.chat.messages.filter(message=>message.content==='旧任务回答').length,1)
+})
+
+test('an incomplete checkpoint does not create a final assistant message',async()=>{
+ const t=await setup({
+  readTaskContext:async()=>({data:{task:{revision:1,active_run_id:'run_checkpoint',last_run_id:'run_checkpoint',
+   active_run_status:'paused',turns:[{run_id:'run_checkpoint',message:'任务',status:'paused',created_at:'2026-10-24T10:00:00Z'}]}}}),
+  readTaskRun:async run=>({data:{run:runSnapshot(run,'paused',{final_result_checkpoint:true,
+   final_result:{reply:'checkpoint only',assistant_message_id:`msg_${'d'.repeat(32)}`}})}}),
+  readTaskEvents:async(run,cursor)=>eventPage(run,'paused',[],cursor),
+  recoverClassifiedAgentRunFollowup:async run=>({data:{operation_status:'none',request:null,classification:null,result:null,
+   run:{run:runSnapshot(run,'paused',{final_result_checkpoint:true,
+    final_result:{reply:'checkpoint only',assistant_message_id:`msg_${'d'.repeat(32)}`}})}}}),
+ })
+ await t.task.restore();await settle()
+ assert.equal(t.chat.messages.some(message=>message.content==='checkpoint only'),false)
+})
+
 test('accepted task consumes only the submitted attachment; a newer persisted selection survives',async()=>{
  let stored={revision:3,composer_files:[{file_id:'sent_file',name:'sent.pdf',status:'ready'}],turns:[]}
  const attachments=vue.ref([]),submitted=[]
@@ -239,6 +277,37 @@ test('incremental run polling uses the authoritative cursor, not a guessed field
  globalThis.setTimeout=(callback,_milliseconds,...args)=>{queueMicrotask(()=>callback(...args));return 0}
  try{await t.task.send('看看当前进展')}finally{globalThis.setTimeout=nativeSetTimeout}
  assert.deepEqual(cursors,[0,3])
+})
+
+test('refresh replays tool calls by the per-run cursor and keeps cancellation without a fabricated result',async()=>{
+ const cursors=[]
+ const callBase={schema_version:2,model_iteration:1,turn_id:`turn_${'d'.repeat(32)}`,assistant_message_id:`msg_${'e'.repeat(32)}`,
+  tool_call_id:'call-refresh',plan_version:1,contract_revision:0,step_index:1,attempt:1,tool_name:'career_data_read'}
+ const first=runEvent(1,'run.submitted',{},'running')
+ const started=runEvent(2,'run.tool_call_started',{...callBase,status:'started',
+  input_summary:{argument_count:1,argument_names:['query']}},'running')
+ const cancelled=runEvent(3,'run.cancelled',{},'cancelled')
+ const t=await setup({
+  readTaskContext:async()=>({data:{task:{revision:1,active_run_id:'run_refresh',last_run_id:'run_refresh',
+   active_run_status:'cancelled',turns:[{run_id:'run_refresh',message:'任务',status:'cancelled',created_at:'2026-10-24T10:00:00Z'}]}}}),
+  readTaskRun:async run=>({data:{run:runSnapshot(run,'cancelled')}}),
+  readTaskEvents:async(run,cursor)=>{
+   cursors.push(cursor)
+   if(cursor===0)return {data:{run:runSnapshot(run,'cancelled'),events:[first,started],cursor:2,latest_seq:3,has_more:true}}
+   if(cursor===2)return {data:{run:runSnapshot(run,'cancelled'),events:[cancelled],cursor:3,latest_seq:3,has_more:false}}
+   return {data:{run:runSnapshot(run,'cancelled'),events:[],cursor,latest_seq:3,has_more:false}}
+  },
+ })
+ await t.task.restore();await t.task.loadAgentRunTimeline('run_refresh');await settle()
+ const timeline=t.task.runTimelineById.run_refresh
+ assert.deepEqual(cursors,[0,2])
+ assert.deepEqual(timeline.events.map(row=>row.event_seq),[1,2,3])
+ const items=eventModel.toAgentRunTimelineItems(timeline.events,'run_refresh',timeline.run.status)
+ const tool=items.find(item=>item.kind==='tool_call')
+ assert.ok(tool)
+ assert.match(tool.detail,/任务已结束/)
+ assert.doesNotMatch(tool.detail,/已完成/)
+ assert.equal(timeline.cursor,3)
 })
 
 test('uncertain contract control reuses its stable key and stores no patch text',async()=>{
